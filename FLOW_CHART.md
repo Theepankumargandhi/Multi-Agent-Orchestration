@@ -8,7 +8,7 @@ flowchart TD
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
-    API --> CFG[Build RunnableConfig<br/>thread_id/checkpoint/model]
+    API --> CFG[Build RunnableConfig - thread_id checkpoint model]
     CFG --> LG[LangGraph research_assistant]
 
     LG --> SA[safety_agent]
@@ -24,10 +24,10 @@ flowchart TD
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
 
-    RG --> WS[web_search_agent<br/>web cache check (Redis/in-memory)]
+    RG --> WS[web_search_agent - web cache check]
     WS -->|web| RESP
     WS -->|hybrid| RA
-    RA[RAG agent<br/>local RAG cache check (Redis/in-memory)] --> RESP
+    RA[RAG agent - local RAG cache check] --> RESP
     MA --> RESP
 
     CA --> EVA[evaluation_agent]
