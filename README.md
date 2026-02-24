@@ -288,6 +288,3 @@ http://localhost:8080/store/<thread_id>?limit=50
 - hybrid router still depends on classifier confidence thresholds and can misroute low-signal queries
 - RAG quality still depends on chunking, embeddings, ingestion quality, and reranker behavior
 
-## License
-
-MIT (see `LICENSE`)
