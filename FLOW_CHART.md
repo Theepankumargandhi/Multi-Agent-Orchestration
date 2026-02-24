@@ -24,10 +24,10 @@ flowchart TD
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
 
-    RG --> WS[web_search_agent]
+    RG --> WS[web_search_agent<br/>web cache check (Redis/in-memory)]
     WS -->|web| RESP
     WS -->|hybrid| RA
-    RA --> RESP
+    RA[RAG agent<br/>local RAG cache check (Redis/in-memory)] --> RESP
     MA --> RESP
 
     CA --> EVA[evaluation_agent]
@@ -45,4 +45,5 @@ flowchart TD
 - `clarification_agent` does not continue to `response_agent` in the same run.
 - Clarified user reply comes as a new turn and is routed again by `intent_router_agent`.
 - `local:` prefix forces the RAG route.
-
+- Web/RAG cache checks happen inside `web_search_agent` / `rag_agent` internals (Redis or in-memory fallback).
+- UI shows a cache footer only on cache hits (e.g., `Cache: web via memory cache`).

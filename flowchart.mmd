@@ -19,10 +19,10 @@ flowchart TD
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
 
-    RG --> WS[web_search_agent]
+    RG --> WS[web_search_agent<br/>web cache check (Redis/in-memory)]
     WS -->|web| RESP
     WS -->|hybrid| RA
-    RA --> RESP
+    RA[RAG agent<br/>local RAG cache check (Redis/in-memory)] --> RESP
     MA --> RESP
 
     CA --> EVA[evaluation_agent]

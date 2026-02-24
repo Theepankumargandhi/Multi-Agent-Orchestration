@@ -18,6 +18,8 @@ from agent.llama_guard import llama_guard, LlamaGuardOutput, SafetyAssessment
 class AgentState(MessagesState):
     safety: LlamaGuardOutput
     route: str
+    route_confidence: float
+    route_reason: str
     query: str
     rewritten_query: str
     rewrite_done: bool
@@ -26,9 +28,12 @@ class AgentState(MessagesState):
     recency_days: int
     recency_notes: str
     web_notes: str
+    web_source_meta: str
     rag_notes: str
+    rag_source_meta: str
     math_result: str
     final_response: str
+    answer_source_meta: str
     evaluation_score: int
     evaluation_report: str
 
@@ -51,6 +56,8 @@ SPECIALIZED_AGENTS = [
 # if the /stream endpoint is called with stream_tokens=True (the default)
 _model_cache = {}
 DEFAULT_VAGUE_NEWS_TOPIC = os.getenv("DEFAULT_VAGUE_NEWS_TOPIC", "ai").strip().lower()
+HYBRID_ROUTER_ENABLE = os.getenv("HYBRID_ROUTER_ENABLE", "true").strip().lower() in {"1", "true", "yes", "on"}
+HYBRID_ROUTER_MIN_CONFIDENCE = float(os.getenv("HYBRID_ROUTER_MIN_CONFIDENCE", "0.75"))
 
 
 def _build_model(model_name: str) -> BaseChatModel:
@@ -235,6 +242,65 @@ def _extract_recency_days(query: str) -> int | None:
     return None
 
 
+def _parse_route_classifier_output(text: str) -> tuple[str, float, str]:
+    """
+    Parse classifier output into (route, confidence, reason).
+
+    Expected flexible formats, e.g.:
+    route: web
+    confidence: 0.84
+    reason: latest/current intent
+    """
+    raw = (text or "").strip()
+    route = ""
+    confidence = 0.0
+    reason = ""
+
+    for line in raw.splitlines():
+        lower = line.lower().strip()
+        if lower.startswith("route:"):
+            route = line.split(":", 1)[1].strip().lower()
+        elif lower.startswith("confidence:"):
+            value = line.split(":", 1)[1].strip()
+            try:
+                confidence = float(value)
+            except ValueError:
+                confidence = 0.0
+        elif lower.startswith("reason:"):
+            reason = line.split(":", 1)[1].strip()
+
+    valid_routes = {"clarify", "rewrite", "math", "web", "rag", "hybrid", "general"}
+    if route not in valid_routes:
+        route = "general"
+    confidence = max(0.0, min(1.0, confidence))
+    return route, confidence, reason or "LLM route classifier fallback."
+
+
+async def _llm_route_classify(query: str, config: RunnableConfig) -> tuple[str, float, str]:
+    system = (
+        "You classify user queries into one route for a multi-agent system.\n"
+        "Allowed routes: clarify, rewrite, math, web, rag, hybrid, general.\n"
+        "Definitions:\n"
+        "- clarify: user intent is ambiguous and requires follow-up.\n"
+        "- rewrite: vague but inferable and can be rewritten (e.g., 'news update').\n"
+        "- math: arithmetic/calculation/equation solving.\n"
+        "- web: latest/current/news/search intent from the web.\n"
+        "- rag: local project/docs/codebase/local knowledge intent.\n"
+        "- hybrid: needs both web and local/project context.\n"
+        "- general: regular non-time-sensitive Q&A/chat.\n"
+        "Return exactly 3 lines:\n"
+        "route: <one route>\n"
+        "confidence: <0.00-1.00>\n"
+        "reason: <short reason>\n"
+    )
+    user = f"Classify this query:\n{query}"
+    try:
+        text = await _call_llm(system, user, config)
+        return _parse_route_classifier_output(text)
+    except Exception as e:
+        return "general", 0.0, f"LLM router unavailable: {e}"
+
+
 def _build_execution_flow(state: AgentState) -> list[str]:
     route = (state.get("route") or "general").lower()
     rewrite_done = bool(state.get("rewrite_done"))
@@ -278,6 +344,13 @@ def _finalize_user_output(text: str, state: AgentState) -> str:
         f"_Agents used: {unique_agents}_\n"
         f"_Flow: {flow_line}_"
     )
+    cache_bits: list[str] = []
+    for key in ("web_source_meta", "rag_source_meta"):
+        val = (state.get(key) or "").strip()
+        if "cache" in val.lower():
+            cache_bits.append(val)
+    if cache_bits:
+        meta += "\n" + f"_Cache: {' | '.join(cache_bits)}_"
     return f"{clean}\n\n{meta}"
 
 
@@ -286,14 +359,19 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
     return {
         "safety": safety_output,
         "query": _latest_user_query(state),
+        "route_confidence": 0.0,
+        "route_reason": "",
         "rewritten_query": "",
         "rewrite_done": False,
         "rewrite_notes": "",
         "recency_query": "",
         "recency_days": 0,
         "recency_notes": "",
+        "web_source_meta": "",
+        "rag_source_meta": "",
         "evaluation_score": 0,
         "evaluation_report": "",
+        "answer_source_meta": "",
     }
 
 
@@ -313,25 +391,61 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
         "agent-service-toolkit", "local database", "rag",
     ]
 
+    route = "general"
+    route_confidence = 0.6
+    route_reason = "Default general fallback."
+    low_signal = False
+
     if forced_local:
         route = "rag" if _strip_local_prefix(query) else "clarify"
+        route_confidence = 1.0
+        route_reason = "Forced local prefix."
     elif not rewrite_done and _needs_clarification(query):
         route = "clarify"
+        route_confidence = 0.95
+        route_reason = "Ambiguous/pronoun/help query requires clarification."
     elif not rewrite_done and _is_vague_query(query):
         route = "rewrite"
+        route_confidence = 0.9
+        route_reason = "Vague but likely rewritable query."
     elif _looks_like_greeting(query):
         route = "general"
+        route_confidence = 0.95
+        route_reason = "Greeting/casual message."
     elif _looks_like_math(query):
         route = "math"
+        route_confidence = 0.98
+        route_reason = "Math symbols/keywords detected."
     elif _has_any_phrase(q, web_hints) and _has_any_phrase(q, rag_hints):
         route = "hybrid"
+        route_confidence = 0.9
+        route_reason = "Both web and local/RAG hints detected."
     elif _has_any_phrase(q, web_hints):
         route = "web"
+        route_confidence = 0.88
+        route_reason = "Web/news/current intent keywords detected."
     elif _has_any_phrase(q, rag_hints):
         route = "rag"
+        route_confidence = 0.88
+        route_reason = "Local project/RAG keywords detected."
     else:
-        route = "general"
-    return {"route": route}
+        low_signal = True
+
+    # Hybrid router fallback: only for low-signal cases after deterministic rules.
+    if HYBRID_ROUTER_ENABLE and low_signal and query:
+        llm_route, llm_conf, llm_reason = await _llm_route_classify(query, config)
+        if llm_conf >= HYBRID_ROUTER_MIN_CONFIDENCE:
+            route = llm_route
+            route_confidence = llm_conf
+            route_reason = f"LLM classifier: {llm_reason}"
+        else:
+            route_reason = f"Rule fallback to general; LLM classifier confidence {llm_conf:.2f} below threshold."
+
+    return {
+        "route": route,
+        "route_confidence": route_confidence,
+        "route_reason": route_reason,
+    }
 
 
 async def clarification_agent(state: AgentState, config: RunnableConfig):
@@ -352,7 +466,11 @@ async def clarification_agent(state: AgentState, config: RunnableConfig):
         )
 
     final = _finalize_user_output(prompt, state)
-    return {"final_response": final, "messages": [AIMessage(content=final)]}
+    return {
+        "final_response": final,
+        "messages": [AIMessage(content=final)],
+        "answer_source_meta": "",
+    }
 
 
 async def query_rewriter_agent(state: AgentState, config: RunnableConfig):
@@ -472,33 +590,60 @@ async def web_search_agent(state: AgentState, config: RunnableConfig):
     recency_days = int(state.get("recency_days") or 0)
     route = state.get("route", "general")
     if route not in {"web", "hybrid"}:
-        return {"web_notes": "Not required for this route."}
+        return {"web_notes": "Not required for this route.", "web_source_meta": ""}
 
     try:
-        web_notes = perform_web_search(
+        web_result = perform_web_search(
             query,
             max_results=5,
             recency_days=recency_days if recency_days > 0 else None,
             relevance_query=relevance_query,
-        ).strip()
+            return_meta=True,
+        )
+        web_meta_label = ""
+        if isinstance(web_result, tuple):
+            web_notes, web_meta = web_result
+            web_notes = (web_notes or "").strip()
+            cache_hit = bool(web_meta.get("cache_hit"))
+            cache_backend = str(web_meta.get("cache_backend") or "")
+            if cache_hit:
+                web_meta_label = f"web via {cache_backend} cache"
+            else:
+                web_meta_label = ""
+        else:
+            web_notes = str(web_result).strip()
         if not web_notes:
             web_notes = "No web results returned."
     except Exception as e:
         web_notes = f"Web retrieval failed: {e}"
-    return {"web_notes": web_notes}
+        web_meta_label = ""
+    return {"web_notes": web_notes, "web_source_meta": web_meta_label}
 
 
 async def rag_agent(state: AgentState, config: RunnableConfig):
     query = _strip_local_prefix(_active_query(state))
     route = state.get("route", "general")
     if route not in {"rag", "hybrid"}:
-        return {"rag_notes": "Not required for this route."}
+        return {"rag_notes": "Not required for this route.", "rag_source_meta": ""}
 
     try:
-        rag_notes = search_local_knowledge(query, limit=3)
+        rag_result = search_local_knowledge(query, limit=3, return_meta=True)
+        rag_meta_label = ""
+        if isinstance(rag_result, tuple):
+            rag_notes, rag_meta = rag_result
+            cache_hit = bool(rag_meta.get("cache_hit"))
+            cache_backend = str(rag_meta.get("cache_backend") or "")
+            source = str(rag_meta.get("source") or "")
+            if cache_hit:
+                rag_meta_label = f"rag via {cache_backend} cache"
+            else:
+                rag_meta_label = ""
+        else:
+            rag_notes = str(rag_result)
     except Exception as e:
         rag_notes = f"Local RAG retrieval failed: {e}"
-    return {"rag_notes": rag_notes}
+        rag_meta_label = ""
+    return {"rag_notes": rag_notes, "rag_source_meta": rag_meta_label}
 
 
 async def math_agent(state: AgentState, config: RunnableConfig):
@@ -525,7 +670,7 @@ async def response_agent(state: AgentState, config: RunnableConfig):
         unsafe = ", ".join(safety.unsafe_categories) if safety.unsafe_categories else "unsafe content"
         final = f"I cannot help with that request because it may involve unsafe content ({unsafe})."
         final = _finalize_user_output(final, state)
-        return {"final_response": final, "messages": [AIMessage(content=final)]}
+        return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
 
     route = (state.get("route") or "").lower()
     web_notes = state.get("web_notes", "")
@@ -541,7 +686,7 @@ async def response_agent(state: AgentState, config: RunnableConfig):
                 "'AI startup funding news this week')."
             )
             final = _finalize_user_output(final, state)
-            return {"final_response": final, "messages": [AIMessage(content=final)]}
+            return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
         if "no dated results within last" in web_notes or "no results within last" in web_notes:
             final = (
                 "I could not find enough reliably dated sources inside your requested time window.\n\n"
@@ -549,14 +694,14 @@ async def response_agent(state: AgentState, config: RunnableConfig):
                 "Try broadening the time range (for example: 'this month') or adjusting the topic keywords."
             )
             final = _finalize_user_output(final, state)
-            return {"final_response": final, "messages": [AIMessage(content=final)]}
+            return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
         final = (
             "I could not complete live web retrieval for this request.\n\n"
             f"Technical detail: {web_notes}\n\n"
             "Please retry in a moment, or ask for a non-live summary."
         )
         final = _finalize_user_output(final, state)
-        return {"final_response": final, "messages": [AIMessage(content=final)]}
+        return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
 
     if route in {"web", "hybrid"}:
         entries = _parse_web_notes_entries(web_notes)
@@ -578,14 +723,14 @@ async def response_agent(state: AgentState, config: RunnableConfig):
                 if snippet:
                     lines.append(f"   - {snippet}")
             final = _finalize_user_output("\n".join(lines), state)
-            return {"final_response": final, "messages": [AIMessage(content=final)]}
+            return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
         final = (
             "I couldn't produce a source-linked web answer for that request.\n\n"
             "Please retry, or ask with a narrower scope (for example: "
             "'latest AI startup funding news this week')."
         )
         final = _finalize_user_output(final, state)
-        return {"final_response": final, "messages": [AIMessage(content=final)]}
+        return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
 
     final = await _call_llm(
         base_instructions,
@@ -601,7 +746,7 @@ async def response_agent(state: AgentState, config: RunnableConfig):
         config,
     )
     final = _finalize_user_output(final, state)
-    return {"final_response": final, "messages": [AIMessage(content=final)]}
+    return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
 
 
 def _count_markdown_links(text: str) -> int:

@@ -20,6 +20,7 @@ langsmith~=0.1.96
 numexpr~=2.10.1
 pydantic~=1.10.17
 python-dotenv~=1.0.1
+redis~=5.0.8
 psycopg[binary]
 streamlit~=1.37.0
 uvicorn~=0.30.5

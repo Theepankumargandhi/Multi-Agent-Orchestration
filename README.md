@@ -7,10 +7,12 @@ A production-style multi-agent GenAI assistant built with LangGraph, FastAPI, St
 - 10-agent LangGraph orchestration graph
 - FastAPI service with `/invoke` and `/stream`
 - Streamlit chat UI
-- Rule-based supervisor routing (`intent_router_agent`)
+- Hybrid supervisor routing (`intent_router_agent`: rules first, LLM fallback for low-signal cases)
 - LlamaGuard moderation (`safety_agent`)
 - Web retrieval with recency preferences + relevance filtering
-- Local RAG with ChromaDB (SQLite fallback)
+- Local RAG with ChromaDB + hybrid retrieval (vector + BM25 + reranking), SQLite fallback
+- TTL caching for web search and local RAG retrieval
+- Optional Redis-backed caching (with in-memory fallback)
 - Dual-layer persistence:
   - LangGraph PostgreSQL checkpointer (graph state continuity)
   - Conversation Store (PostgreSQL with SQLite fallback)
@@ -53,10 +55,10 @@ flowchart TD
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
 
-    RG --> WS[web_search_agent]
+    RG --> WS[web_search_agent<br/>web cache check (Redis/in-memory)]
     WS -->|web| RESP
     WS -->|hybrid| RA
-    RA --> RESP
+    RA[RAG agent<br/>local RAG cache check (Redis/in-memory)] --> RESP
     MA --> RESP
 
     CA --> EVA[evaluation_agent]
@@ -75,6 +77,8 @@ flowchart TD
 - The next user message starts a new run and is routed again.
 - `local:` prefix forces routing to `rag_agent`.
 - `recency_guard_agent` applies recency as a preference (fallback to most recent relevant results).
+- Mermaid graph edges remain the same after hybrid-router / RAG reranking upgrades because those improvements happen inside `intent_router_agent` and `rag_agent` internals.
+- Cache checks happen inside `web_search_agent` and `rag_agent` retrieval functions (Redis/in-memory fallback), so graph topology still does not change.
 
 ## Project Structure (Key Files)
 
@@ -118,7 +122,13 @@ flowchart TD
 
 ## Routing Summary (Supervisor Logic)
 
-`intent_router_agent` is rule-based (not LLM-based) and routes using keyword/regex heuristics:
+`intent_router_agent` uses a hybrid strategy:
+
+1. Deterministic rules first (high precision, low latency)
+2. Optional LLM classifier fallback for low-signal queries (confidence-gated)
+3. Safe fallback to `general` if classifier confidence is low/unavailable
+
+Primary deterministic rules:
 
 - `local:` prefix -> `rag`
 - ambiguous (`help me`, `this`, `that`) -> `clarify`
@@ -128,6 +138,10 @@ flowchart TD
 - local/project keywords -> `rag`
 - both web + local keywords -> `hybrid`
 - fallback -> `general`
+
+Router debug metadata written into state:
+- `route_confidence`
+- `route_reason`
 
 ## Setup
 
@@ -169,6 +183,25 @@ OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 RAG_CHUNK_SIZE=1000
 RAG_CHUNK_OVERLAP=150
 
+# Optional hybrid router (rules + LLM fallback)
+HYBRID_ROUTER_ENABLE=true
+HYBRID_ROUTER_MIN_CONFIDENCE=0.75
+
+# Optional hybrid RAG retrieval + reranking (Chroma path)
+RAG_VECTOR_TOP_K=8
+RAG_BM25_TOP_K=8
+RAG_RERANK_TOP_K=6
+RAG_RRF_K=60
+RAG_ENABLE_LLM_RERANKER=true
+
+# Optional TTL caches (latency/cost optimization)
+WEB_CACHE_TTL_SECONDS=300
+RAG_CACHE_TTL_SECONDS=600
+
+# Optional Redis cache backend (shared cache across processes/containers)
+CACHE_USE_REDIS=true
+REDIS_URL=redis://localhost:6379/0
+
 # Optional API auth
 AUTH_SECRET=
 ```
@@ -206,6 +239,33 @@ python ingest_pdfs.py --pdf-dir rag_docs --reset
 local: summarize the uploaded pdfs
 ```
 
+### Local RAG retrieval pipeline (current)
+
+When ChromaDB is enabled, local retrieval now uses a hybrid pipeline inside `agent/local_rag.py`:
+
+1. Chroma vector retrieval (semantic)
+2. BM25-style lexical ranking over local Chroma corpus
+3. Reciprocal Rank Fusion (RRF)
+4. Optional LLM reranker (falls back to heuristic reranker)
+
+This improves local retrieval precision for paraphrases and keyword-heavy queries.
+
+### Caching (current)
+
+- **Web search TTL cache** (`agent/tools.py`)
+  - caches `perform_web_search(...)` results by query/recency/relevance key
+  - default TTL: `300s`
+- **Local RAG TTL cache** (`agent/local_rag.py`)
+  - caches `search_local_knowledge(...)` results by query/limit/backend key
+  - default TTL: `600s`
+  - cache is cleared automatically after PDF ingestion/reset
+- **Redis support (optional)**
+  - if `REDIS_URL` is configured and reachable, web/RAG caches use Redis (`setex`)
+  - if Redis is unavailable, system falls back to local in-memory TTL cache automatically
+- **UI cache visibility**
+  - the response footer shows cache usage only on cache hits (for example: `Cache: web via memory cache`)
+  - live retrievals do not add extra source text
+
 ## Verify Persistence
 
 ### Conversation Store (human-readable)
@@ -225,8 +285,8 @@ http://localhost:8080/store/<thread_id>?limit=50
 
 - `evaluation_agent` is heuristic (not factual verification)
 - `clarification_agent` ends current run; final answer comes on next user turn
-- router is rule-based and can miss nuanced/paraphrased intent
-- RAG quality depends on chunking, embeddings, and clean PDF ingestion
+- hybrid router still depends on classifier confidence thresholds and can misroute low-signal queries
+- RAG quality still depends on chunking, embeddings, ingestion quality, and reranker behavior
 
 ## License
 

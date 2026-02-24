@@ -1,6 +1,10 @@
 import math
 import numexpr
 import re
+import time
+import os
+import json
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 from langchain_core.tools import tool
@@ -19,6 +23,71 @@ _QUERY_STOPWORDS = {
     "today", "now", "week", "weekly", "month", "monthly", "year", "daily", "past", "last",
     "only", "include", "including", "sources", "source", "days", "day",
 }
+WEB_CACHE_TTL_SECONDS = int(os.getenv("WEB_CACHE_TTL_SECONDS", "300"))
+CACHE_USE_REDIS = os.getenv("CACHE_USE_REDIS", "true").strip().lower() in {"1", "true", "yes", "on"}
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+_WEB_SEARCH_CACHE: dict[tuple[Any, ...], tuple[float, str]] = {}
+_redis_client = None
+_redis_disabled = False
+
+
+def _get_redis_client():
+    global _redis_client, _redis_disabled
+    if _redis_disabled or not CACHE_USE_REDIS or not REDIS_URL:
+        return None
+    if _redis_client is not None:
+        return _redis_client
+    try:
+        import redis  # type: ignore
+
+        _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        # lightweight health check on first use
+        _redis_client.ping()
+        return _redis_client
+    except Exception:
+        _redis_disabled = True
+        _redis_client = None
+        return None
+
+
+def _redis_key(prefix: str, cache_key: tuple[Any, ...]) -> str:
+    payload = json.dumps(cache_key, sort_keys=True, default=str)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"{prefix}:{digest}"
+
+
+def _cache_get_web(cache_key: tuple[Any, ...]) -> tuple[str | None, str | None]:
+    ttl = max(0, WEB_CACHE_TTL_SECONDS)
+    if ttl <= 0:
+        return None, None
+
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            value = client.get(_redis_key("web_search", cache_key))
+            if isinstance(value, str) and value:
+                return value, "redis"
+        except Exception:
+            pass
+
+    cached = _WEB_SEARCH_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) <= ttl:
+        return cached[1], "memory"
+    return None, None
+
+
+def _cache_set_web(cache_key: tuple[Any, ...], value: str) -> None:
+    ttl = max(0, WEB_CACHE_TTL_SECONDS)
+    if ttl <= 0:
+        return
+    _WEB_SEARCH_CACHE[cache_key] = (time.time(), value)
+
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            client.setex(_redis_key("web_search", cache_key), ttl, value)
+        except Exception:
+            pass
 
 
 def _timelimit_for_days(recency_days: int | None) -> str | None:
@@ -225,7 +294,8 @@ def perform_web_search(
     max_results: int = 5,
     recency_days: int | None = None,
     relevance_query: str | None = None,
-) -> str:
+    return_meta: bool = False,
+) -> str | tuple[str, dict[str, Any]]:
     """
     Robust web retrieval with retries/fallbacks for news-heavy queries.
 
@@ -237,6 +307,17 @@ def perform_web_search(
     q = (query or "").strip()
     if not q:
         return "Web retrieval failed: empty query."
+
+    cache_key = (
+        q.lower(),
+        int(max_results),
+        int(recency_days or 0),
+        (relevance_query or "").strip().lower(),
+    )
+    cached_value, cached_backend = _cache_get_web(cache_key)
+    if cached_value is not None:
+        meta = {"cache_hit": True, "cache_backend": cached_backend or "unknown", "source": "web_cache"}
+        return (cached_value, meta) if return_meta else cached_value
 
     errors: list[str] = []
     timelimit = _timelimit_for_days(recency_days)
@@ -262,7 +343,9 @@ def perform_web_search(
         filtered_news = _sort_by_freshness(filtered_news)
         formatted = _normalize_results(filtered_news, max_results=max_results)
         if formatted:
-            return formatted
+            _cache_set_web(cache_key, formatted)
+            meta = {"cache_hit": False, "cache_backend": "none", "source": "web_live"}
+            return (formatted, meta) if return_meta else formatted
         if recency_days:
             errors.append(f"ddg.news: no dated results within last {recency_days} days")
         if topic_query:
@@ -290,7 +373,9 @@ def perform_web_search(
         filtered_text = _sort_by_freshness(filtered_text)
         formatted = _normalize_results(filtered_text, max_results=max_results)
         if formatted:
-            return formatted
+            _cache_set_web(cache_key, formatted)
+            meta = {"cache_hit": False, "cache_backend": "none", "source": "web_live"}
+            return (formatted, meta) if return_meta else formatted
         if recency_days:
             errors.append(f"ddg.text: no results within last {recency_days} days")
         if topic_query:
@@ -307,7 +392,9 @@ def perform_web_search(
             relaxed_news = _sort_by_freshness(relaxed_news)
             formatted = _normalize_results(relaxed_news, max_results=max_results)
             if formatted:
-                return formatted
+                _cache_set_web(cache_key, formatted)
+                meta = {"cache_hit": False, "cache_backend": "none", "source": "web_live_relaxed"}
+                return (formatted, meta) if return_meta else formatted
             errors.append("ddg.news: no relevant results after relaxed recency fallback")
         except Exception as e:
             errors.append(f"ddg.news.relaxed: {e}")
@@ -319,7 +406,9 @@ def perform_web_search(
             relaxed_text = _sort_by_freshness(relaxed_text)
             formatted = _normalize_results(relaxed_text, max_results=max_results)
             if formatted:
-                return formatted
+                _cache_set_web(cache_key, formatted)
+                meta = {"cache_hit": False, "cache_backend": "none", "source": "web_live_relaxed"}
+                return (formatted, meta) if return_meta else formatted
             errors.append("ddg.text: no relevant results after relaxed recency fallback")
         except Exception as e:
             errors.append(f"ddg.text.relaxed: {e}")
@@ -331,12 +420,18 @@ def perform_web_search(
         if raw_text:
             # Only trust this fallback if it contains at least one URL.
             if re.search(r"https?://", raw_text):
-                return raw_text
+                _cache_set_web(cache_key, raw_text)
+                meta = {"cache_hit": False, "cache_backend": "none", "source": "web_wrapper_fallback"}
+                return (raw_text, meta) if return_meta else raw_text
             errors.append("langchain.ddg: returned content without URLs")
     except Exception as e:
         errors.append(f"langchain.ddg: {e}")
 
-    return "Web retrieval failed: " + " | ".join(errors[:3])
+    failure = "Web retrieval failed: " + " | ".join(errors[:3])
+    # Short-cache failures to avoid hammering providers during repeated retries.
+    _cache_set_web(cache_key, failure)
+    meta = {"cache_hit": False, "cache_backend": "none", "source": "web_failure"}
+    return (failure, meta) if return_meta else failure
 
 @tool
 def calculator(expression: str) -> str:
