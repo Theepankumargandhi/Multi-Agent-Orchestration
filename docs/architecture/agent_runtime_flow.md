@@ -45,6 +45,24 @@ flowchart TD
     APIOUT --> STOREA[Store AI message + metadata]
     STOREA --> RET[Return JSON or SSE]
     RET --> UI[Render in Streamlit]
+
+    API --> OPS[/healthz /readyz /metrics]
+    OPS --> PROM[Prometheus scrape]
+    PROM --> GRAF[Grafana dashboards]
+
+    subgraph K8S[Optional Local Kubernetes Deployment]
+      KCM[ConfigMap + Secret]
+      KAGENT[agent-service Deployment + Service]
+      KUI[streamlit-app Deployment + Service]
+      KPROM[prometheus Deployment + Service]
+      KGRAF[grafana Deployment + Service]
+    end
+
+    KCM --> KAGENT
+    KCM --> KUI
+    KAGENT --> KPROM
+    KPROM --> KGRAF
+    KUI --> KAGENT
 ```
 
 ## Notes
@@ -56,3 +74,5 @@ flowchart TD
 - `rag_agent` reads from local RAG ingestion (`rag_docs` -> `chroma_db`).
 - Web/RAG/Graph-RAG cache checks happen inside retrieval internals (Redis or in-memory fallback).
 - UI can show source-path footer metadata (for example: `Sources: web via mcp` or cache backend labels).
+- Prometheus scrapes `/metrics`; Grafana visualizes Prometheus data.
+- Kubernetes manifests for this flow are available in `k8s/`.

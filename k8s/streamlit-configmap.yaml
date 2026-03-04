@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: streamlit-config
+  namespace: agent-platform
+data:
+  AGENT_URL: "http://agent-service:8000"

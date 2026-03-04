@@ -111,3 +111,18 @@ def test_store_is_isolated_by_user():
     assert not any("message from B" in content for content in contents_a)
     assert any("message from B" in content for content in contents_b)
     assert not any("message from A" in content for content in contents_b)
+
+
+def test_monitoring_endpoints_are_public():
+    with client as c:
+        health = c.get("/healthz")
+        assert health.status_code == 200
+        assert health.json() == {"status": "ok"}
+
+        ready = c.get("/readyz")
+        assert ready.status_code == 200
+        assert ready.json() == {"status": "ready"}
+
+        metrics = c.get("/metrics")
+        assert metrics.status_code == 200
+        assert "http_requests_total" in metrics.text

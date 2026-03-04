@@ -20,6 +20,7 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 
 - 11-agent LangGraph orchestration graph
 - FastAPI service with `/invoke` and `/stream`
+- Operational endpoints: `/metrics`, `/healthz`, `/readyz`
 - Streamlit chat UI
 - Hybrid supervisor routing (`intent_router_agent`: rules first, LLM fallback for low-signal cases)
 - LlamaGuard moderation (`safety_agent`)
@@ -29,6 +30,7 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 - TTL caching for web search and local RAG retrieval
 - Optional Redis-backed caching (with in-memory fallback)
 - MCP tool bridge for `web_search` and `calculator` (with local fallback)
+- Monitoring stack with Prometheus + Grafana
 - Dual-layer persistence:
   - LangGraph PostgreSQL checkpointer (graph state continuity)
   - Conversation Store (PostgreSQL with SQLite fallback)
@@ -89,6 +91,20 @@ flowchart TD
     APIOUT --> STOREA[Store AI message + metadata]
     STOREA --> RET[Return JSON or SSE]
     RET --> UI[Render in Streamlit]
+
+    API --> OPS[/healthz /readyz /metrics]
+    OPS --> PROM[Prometheus scrape]
+    PROM --> GRAF[Grafana dashboards]
+
+    subgraph K8S[Optional Local Kubernetes Deployment]
+      KAGENT[agent-service Deployment + Service]
+      KUI[streamlit-app Deployment + Service]
+      KPROM[prometheus Deployment + Service]
+      KGRAF[grafana Deployment + Service]
+    end
+    KAGENT --> KPROM
+    KPROM --> KGRAF
+    KUI --> KAGENT
 ```
 
 ### Flow Notes
@@ -111,9 +127,11 @@ flowchart TD
 - `service/service.py` - FastAPI service + endpoints + checkpointer/store wiring
 - `service/persistence_store.py` - conversation Store layer (Postgres/SQLite)
 - `streamlit_app.py` - Streamlit UI
+- `monitoring/prometheus.yml` - Prometheus scrape config for `/metrics`
 - `scripts/ingestion/ingest_local_rag_pdfs.py` - PDF ingestion to local RAG ChromaDB
 - `scripts/ingestion/ingest_graph_rag_pdfs.py` - separate PDF ingestion for knowledge graph store
 - `scripts/ingestion/generate_synthetic_graph_pdfs.py` - synthetic graph PDFs for KG testing
+- `k8s/` - local Kubernetes manifests (app + monitoring stack)
 - `docs/architecture/agent_runtime_flow.md` - runtime flow explainer (human-readable)
 - `docs/architecture/agent_runtime_flow.mmd` - raw Mermaid source for the same flow
 
@@ -149,8 +167,55 @@ git push origin v1.0.0
 - `POST /stream` - streaming chat response
 - `GET /store/{thread_id}` - inspect persisted conversation records
 - `POST /feedback` - user feedback/rating
+- `GET /healthz` - liveness probe endpoint
+- `GET /readyz` - readiness probe endpoint
+- `GET /metrics` - Prometheus scrape endpoint
 
 When `ENABLE_USER_AUTH=true`, all non-auth endpoints require `Authorization: Bearer <access_token>`.
+
+## Monitoring (Prometheus + Grafana)
+
+### Docker Compose (Local)
+
+Bring up full stack:
+
+```bash
+docker compose up -d --build
+```
+
+Access:
+
+- FastAPI: `http://localhost:8000`
+- Streamlit: `http://localhost:8501`
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3001` (default `admin` / `admin`)
+
+Prometheus target should show `agent_service` as `UP` at:
+
+```text
+http://localhost:9090/targets
+```
+
+### Recommended Grafana Panels
+
+- Request Rate: `sum(rate(http_requests_total[5m]))`
+- Error Rate (5xx):
+  - `sum(rate(http_requests_total{status_code=~"5.."}[15m])) / clamp_min(sum(rate(http_requests_total[15m])), 1e-9)`
+- P95 Latency:
+  - `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[15m])))`
+- Traffic by endpoint:
+  - `sum by (path) (rate(http_requests_total[5m]))`
+- Status code distribution:
+  - `sum by (status_code) (rate(http_requests_total[5m]))`
+
+## Kubernetes (Local)
+
+Beginner-friendly Kubernetes manifests are available in `k8s/` with step-by-step instructions:
+
+- See [k8s/README.md](k8s/README.md)
+- Includes app + streamlit + Prometheus + Grafana manifests
+- Includes health/readiness probes
+- Supports one-command apply via `kubectl apply -k k8s`
 
 ## Data & Persistence
 

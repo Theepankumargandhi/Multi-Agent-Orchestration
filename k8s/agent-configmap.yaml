@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: agent-platform
+data:
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  CHECKPOINT_FALLBACK_SQLITE: "true"
+  CHECKPOINT_DB_PATH: "/app/data/checkpoints/checkpoints.db"
+  STORE_FALLBACK_SQLITE: "true"
+  STORE_DB_PATH: "/app/data/store/store.db"
+  LOCAL_RAG_DB_PATH: "/app/data/rag/local_rag.db"
+  CHROMA_PERSIST_DIR: "/app/data/chroma_db"
+  GRAPH_CHROMA_PERSIST_DIR: "/app/data/graph_chroma_db"
+  ENABLE_USER_AUTH: "true"
+  USER_AUTH_TOKEN_TTL_SECONDS: "86400"
+  CACHE_USE_REDIS: "false"
+  MCP_TOOLS_ENABLED: "false"
+  LANGSMITH_TRACING: "false"
+  GRAPH_RAG_ENABLED: "true"
+  USE_CHROMA_RAG: "true"
+  HYBRID_ROUTER_ENABLE: "true"
+  HYBRID_ROUTER_MIN_CONFIDENCE: "0.75"

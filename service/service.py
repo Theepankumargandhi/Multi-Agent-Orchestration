@@ -21,6 +21,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.aiosqlite import AsyncSqliteSaver
 from langgraph.graph.graph import CompiledGraph
 from langsmith import Client as LangsmithClient
+from prometheus_client import Counter, Histogram, CONTENT_TYPE_LATEST, generate_latest
 
 from agent import research_assistant
 from schema import (
@@ -63,6 +64,17 @@ USER_AUTH_SECRET = (
 USER_AUTH_TOKEN_TTL_SECONDS = int(os.getenv("USER_AUTH_TOKEN_TTL_SECONDS", "86400"))
 PASSWORD_HASH_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "210000"))
 _USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{3,64}$")
+
+HTTP_REQUESTS_TOTAL = Counter(
+    "http_requests_total",
+    "Total number of HTTP requests",
+    ["method", "path", "status_code"],
+)
+HTTP_REQUEST_DURATION_SECONDS = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    ["method", "path"],
+)
 
 
 def _rotate_incompatible_checkpoint_db(db_path: str) -> str:
@@ -109,6 +121,13 @@ def _rotate_incompatible_checkpoint_db(db_path: str) -> str:
     except PermissionError:
         runtime_db = db_file.with_name(f"{db_file.stem}.runtime-{stamp}{db_file.suffix}")
         return str(runtime_db)
+
+
+def _ensure_parent_dir(file_path: str) -> None:
+    path = Path(file_path)
+    parent = path.parent
+    if str(parent) and str(parent) not in {".", ""}:
+        parent.mkdir(parents=True, exist_ok=True)
 
 
 def _resolve_postgres_saver():
@@ -234,6 +253,7 @@ async def _open_checkpointer(stack: AsyncExitStack):
                     raise RuntimeError(message)
                 print(f"[service] {message}. Falling back to SQLite checkpointer.")
 
+    _ensure_parent_dir(CHECKPOINT_DB_PATH)
     resolved_checkpoint_db = _rotate_incompatible_checkpoint_db(CHECKPOINT_DB_PATH)
     saver = await stack.enter_async_context(
         AsyncSqliteSaver.from_conn_string(resolved_checkpoint_db)
@@ -366,6 +386,9 @@ def _is_public_route(path: str) -> bool:
     public_paths = {
         "/auth/register",
         "/auth/login",
+        "/metrics",
+        "/healthz",
+        "/readyz",
         "/openapi.json",
         "/docs",
         "/redoc",
@@ -382,6 +405,14 @@ def _get_request_user_id(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required.")
     return str(user_id)
+
+
+def _resolve_metric_path(request: Request) -> str:
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    if isinstance(template, str) and template:
+        return template
+    return request.url.path
 
 
 @asynccontextmanager
@@ -405,6 +436,51 @@ async def lifespan(app: FastAPI):
     # context managers are cleaned up by AsyncExitStack on exit
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    method = request.method
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration = time.perf_counter() - start
+        path = _resolve_metric_path(request)
+        HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status_code="500").inc()
+        HTTP_REQUEST_DURATION_SECONDS.labels(method=method, path=path).observe(duration)
+        raise
+
+    duration = time.perf_counter() - start
+    path = _resolve_metric_path(request)
+    HTTP_REQUESTS_TOTAL.labels(
+        method=method,
+        path=path,
+        status_code=str(response.status_code),
+    ).inc()
+    HTTP_REQUEST_DURATION_SECONDS.labels(method=method, path=path).observe(duration)
+    return response
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz():
+    agent = getattr(app.state, "agent", None)
+    store = getattr(app.state, "store", None)
+    if agent is None or store is None:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    return {"status": "ready"}
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 @app.middleware("http")
 async def check_auth_header(request: Request, call_next):
