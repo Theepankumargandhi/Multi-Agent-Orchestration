@@ -1,9 +1,20 @@
-# Agent Orchestration (LangGraph + FastAPI + Streamlit)
+# Agent Orchestration: LangGraph Multi-Agent Supervisor (FastAPI + Streamlit + RAG)
 
-A production-style multi-agent GenAI assistant built with LangGraph, FastAPI, Streamlit, PostgreSQL persistence, and local RAG (ChromaDB + PDF ingestion).
+Production-ready **LangGraph multi-agent orchestration** project with a **supervisor routing agent**, FastAPI backend, Streamlit frontend, PostgreSQL persistence, local RAG (ChromaDB), knowledge graph retrieval, and MCP tool integration.
+
+If you are searching for a **LangGraph multi-agent orchestration example**, **supervisor agent architecture**, or a **production multi-agent AI template**, this repository is built for that exact use case.
 
 [![CI](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml)
 [![CD](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml)
+
+Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent routing`, `fastapi`, `streamlit`, `rag`, `knowledge graph`, `mcp`, `genai`.
+
+## What You Can Build With This Repo
+
+- Multi-agent assistants with a supervisor/router pattern
+- Agentic RAG systems with hybrid retrieval (vector + BM25 + reranking)
+- Real-time chat services using FastAPI + Streamlit + SSE streaming
+- Tool-using agents via MCP (`web_search`, `calculator`)
 
 ## Highlights
 
@@ -342,13 +353,13 @@ python scripts/ingestion/ingest_graph_rag_pdfs.py --pdf-dir graph_rag_docs --res
 local: how is streamlit connected to fastapi in this project
 ```
 
-### Ingestion Separation (Important)
+### Ingestion Separation 
 
 - `scripts/ingestion/ingest_local_rag_pdfs.py` updates **Local RAG** only (`rag_docs` -> `chroma_db`).
 - `scripts/ingestion/ingest_graph_rag_pdfs.py` updates **Graph RAG / KG** only (`graph_rag_docs` -> `graph_chroma_db`).
 - `knowledge_graph_agent` uses Graph RAG retrieval, then forwards to `rag_agent` for extra grounding before `response_agent`.
 
-### Local RAG retrieval pipeline (current)
+### Local RAG retrieval pipeline 
 
 When ChromaDB is enabled, local retrieval now uses a hybrid pipeline inside `agent/local_rag.py`:
 
@@ -359,7 +370,7 @@ When ChromaDB is enabled, local retrieval now uses a hybrid pipeline inside `age
 
 This improves local retrieval precision for paraphrases and keyword-heavy queries.
 
-### Caching (current)
+### Caching 
 
 - **Web search TTL cache** (`agent/tools.py`)
   - caches `perform_web_search(...)` results by query/recency/relevance key
@@ -375,7 +386,7 @@ This improves local retrieval precision for paraphrases and keyword-heavy querie
   - the response footer shows source path when available (for example: `Sources: web via mcp` or `Sources: web via memory cache`)
   - live retrievals may omit source footer when no source metadata is present
 
-### MCP tools (current)
+### MCP tools 
 
 - `web_search_agent` calls an MCP stdio tool server first for web search.
 - `math_agent` calls an MCP stdio calculator tool first.
@@ -389,7 +400,7 @@ This improves local retrieval precision for paraphrases and keyword-heavy querie
 
 ## Verify Persistence
 
-### Conversation Store (human-readable)
+### Conversation Store 
 
 Open in browser (replace with your sidebar thread ID and correct backend port):
 
