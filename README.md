@@ -2,6 +2,9 @@
 
 A production-style multi-agent GenAI assistant built with LangGraph, FastAPI, Streamlit, PostgreSQL persistence, and local RAG (ChromaDB + PDF ingestion).
 
+[![CI](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml)
+[![CD](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml)
+
 ## Highlights
 
 - 11-agent LangGraph orchestration graph
@@ -102,6 +105,25 @@ flowchart TD
 - `scripts/ingestion/generate_synthetic_graph_pdfs.py` - synthetic graph PDFs for KG testing
 - `docs/architecture/agent_runtime_flow.md` - runtime flow explainer (human-readable)
 - `docs/architecture/agent_runtime_flow.mmd` - raw Mermaid source for the same flow
+
+## GitHub Actions CI/CD
+
+- `CI` workflow (`.github/workflows/ci.yml`)
+  - triggers on `push` and `pull_request` to `main`
+  - runs Python tests: `service/test_service.py` and `schema/test_schema.py`
+  - verifies both Docker images build successfully
+- `CD` workflow (`.github/workflows/cd-release.yml`)
+  - triggers on version tags (`v*`) or manual dispatch
+  - builds and publishes Docker images to GitHub Container Registry (GHCR):
+    - `ghcr.io/<owner>/<repo>/service:<version>`
+    - `ghcr.io/<owner>/<repo>/app:<version>`
+
+### Release Tag for CD
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ## Endpoints
 
