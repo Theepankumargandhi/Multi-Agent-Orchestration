@@ -17,6 +17,7 @@ class BaseConversationStore:
 
     def save_message(
         self,
+        user_id: str | None,
         thread_id: str,
         run_id: str,
         role: str,
@@ -25,7 +26,18 @@ class BaseConversationStore:
     ) -> None:
         raise NotImplementedError
 
-    def list_messages(self, thread_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_messages(
+        self,
+        thread_id: str,
+        limit: int = 50,
+        user_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    def create_user(self, user_id: str, password_hash: str) -> bool:
+        raise NotImplementedError
+
+    def get_user_password_hash(self, user_id: str) -> str | None:
         raise NotImplementedError
 
 
@@ -39,6 +51,18 @@ class SQLiteConversationStore(BaseConversationStore):
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        add_column_ddl: str,
+    ) -> None:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        columns = {row["name"] for row in rows}
+        if column_name not in columns:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {add_column_ddl}")
+
     def setup(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
@@ -47,6 +71,7 @@ class SQLiteConversationStore(BaseConversationStore):
                 CREATE TABLE IF NOT EXISTS conversation_store (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     namespace TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT '',
                     thread_id TEXT NOT NULL,
                     run_id TEXT NOT NULL,
                     role TEXT NOT NULL,
@@ -56,16 +81,37 @@ class SQLiteConversationStore(BaseConversationStore):
                 )
                 """
             )
+            # Backward-compat migration for pre-user-id schema.
+            self._ensure_column(conn, "conversation_store", "user_id", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversation_store_thread
                 ON conversation_store(namespace, thread_id, created_at DESC)
                 """
             )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_conversation_store_thread_user
+                ON conversation_store(namespace, user_id, thread_id, created_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    namespace TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(namespace, user_id)
+                )
+                """
+            )
             conn.commit()
 
     def save_message(
         self,
+        user_id: str | None,
         thread_id: str,
         run_id: str,
         role: str,
@@ -75,14 +121,16 @@ class SQLiteConversationStore(BaseConversationStore):
         clean_content = (content or "").strip()
         if not clean_content:
             return
+        clean_user_id = (user_id or "").strip()
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO conversation_store (namespace, thread_id, run_id, role, content, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO conversation_store (namespace, user_id, thread_id, run_id, role, content, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.namespace,
+                    clean_user_id,
                     thread_id,
                     run_id,
                     role,
@@ -92,19 +140,37 @@ class SQLiteConversationStore(BaseConversationStore):
             )
             conn.commit()
 
-    def list_messages(self, thread_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_messages(
+        self,
+        thread_id: str,
+        limit: int = 50,
+        user_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
         bounded_limit = max(1, min(int(limit), 200))
+        clean_user_id = (user_id or "").strip()
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT thread_id, run_id, role, content, metadata, created_at
-                FROM conversation_store
-                WHERE namespace = ? AND thread_id = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                """,
-                (self.namespace, thread_id, bounded_limit),
-            ).fetchall()
+            if clean_user_id:
+                rows = conn.execute(
+                    """
+                    SELECT user_id, thread_id, run_id, role, content, metadata, created_at
+                    FROM conversation_store
+                    WHERE namespace = ? AND user_id = ? AND thread_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (self.namespace, clean_user_id, thread_id, bounded_limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT user_id, thread_id, run_id, role, content, metadata, created_at
+                    FROM conversation_store
+                    WHERE namespace = ? AND thread_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (self.namespace, thread_id, bounded_limit),
+                ).fetchall()
         output: List[Dict[str, Any]] = []
         for row in rows:
             try:
@@ -113,6 +179,7 @@ class SQLiteConversationStore(BaseConversationStore):
                 parsed_meta = {}
             output.append(
                 {
+                    "user_id": row["user_id"] or "",
                     "thread_id": row["thread_id"],
                     "run_id": row["run_id"],
                     "role": row["role"],
@@ -122,6 +189,44 @@ class SQLiteConversationStore(BaseConversationStore):
                 }
             )
         return output
+
+    def create_user(self, user_id: str, password_hash: str) -> bool:
+        clean_user_id = (user_id or "").strip()
+        if not clean_user_id:
+            raise ValueError("user_id is required")
+        if not password_hash:
+            raise ValueError("password_hash is required")
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO users (namespace, user_id, password_hash)
+                    VALUES (?, ?, ?)
+                    """,
+                    (self.namespace, clean_user_id, password_hash),
+                )
+                conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def get_user_password_hash(self, user_id: str) -> str | None:
+        clean_user_id = (user_id or "").strip()
+        if not clean_user_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT password_hash
+                FROM users
+                WHERE namespace = ? AND user_id = ?
+                LIMIT 1
+                """,
+                (self.namespace, clean_user_id),
+            ).fetchone()
+        if not row:
+            return None
+        return str(row["password_hash"] or "")
 
 
 class PostgresConversationStore(BaseConversationStore):
@@ -142,6 +247,7 @@ class PostgresConversationStore(BaseConversationStore):
                     CREATE TABLE IF NOT EXISTS conversation_store (
                         id BIGSERIAL PRIMARY KEY,
                         namespace TEXT NOT NULL,
+                        user_id TEXT NOT NULL DEFAULT '',
                         thread_id TEXT NOT NULL,
                         run_id TEXT NOT NULL,
                         role TEXT NOT NULL,
@@ -153,13 +259,38 @@ class PostgresConversationStore(BaseConversationStore):
                 )
                 cur.execute(
                     """
+                    ALTER TABLE conversation_store
+                    ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_conversation_store_thread
                     ON conversation_store(namespace, thread_id, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_conversation_store_thread_user
+                    ON conversation_store(namespace, user_id, thread_id, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        id BIGSERIAL PRIMARY KEY,
+                        namespace TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        password_hash TEXT NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        UNIQUE(namespace, user_id)
+                    )
                     """
                 )
 
     def save_message(
         self,
+        user_id: str | None,
         thread_id: str,
         run_id: str,
         role: str,
@@ -169,15 +300,17 @@ class PostgresConversationStore(BaseConversationStore):
         clean_content = (content or "").strip()
         if not clean_content:
             return
+        clean_user_id = (user_id or "").strip()
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO conversation_store (namespace, thread_id, run_id, role, content, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                    INSERT INTO conversation_store (namespace, user_id, thread_id, run_id, role, content, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
                     """,
                     (
                         self.namespace,
+                        clean_user_id,
                         thread_id,
                         run_id,
                         role,
@@ -186,36 +319,104 @@ class PostgresConversationStore(BaseConversationStore):
                     ),
                 )
 
-    def list_messages(self, thread_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_messages(
+        self,
+        thread_id: str,
+        limit: int = 50,
+        user_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
         bounded_limit = max(1, min(int(limit), 200))
+        clean_user_id = (user_id or "").strip()
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT thread_id, run_id, role, content, metadata, created_at
-                    FROM conversation_store
-                    WHERE namespace = %s AND thread_id = %s
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT %s
-                    """,
-                    (self.namespace, thread_id, bounded_limit),
-                )
+                if clean_user_id:
+                    cur.execute(
+                        """
+                        SELECT user_id, thread_id, run_id, role, content, metadata, created_at
+                        FROM conversation_store
+                        WHERE namespace = %s AND user_id = %s AND thread_id = %s
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT %s
+                        """,
+                        (self.namespace, clean_user_id, thread_id, bounded_limit),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT user_id, thread_id, run_id, role, content, metadata, created_at
+                        FROM conversation_store
+                        WHERE namespace = %s AND thread_id = %s
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT %s
+                        """,
+                        (self.namespace, thread_id, bounded_limit),
+                    )
                 rows = cur.fetchall()
 
         output: List[Dict[str, Any]] = []
         for row in rows:
-            metadata = row[4] if isinstance(row[4], dict) else {}
+            raw_meta = row[5]
+            if isinstance(raw_meta, dict):
+                metadata = raw_meta
+            elif isinstance(raw_meta, str):
+                try:
+                    metadata = json.loads(raw_meta)
+                except Exception:
+                    metadata = {}
+            else:
+                metadata = {}
             output.append(
                 {
-                    "thread_id": row[0],
-                    "run_id": row[1],
-                    "role": row[2],
-                    "content": row[3],
+                    "user_id": row[0] or "",
+                    "thread_id": row[1],
+                    "run_id": row[2],
+                    "role": row[3],
+                    "content": row[4],
                     "metadata": metadata,
-                    "created_at": row[5].isoformat() if hasattr(row[5], "isoformat") else str(row[5]),
+                    "created_at": row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6]),
                 }
             )
         return output
+
+    def create_user(self, user_id: str, password_hash: str) -> bool:
+        clean_user_id = (user_id or "").strip()
+        if not clean_user_id:
+            raise ValueError("user_id is required")
+        if not password_hash:
+            raise ValueError("password_hash is required")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (namespace, user_id, password_hash)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (namespace, user_id) DO NOTHING
+                    RETURNING user_id
+                    """,
+                    (self.namespace, clean_user_id, password_hash),
+                )
+                row = cur.fetchone()
+        return row is not None
+
+    def get_user_password_hash(self, user_id: str) -> str | None:
+        clean_user_id = (user_id or "").strip()
+        if not clean_user_id:
+            return None
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT password_hash
+                    FROM users
+                    WHERE namespace = %s AND user_id = %s
+                    LIMIT 1
+                    """,
+                    (self.namespace, clean_user_id),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return str(row[0] or "")
 
 
 def open_conversation_store(

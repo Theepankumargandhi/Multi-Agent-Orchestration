@@ -1,4 +1,6 @@
 
+import os
+
 from client import AgentClient
 from schema import ChatMessage
 
@@ -24,6 +26,10 @@ from schema import ChatMessage
 
 #### SYNC ####
 client = AgentClient()
+user_id = os.getenv("USER_ID", "").strip()
+password = os.getenv("USER_PASSWORD", "").strip()
+if user_id and password:
+    client.login(user_id=user_id, password=password)
 
 print("Chat example:")
 response = client.invoke("Tell me a brief joke?", model="llama-3.1-70b")

@@ -41,6 +41,50 @@ class UserInput(BaseModel):
     )
 
 
+class AuthRegisterInput(BaseModel):
+    """Registration payload for per-user auth."""
+    user_id: str = Field(
+        description="Unique user identifier used for login.",
+        examples=["theepan"],
+    )
+    password: str = Field(
+        description="User password. Stored as a secure hash on the server.",
+        examples=["StrongPassword123!"],
+    )
+
+
+class AuthLoginInput(BaseModel):
+    """Login payload for per-user auth."""
+    user_id: str = Field(
+        description="User identifier.",
+        examples=["theepan"],
+    )
+    password: str = Field(
+        description="User password.",
+        examples=["StrongPassword123!"],
+    )
+
+
+class AuthToken(BaseModel):
+    """Bearer token response for authenticated sessions."""
+    access_token: str = Field(
+        description="Signed bearer token for authenticated API calls.",
+    )
+    token_type: str = Field(
+        description="Token type.",
+        default="bearer",
+        examples=["bearer"],
+    )
+    user_id: str = Field(
+        description="Authenticated user identifier.",
+        examples=["theepan"],
+    )
+    expires_in: int = Field(
+        description="Token lifetime in seconds.",
+        examples=[86400],
+    )
+
+
 class StreamInput(UserInput):
     """User input for streaming the agent's response."""
     stream_tokens: bool = Field(

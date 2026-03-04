@@ -420,7 +420,7 @@ def _search_chroma_knowledge(query: str, limit: int = 3) -> str | None:
     if not _chroma_has_documents(store):
         return (
             "No ChromaDB knowledge found yet. Ingest PDFs first with "
-            "`python ingest_pdfs.py --pdf-dir rag_docs --reset`."
+            "`python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs --reset`."
         )
 
     pairs: List[Tuple[Any, float]] = []
@@ -614,7 +614,7 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
     if not _chroma_has_documents(store):
         return (
             "No ChromaDB knowledge found yet. Ingest PDFs first with "
-            "`python ingest_pdfs.py --pdf-dir rag_docs --reset`."
+            "`python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs --reset`."
         )
 
     # Vector candidates

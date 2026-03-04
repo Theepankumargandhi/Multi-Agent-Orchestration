@@ -1,3 +1,7 @@
+%% File Purpose:
+%% - Raw Mermaid source for the runtime architecture flow.
+%% - Use this when exporting diagrams or embedding in docs/tools.
+
 flowchart TD
     U[User input in Streamlit] --> ST[streamlit_app.py]
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
@@ -15,6 +19,7 @@ flowchart TD
 
     IR -->|math| MA[math_agent]
     IR -->|web| RG[recency_guard_agent]
+    IR -->|kg| KG[knowledge_graph_agent]
     IR -->|rag| RA[rag_agent]
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
@@ -22,6 +27,7 @@ flowchart TD
     RG --> WS[web_search_agent - web cache check]
     WS -->|web| RESP
     WS -->|hybrid| RA
+    KG --> RA
     RA[RAG agent - local RAG cache check] --> RESP
     MA --> RESP
 

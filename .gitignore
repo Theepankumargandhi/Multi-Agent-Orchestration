@@ -7,8 +7,15 @@ checkpoints.runtime-*.db
 local_rag.db
 chroma_db/
 rag_docs/
+graph_chroma_db/
+graph_rag_docs/
 store.db
 store.db-*
+data/checkpoints/*.db
+data/store/*.db
+data/rag/*.db
+data/chroma_db/
+data/graph_chroma_db/
 
 # VSCode
 .vscode

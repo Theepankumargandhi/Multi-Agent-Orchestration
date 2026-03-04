@@ -4,21 +4,24 @@ A production-style multi-agent GenAI assistant built with LangGraph, FastAPI, St
 
 ## Highlights
 
-- 10-agent LangGraph orchestration graph
+- 11-agent LangGraph orchestration graph
 - FastAPI service with `/invoke` and `/stream`
 - Streamlit chat UI
 - Hybrid supervisor routing (`intent_router_agent`: rules first, LLM fallback for low-signal cases)
 - LlamaGuard moderation (`safety_agent`)
 - Web retrieval with recency preferences + relevance filtering
 - Local RAG with ChromaDB + hybrid retrieval (vector + BM25 + reranking), SQLite fallback
+- Knowledge graph reasoning agent (NetworkX) for relationship-style local queries
 - TTL caching for web search and local RAG retrieval
 - Optional Redis-backed caching (with in-memory fallback)
+- MCP tool bridge for `web_search` and `calculator` (with local fallback)
 - Dual-layer persistence:
   - LangGraph PostgreSQL checkpointer (graph state continuity)
   - Conversation Store (PostgreSQL with SQLite fallback)
 - Evaluation agent (heuristic quality audit)
+- Per-user authentication (user ID + password) with bearer tokens
 
-## Agent Architecture (10 Agents)
+## Agent Architecture (11 Agents)
 
 1. `safety_agent`
 2. `intent_router_agent`
@@ -26,10 +29,11 @@ A production-style multi-agent GenAI assistant built with LangGraph, FastAPI, St
 4. `query_rewriter_agent`
 5. `recency_guard_agent`
 6. `web_search_agent`
-7. `rag_agent`
-8. `math_agent`
-9. `response_agent`
-10. `evaluation_agent`
+7. `knowledge_graph_agent`
+8. `rag_agent`
+9. `math_agent`
+10. `response_agent`
+11. `evaluation_agent`
 
 ## Full Architecture Flow (Mermaid)
 
@@ -51,6 +55,7 @@ flowchart TD
 
     IR -->|math| MA[math_agent]
     IR -->|web| RG[recency_guard_agent]
+    IR -->|kg| KG[knowledge_graph_agent]
     IR -->|rag| RA[rag_agent]
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
@@ -58,6 +63,7 @@ flowchart TD
     RG --> WS[web_search_agent - web cache check]
     WS -->|web| RESP
     WS -->|hybrid| RA
+    KG --> RA
     RA[RAG agent - local RAG cache check] --> RESP
     MA --> RESP
 
@@ -75,29 +81,38 @@ flowchart TD
 
 - `clarification_agent` asks a follow-up question and ends the current run.
 - The next user message starts a new run and is routed again.
-- `local:` prefix forces routing to `rag_agent`.
+- `local:` prefix routes to `rag_agent` or `knowledge_graph_agent` for relationship questions.
 - `recency_guard_agent` applies recency as a preference (fallback to most recent relevant results).
-- Mermaid graph edges remain the same after hybrid-router / RAG reranking upgrades because those improvements happen inside `intent_router_agent` and `rag_agent` internals.
-- Cache checks happen inside `web_search_agent` and `rag_agent` retrieval functions (Redis/in-memory fallback), so graph topology still does not change.
+- Mermaid graph edges remain stable for retrieval internals; new relationship reasoning runs in `knowledge_graph_agent`.
+- Cache checks happen inside `web_search_agent`, `rag_agent`, and graph-rag retrieval functions (Redis/in-memory fallback).
 
 ## Project Structure (Key Files)
 
 - `agent/research_assistant.py` - LangGraph orchestration, agents, routing logic
 - `agent/tools.py` - web search + filtering logic
 - `agent/local_rag.py` - local RAG (ChromaDB + SQLite fallback)
+- `agent/graph_rag.py` - dedicated graph RAG Chroma retrieval store
+- `agent/knowledge_graph.py` - NetworkX relationship extraction over graph RAG evidence
 - `agent/llama_guard.py` - moderation logic
 - `service/service.py` - FastAPI service + endpoints + checkpointer/store wiring
 - `service/persistence_store.py` - conversation Store layer (Postgres/SQLite)
 - `streamlit_app.py` - Streamlit UI
-- `ingest_pdfs.py` - PDF ingestion to ChromaDB
-- `FLOW_CHART.md` / `flowchart.mmd` - flow diagram references
+- `scripts/ingestion/ingest_local_rag_pdfs.py` - PDF ingestion to local RAG ChromaDB
+- `scripts/ingestion/ingest_graph_rag_pdfs.py` - separate PDF ingestion for knowledge graph store
+- `scripts/ingestion/generate_synthetic_graph_pdfs.py` - synthetic graph PDFs for KG testing
+- `docs/architecture/agent_runtime_flow.md` - runtime flow explainer (human-readable)
+- `docs/architecture/agent_runtime_flow.mmd` - raw Mermaid source for the same flow
 
 ## Endpoints
 
+- `POST /auth/register` - register user and receive access token
+- `POST /auth/login` - login user and receive access token
 - `POST /invoke` - non-streaming chat response
 - `POST /stream` - streaming chat response
 - `GET /store/{thread_id}` - inspect persisted conversation records
 - `POST /feedback` - user feedback/rating
+
+When `ENABLE_USER_AUTH=true`, all non-auth endpoints require `Authorization: Bearer <access_token>`.
 
 ## Data & Persistence
 
@@ -119,6 +134,7 @@ flowchart TD
   - `checkpoint_blobs`
 - Conversation store table:
   - `conversation_store`
+  - `users`
 
 ## Routing Summary (Supervisor Logic)
 
@@ -130,7 +146,8 @@ flowchart TD
 
 Primary deterministic rules:
 
-- `local:` prefix -> `rag`
+- `local:` prefix -> `rag` (or `kg` when relation intent is detected)
+- relationship reasoning + local context -> `kg`
 - ambiguous (`help me`, `this`, `that`) -> `clarify`
 - vague but rewritable (`news`, `latest news`) -> `rewrite`
 - math-like query -> `math`
@@ -167,18 +184,20 @@ API_BASE_URL=http://localhost:8080
 # LangGraph checkpointer (PostgreSQL)
 POSTGRES_CHECKPOINT_URI=postgresql://postgres:password@localhost:5432/agentdb
 CHECKPOINT_FALLBACK_SQLITE=true
+CHECKPOINT_DB_PATH=data/checkpoints/checkpoints.db
 
 # Conversation Store (defaults to checkpoint URI if omitted)
 POSTGRES_STORE_URI=postgresql://postgres:password@localhost:5432/agentdb
 STORE_FALLBACK_SQLITE=true
-STORE_DB_PATH=store.db
+STORE_DB_PATH=data/store/store.db
 STORE_NAMESPACE=default
 
 # RAG / ChromaDB
 USE_CHROMA_RAG=true
-CHROMA_PERSIST_DIR=chroma_db
+CHROMA_PERSIST_DIR=data/chroma_db
 CHROMA_COLLECTION_NAME=local_pdf_docs
 RAG_PDF_DIR=rag_docs
+LOCAL_RAG_DB_PATH=data/rag/local_rag.db
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 RAG_CHUNK_SIZE=1000
 RAG_CHUNK_OVERLAP=150
@@ -194,6 +213,15 @@ RAG_RERANK_TOP_K=6
 RAG_RRF_K=60
 RAG_ENABLE_LLM_RERANKER=true
 
+# Graph RAG (separate store for knowledge_graph_agent)
+GRAPH_RAG_ENABLED=true
+GRAPH_RAG_PDF_DIR=graph_rag_docs
+GRAPH_CHROMA_PERSIST_DIR=data/graph_chroma_db
+GRAPH_CHROMA_COLLECTION_NAME=graph_pdf_docs
+GRAPH_RAG_CHUNK_SIZE=1000
+GRAPH_RAG_CHUNK_OVERLAP=150
+GRAPH_RAG_CACHE_TTL_SECONDS=600
+
 # Optional TTL caches (latency/cost optimization)
 WEB_CACHE_TTL_SECONDS=300
 RAG_CACHE_TTL_SECONDS=600
@@ -204,6 +232,21 @@ REDIS_URL=redis://localhost:6379/0
 
 # Optional API auth
 AUTH_SECRET=
+
+# Per-user auth (enabled by default)
+ENABLE_USER_AUTH=true
+USER_AUTH_SECRET=change_me_to_a_long_random_secret
+USER_AUTH_TOKEN_TTL_SECONDS=86400
+PASSWORD_HASH_ITERATIONS=210000
+
+# Optional MCP tools (web_search + calculator)
+MCP_TOOLS_ENABLED=true
+MCP_TOOL_SERVER_COMMAND=.venv\Scripts\python.exe
+MCP_TOOL_SERVER_SCRIPT=agent\mcp_tool_server.py
+MCP_TOOL_SERVER_ARGS=
+MCP_BRIDGE_COMMAND=.venv\Scripts\python.exe
+MCP_BRIDGE_SCRIPT=agent\mcp_bridge_client.py
+MCP_CALL_TIMEOUT_SECONDS=20
 ```
 
 ### 3. Install dependencies
@@ -218,11 +261,29 @@ pip install -r requirements.txt
 python run_service.py
 ```
 
+### 4b. MCP sidecar dependencies (only in `.venv`, not in `llm_env`)
+
+If your main runtime is `llm_env`, install MCP only in the separate `.venv` used by `MCP_BRIDGE_COMMAND` / `MCP_TOOL_SERVER_COMMAND`:
+
+```bash
+.venv\Scripts\python.exe -m pip install mcp==1.12.4
+```
+
+If `.venv\Scripts\python.exe` shows `No Python at ...`, recreate `.venv` first:
+
+```bash
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install mcp==1.12.4
+```
+
 ### 5. Run Streamlit UI (separate terminal)
 
 ```bash
 streamlit run streamlit_app.py
 ```
+
+On first launch, use the sidebar `Register` flow (user ID + password), then sign in.
 
 ## Optional: Ingest PDFs into ChromaDB
 
@@ -230,7 +291,7 @@ streamlit run streamlit_app.py
 2. Run:
 
 ```bash
-python ingest_pdfs.py --pdf-dir rag_docs --reset
+python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs --reset
 ```
 
 3. Ask a forced local query:
@@ -238,6 +299,27 @@ python ingest_pdfs.py --pdf-dir rag_docs --reset
 ```text
 local: summarize the uploaded pdfs
 ```
+
+## Optional: Ingest Graph PDFs (Separate KG Store)
+
+1. Put relationship-focused PDFs in `graph_rag_docs/`
+2. Run:
+
+```bash
+python scripts/ingestion/ingest_graph_rag_pdfs.py --pdf-dir graph_rag_docs --reset
+```
+
+3. Ask a relationship query:
+
+```text
+local: how is streamlit connected to fastapi in this project
+```
+
+### Ingestion Separation (Important)
+
+- `scripts/ingestion/ingest_local_rag_pdfs.py` updates **Local RAG** only (`rag_docs` -> `chroma_db`).
+- `scripts/ingestion/ingest_graph_rag_pdfs.py` updates **Graph RAG / KG** only (`graph_rag_docs` -> `graph_chroma_db`).
+- `knowledge_graph_agent` uses Graph RAG retrieval, then forwards to `rag_agent` for extra grounding before `response_agent`.
 
 ### Local RAG retrieval pipeline (current)
 
@@ -263,8 +345,20 @@ This improves local retrieval precision for paraphrases and keyword-heavy querie
   - if `REDIS_URL` is configured and reachable, web/RAG caches use Redis (`setex`)
   - if Redis is unavailable, system falls back to local in-memory TTL cache automatically
 - **UI cache visibility**
-  - the response footer shows cache usage only on cache hits (for example: `Cache: web via memory cache`)
-  - live retrievals do not add extra source text
+  - the response footer shows source path when available (for example: `Sources: web via mcp` or `Sources: web via memory cache`)
+  - live retrievals may omit source footer when no source metadata is present
+
+### MCP tools (current)
+
+- `web_search_agent` calls an MCP stdio tool server first for web search.
+- `math_agent` calls an MCP stdio calculator tool first.
+- Main app env (`llm_env`) does not need the `mcp` package anymore.
+- MCP client calls a sidecar bridge script (`agent/mcp_bridge_client.py`) using `MCP_BRIDGE_COMMAND`.
+- In `llm_env`, point both `MCP_BRIDGE_COMMAND` and `MCP_TOOL_SERVER_COMMAND` to a separate `.venv` Python where `mcp` is installed.
+- If MCP is disabled/unavailable, both agents automatically fall back to existing local logic.
+- Defaults:
+  - `MCP_TOOL_SERVER_SCRIPT` -> `agent/mcp_tool_server.py`
+  - `MCP_BRIDGE_SCRIPT` -> `agent/mcp_bridge_client.py`
 
 ## Verify Persistence
 

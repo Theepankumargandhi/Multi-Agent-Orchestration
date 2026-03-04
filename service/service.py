@@ -1,10 +1,14 @@
 import asyncio
+import base64
 from contextlib import AsyncExitStack, asynccontextmanager
+import hashlib
+import hmac
 import importlib
 import inspect
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import time
 from typing import AsyncGenerator, Dict, Any, Tuple
@@ -19,7 +23,16 @@ from langgraph.graph.graph import CompiledGraph
 from langsmith import Client as LangsmithClient
 
 from agent import research_assistant
-from schema import ChatMessage, Feedback, StreamInput, UserInput, model_dump_compat
+from schema import (
+    AuthLoginInput,
+    AuthRegisterInput,
+    AuthToken,
+    ChatMessage,
+    Feedback,
+    StreamInput,
+    UserInput,
+    model_dump_compat,
+)
 from service.persistence_store import open_conversation_store
 
 load_dotenv()
@@ -36,6 +49,20 @@ STORE_FALLBACK_SQLITE = os.getenv("STORE_FALLBACK_SQLITE", "true").strip().lower
     "0", "false", "no", "off"
 }
 STORE_NAMESPACE = os.getenv("STORE_NAMESPACE", "default")
+ENABLE_USER_AUTH = os.getenv("ENABLE_USER_AUTH", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+USER_AUTH_SECRET = (
+    os.getenv("USER_AUTH_SECRET")
+    or os.getenv("AUTH_SECRET")
+    or "dev-insecure-user-auth-secret-change-me"
+)
+USER_AUTH_TOKEN_TTL_SECONDS = int(os.getenv("USER_AUTH_TOKEN_TTL_SECONDS", "86400"))
+PASSWORD_HASH_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "210000"))
+_USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{3,64}$")
 
 
 def _rotate_incompatible_checkpoint_db(db_path: str) -> str:
@@ -235,6 +262,128 @@ def _is_checkpointer_signature_compat_error(exc: Exception) -> bool:
     return "new_versions" in msg and ("aput(" in msg or ".aput" in msg or "put(" in msg)
 
 
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def _sign_token(data: str) -> str:
+    mac = hmac.new(USER_AUTH_SECRET.encode("utf-8"), data.encode("utf-8"), hashlib.sha256).digest()
+    return _b64url_encode(mac)
+
+
+def _create_access_token(user_id: str) -> str:
+    now = int(time.time())
+    payload = {
+        "sub": user_id,
+        "iat": now,
+        "exp": now + max(60, USER_AUTH_TOKEN_TTL_SECONDS),
+    }
+    payload_raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_segment = _b64url_encode(payload_raw)
+    signature_segment = _sign_token(payload_segment)
+    return f"{payload_segment}.{signature_segment}"
+
+
+def _verify_access_token(token: str) -> str | None:
+    try:
+        payload_segment, signature_segment = token.split(".", 1)
+    except ValueError:
+        return None
+
+    expected = _sign_token(payload_segment)
+    if not hmac.compare_digest(signature_segment, expected):
+        return None
+
+    try:
+        payload = json.loads(_b64url_decode(payload_segment).decode("utf-8"))
+    except Exception:
+        return None
+
+    user_id = str(payload.get("sub") or "").strip()
+    exp = int(payload.get("exp") or 0)
+    if not user_id or exp <= int(time.time()):
+        return None
+    return user_id
+
+
+def _hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        max(100000, PASSWORD_HASH_ITERATIONS),
+    )
+    return (
+        "pbkdf2_sha256$"
+        f"{max(100000, PASSWORD_HASH_ITERATIONS)}$"
+        f"{_b64url_encode(salt)}$"
+        f"{_b64url_encode(digest)}"
+    )
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, iterations_raw, salt_b64, digest_b64 = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_raw)
+        salt = _b64url_decode(salt_b64)
+        expected = _b64url_decode(digest_b64)
+    except Exception:
+        return False
+
+    actual = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        max(100000, iterations),
+    )
+    return hmac.compare_digest(actual, expected)
+
+
+def _validate_user_credentials(user_id: str, password: str) -> tuple[str, str]:
+    clean_user_id = (user_id or "").strip()
+    clean_password = (password or "").strip()
+    if not _USER_ID_PATTERN.match(clean_user_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid user_id. Use 3-64 chars: letters, numbers, dot, underscore, or hyphen."
+            ),
+        )
+    if len(clean_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    return clean_user_id, clean_password
+
+
+def _is_public_route(path: str) -> bool:
+    public_paths = {
+        "/auth/register",
+        "/auth/login",
+        "/openapi.json",
+        "/docs",
+        "/redoc",
+    }
+    if path in public_paths:
+        return True
+    if path.startswith("/docs/"):
+        return True
+    return False
+
+
+def _get_request_user_id(request: Request) -> str:
+    user_id = getattr(request.state, "user_id", "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return str(user_id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
@@ -259,28 +408,94 @@ app = FastAPI(lifespan=lifespan)
 
 @app.middleware("http")
 async def check_auth_header(request: Request, call_next):
-    if auth_secret := os.getenv("AUTH_SECRET"):
-        auth_header = request.headers.get('Authorization') 
+    if _is_public_route(request.url.path):
+        return await call_next(request)
+
+    if ENABLE_USER_AUTH:
+        auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             return Response(status_code=401, content="Missing or invalid token")
-        if auth_header[7:] != auth_secret:
-            return Response(status_code=401, content="Invalid token")
+        token = auth_header[7:].strip()
+        user_id = _verify_access_token(token)
+        if not user_id:
+            return Response(status_code=401, content="Invalid or expired token")
+        request.state.user_id = user_id
+    else:
+        if auth_secret := os.getenv("AUTH_SECRET"):
+            auth_header = request.headers.get("Authorization")
+            if not auth_header or not auth_header.startswith("Bearer "):
+                return Response(status_code=401, content="Missing or invalid token")
+            if auth_header[7:] != auth_secret:
+                return Response(status_code=401, content="Invalid token")
     return await call_next(request)
 
-def _parse_input(user_input: UserInput) -> Tuple[Dict[str, Any], str]:
+
+@app.post("/auth/register")
+async def register(auth_input: AuthRegisterInput) -> AuthToken:
+    """
+    Register a new user and return a bearer token.
+    """
+    store = getattr(app.state, "store", None)
+    if store is None:
+        raise HTTPException(status_code=500, detail="Conversation store is not available.")
+
+    user_id, password = _validate_user_credentials(auth_input.user_id, auth_input.password)
+    password_hash = _hash_password(password)
+    created = await asyncio.to_thread(store.create_user, user_id, password_hash)
+    if not created:
+        raise HTTPException(status_code=409, detail="User already exists.")
+
+    token = _create_access_token(user_id)
+    return AuthToken(
+        access_token=token,
+        token_type="bearer",
+        user_id=user_id,
+        expires_in=max(60, USER_AUTH_TOKEN_TTL_SECONDS),
+    )
+
+
+@app.post("/auth/login")
+async def login(auth_input: AuthLoginInput) -> AuthToken:
+    """
+    Authenticate a user and return a bearer token.
+    """
+    store = getattr(app.state, "store", None)
+    if store is None:
+        raise HTTPException(status_code=500, detail="Conversation store is not available.")
+
+    user_id, password = _validate_user_credentials(auth_input.user_id, auth_input.password)
+    stored_hash = await asyncio.to_thread(store.get_user_password_hash, user_id)
+    if not stored_hash or not _verify_password(password, stored_hash):
+        raise HTTPException(status_code=401, detail="Invalid user_id or password.")
+
+    token = _create_access_token(user_id)
+    return AuthToken(
+        access_token=token,
+        token_type="bearer",
+        user_id=user_id,
+        expires_in=max(60, USER_AUTH_TOKEN_TTL_SECONDS),
+    )
+
+
+def _parse_input(user_input: UserInput, user_id: str | None = None) -> Tuple[Dict[str, Any], str]:
     run_id = uuid4()
     thread_id = user_input.thread_id or str(uuid4())
     input_message = ChatMessage(type="human", content=user_input.message)
+    checkpoint_ns = CHECKPOINT_NAMESPACE
+    clean_user_id = (user_id or "").strip()
+    if clean_user_id:
+        checkpoint_ns = f"{CHECKPOINT_NAMESPACE}:{clean_user_id}"
     kwargs = dict(
         input={"messages": [input_message.to_langchain()]},
         config=RunnableConfig(
             configurable={
                 "thread_id": thread_id,
-                "checkpoint_ns": CHECKPOINT_NAMESPACE,
+                "checkpoint_ns": checkpoint_ns,
                 # Postgres checkpoint_writes can enforce NOT NULL checkpoint_id.
                 # Use run_id to guarantee a stable non-null identifier per run.
                 "checkpoint_id": str(run_id),
                 "model": user_input.model,
+                "user_id": clean_user_id,
             },
             run_id=run_id,
         ),
@@ -290,6 +505,7 @@ def _parse_input(user_input: UserInput) -> Tuple[Dict[str, Any], str]:
 
 async def _store_message_safely(
     app: FastAPI,
+    user_id: str | None,
     thread_id: str,
     run_id: str,
     role: str,
@@ -302,6 +518,7 @@ async def _store_message_safely(
     try:
         await asyncio.to_thread(
             store.save_message,
+            user_id,
             thread_id,
             str(run_id),
             role,
@@ -312,7 +529,7 @@ async def _store_message_safely(
         print(f"[service] store write failed ({role}): {e}")
 
 @app.post("/invoke")
-async def invoke(user_input: UserInput) -> ChatMessage:
+async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
     """
     Invoke the agent with user input to retrieve a final response.
     
@@ -320,10 +537,12 @@ async def invoke(user_input: UserInput) -> ChatMessage:
     is also attached to messages for recording feedback.
     """
     agent: CompiledGraph = app.state.agent
-    kwargs, run_id = _parse_input(user_input)
+    user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+    kwargs, run_id = _parse_input(user_input, user_id=user_id)
     thread_id = kwargs["config"]["configurable"]["thread_id"]
     await _store_message_safely(
         app,
+        user_id=user_id,
         thread_id=thread_id,
         run_id=str(run_id),
         role="human",
@@ -345,6 +564,7 @@ async def invoke(user_input: UserInput) -> ChatMessage:
         output.run_id = str(run_id)
         await _store_message_safely(
             app,
+            user_id=user_id,
             thread_id=thread_id,
             run_id=str(run_id),
             role="ai",
@@ -359,17 +579,21 @@ async def invoke(user_input: UserInput) -> ChatMessage:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def message_generator(user_input: StreamInput) -> AsyncGenerator[str, None]:
+async def message_generator(
+    user_input: StreamInput,
+    user_id: str | None = None,
+) -> AsyncGenerator[str, None]:
     """
     Generate a stream of messages from the agent.
 
     This is the workhorse method for the /stream endpoint.
     """
     agent: CompiledGraph = app.state.agent
-    kwargs, run_id = _parse_input(user_input)
+    kwargs, run_id = _parse_input(user_input, user_id=user_id)
     thread_id = kwargs["config"]["configurable"]["thread_id"]
     await _store_message_safely(
         app,
+        user_id=user_id,
         thread_id=thread_id,
         run_id=str(run_id),
         role="human",
@@ -443,6 +667,7 @@ async def message_generator(user_input: StreamInput) -> AsyncGenerator[str, None
                 stored_message_fingerprints.add(fingerprint)
                 await _store_message_safely(
                     app,
+                    user_id=user_id,
                     thread_id=thread_id,
                     run_id=str(run_id),
                     role="ai",
@@ -455,33 +680,45 @@ async def message_generator(user_input: StreamInput) -> AsyncGenerator[str, None
     yield "data: [DONE]\n\n"
 
 @app.post("/stream")
-async def stream_agent(user_input: StreamInput):
+async def stream_agent(user_input: StreamInput, request: Request):
     """
     Stream the agent's response to a user input, including intermediate messages and tokens.
     
     Use thread_id to persist and continue a multi-turn conversation. run_id kwarg
     is also attached to all messages for recording feedback.
     """
-    return StreamingResponse(message_generator(user_input), media_type="text/event-stream")
+    user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+    return StreamingResponse(
+        message_generator(user_input, user_id=user_id),
+        media_type="text/event-stream",
+    )
 
 
 @app.get("/store/{thread_id}")
-async def get_thread_store(thread_id: str, limit: int = 50):
+async def get_thread_store(thread_id: str, request: Request, limit: int = 50):
     """
     Retrieve persisted conversation records from the conversation Store for a thread.
     """
     store = getattr(app.state, "store", None)
     backend = getattr(app.state, "store_backend", None)
+    user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
     if store is None:
-        return {"thread_id": thread_id, "backend": None, "count": 0, "messages": []}
+        return {
+            "thread_id": thread_id,
+            "user_id": user_id or "",
+            "backend": None,
+            "count": 0,
+            "messages": [],
+        }
 
     try:
-        messages = await asyncio.to_thread(store.list_messages, thread_id, limit)
+        messages = await asyncio.to_thread(store.list_messages, thread_id, limit, user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     return {
         "thread_id": thread_id,
+        "user_id": user_id or "",
         "backend": backend,
         "count": len(messages),
         "messages": messages,

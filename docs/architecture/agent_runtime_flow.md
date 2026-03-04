@@ -1,4 +1,9 @@
-# Agent Input-to-Output Flow
+# Agent Runtime Flow
+
+## File Purpose
+
+- Human-readable architecture explanation for the runtime execution flow.
+- Best for onboarding and quick understanding of how requests move across agents.
 
 This flowchart matches the current codebase behavior (`agent/research_assistant.py`, `service/service.py`, `streamlit_app.py`).
 
@@ -20,6 +25,7 @@ flowchart TD
 
     IR -->|math| MA[math_agent]
     IR -->|web| RG[recency_guard_agent]
+    IR -->|kg| KG[knowledge_graph_agent]
     IR -->|rag| RA[rag_agent]
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
@@ -27,6 +33,7 @@ flowchart TD
     RG --> WS[web_search_agent - web cache check]
     WS -->|web| RESP
     WS -->|hybrid| RA
+    KG --> RA
     RA[RAG agent - local RAG cache check] --> RESP
     MA --> RESP
 
@@ -44,6 +51,8 @@ flowchart TD
 
 - `clarification_agent` does not continue to `response_agent` in the same run.
 - Clarified user reply comes as a new turn and is routed again by `intent_router_agent`.
-- `local:` prefix forces the RAG route.
-- Web/RAG cache checks happen inside `web_search_agent` / `rag_agent` internals (Redis or in-memory fallback).
-- UI shows a cache footer only on cache hits (e.g., `Cache: web via memory cache`).
+- `local:` prefix routes to `rag` or `kg` depending on relationship intent.
+- `knowledge_graph_agent` reads from dedicated Graph RAG ingestion (`graph_rag_docs` -> `graph_chroma_db`).
+- `rag_agent` reads from local RAG ingestion (`rag_docs` -> `chroma_db`).
+- Web/RAG/Graph-RAG cache checks happen inside retrieval internals (Redis or in-memory fallback).
+- UI can show source-path footer metadata (for example: `Sources: web via mcp` or cache backend labels).

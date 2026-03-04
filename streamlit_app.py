@@ -25,6 +25,12 @@ APP_TITLE = "Research Assistant"
 APP_ICON = "🔎"
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
+USER_AUTH_ENABLED = os.getenv("ENABLE_USER_AUTH", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 @st.cache_resource
 def get_agent_client():
@@ -73,6 +79,15 @@ async def main():
         st.code("OPENAI_API_KEY=your_key_here\nGROQ_API_KEY=your_key_here")
         st.stop()
 
+    agent_client = get_agent_client()
+    if USER_AUTH_ENABLED:
+        if "auth_user_id" not in st.session_state:
+            st.session_state.auth_user_id = ""
+        if "auth_token" not in st.session_state:
+            st.session_state.auth_token = ""
+        if st.session_state.auth_token:
+            agent_client.set_access_token(st.session_state.auth_token)
+
     ctx = get_script_run_ctx()
     thread_id = getattr(ctx, "session_id", None) if ctx else None
     if not thread_id:
@@ -85,6 +100,46 @@ async def main():
     # Config options
     with st.sidebar:
         st.header(f"{APP_ICON} {APP_TITLE}")
+        if USER_AUTH_ENABLED:
+            st.subheader("Account")
+            if st.session_state.auth_user_id:
+                st.success(f"Signed in: `{st.session_state.auth_user_id}`")
+                if st.button("Logout"):
+                    st.session_state.auth_user_id = ""
+                    st.session_state.auth_token = ""
+                    st.session_state.messages = []
+                    if "thread_id" in st.session_state:
+                        del st.session_state.thread_id
+                    agent_client.set_access_token(None)
+                    st.rerun()
+            else:
+                auth_mode = st.radio(
+                    "Authentication",
+                    options=["Login", "Register"],
+                    horizontal=True,
+                )
+                auth_user_id = st.text_input("User ID", key="auth_user_id_input")
+                auth_password = st.text_input("Password", type="password", key="auth_password_input")
+                if st.button("Continue"):
+                    try:
+                        if auth_mode == "Register":
+                            auth = await agent_client.aregister(auth_user_id, auth_password)
+                        else:
+                            auth = await agent_client.alogin(auth_user_id, auth_password)
+                        st.session_state.auth_user_id = auth.user_id
+                        st.session_state.auth_token = auth.access_token
+                        agent_client.set_access_token(auth.access_token)
+                        st.session_state.messages = []
+                        st.session_state.thread_id = str(uuid4())
+                        st.success("Authentication successful.")
+                        await asyncio.sleep(0.1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Authentication failed: {e}")
+
+            if not st.session_state.auth_user_id:
+                st.info("Login or register to start chatting.")
+
         st.caption("Thread ID (for /store/{thread_id})")
         st.code(thread_id)
         with st.popover(":material/settings: Settings"):
@@ -93,6 +148,9 @@ async def main():
             use_streaming = st.toggle("Stream results", value=True)
         with st.popover(":material/policy: Privacy"):
             st.write("Prompts, responses and feedback in this app are anonymously recorded and saved to LangSmith for product evaluation and improvement purposes only.")
+
+    if USER_AUTH_ENABLED and not st.session_state.auth_user_id:
+        st.stop()
 
     # Draw existing messages
     if "messages" not in st.session_state:
@@ -113,7 +171,6 @@ async def main():
     if input := st.chat_input():
         messages.append(ChatMessage(type="human", content=input))
         st.chat_message("human").write(input)
-        agent_client = get_agent_client()
         try:
             if use_streaming:
                 stream = agent_client.astream(
@@ -278,6 +335,8 @@ async def handle_feedback():
         normalized_score = (feedback + 1) / 5.0
 
         agent_client = get_agent_client()
+        if st.session_state.get("auth_token"):
+            agent_client.set_access_token(st.session_state.auth_token)
         await agent_client.acreate_feedback(
             run_id=latest_run_id,
             key="human-feedback-stars",

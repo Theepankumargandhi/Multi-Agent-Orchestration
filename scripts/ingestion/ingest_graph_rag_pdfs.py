@@ -1,20 +1,27 @@
 import argparse
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
-from agent.local_rag import ingest_pdfs_to_chroma
+# Ensure project root is importable when running this script directly.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from agent.graph_rag import ingest_pdfs_to_graph_chroma
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ingest local PDFs into ChromaDB for RAG.")
+    parser = argparse.ArgumentParser(description="Ingest graph PDFs into dedicated ChromaDB for KG.")
     parser.add_argument(
         "--pdf-dir",
-        default="rag_docs",
-        help="Directory containing PDF files (searched recursively).",
+        default="graph_rag_docs",
+        help="Directory containing graph PDF files (searched recursively).",
     )
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="Delete existing ChromaDB data before ingesting.",
+        help="Delete existing graph ChromaDB data before ingesting.",
     )
     parser.add_argument(
         "--chunk-size",
@@ -31,7 +38,7 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv()
-    summary = ingest_pdfs_to_chroma(
+    summary = ingest_pdfs_to_graph_chroma(
         pdf_dir=args.pdf_dir,
         reset=args.reset,
         chunk_size=args.chunk_size,

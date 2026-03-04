@@ -12,7 +12,9 @@ from langgraph.graph import END, StateGraph, MessagesState
 
 from agent.tools import perform_web_search
 from agent.local_rag import init_local_knowledge_store, search_local_knowledge
+from agent.knowledge_graph import query_knowledge_graph
 from agent.llama_guard import llama_guard, LlamaGuardOutput, SafetyAssessment
+from agent.mcp_client import mcp_web_search, mcp_calculator
 
 
 class AgentState(MessagesState):
@@ -31,6 +33,8 @@ class AgentState(MessagesState):
     web_source_meta: str
     rag_notes: str
     rag_source_meta: str
+    kg_notes: str
+    kg_source_meta: str
     math_result: str
     final_response: str
     answer_source_meta: str
@@ -38,7 +42,7 @@ class AgentState(MessagesState):
     evaluation_report: str
 
 
-# 10 specialized agents in this orchestration graph.
+# 11 specialized agents in this orchestration graph.
 SPECIALIZED_AGENTS = [
     "safety_agent",
     "intent_router_agent",
@@ -46,6 +50,7 @@ SPECIALIZED_AGENTS = [
     "query_rewriter_agent",
     "recency_guard_agent",
     "web_search_agent",
+    "knowledge_graph_agent",
     "rag_agent",
     "math_agent",
     "response_agent",
@@ -75,6 +80,7 @@ Rules:
 - Be concise, correct, and helpful.
 - If web evidence is used, include 1-3 markdown citations.
 - If local RAG evidence is used, reference the local source labels.
+- If knowledge-graph evidence is used, explain the relationship path clearly.
 - For math results, show human-readable equations (e.g., 300 * 200).
 """.strip()
 
@@ -135,6 +141,27 @@ def _extract_expression(query: str) -> str:
     cleaned = re.sub(r"[^0-9\+\-\*/\(\)\.\s\^]", " ", query or "")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def _looks_like_relation_query(query: str) -> bool:
+    q = (query or "").lower()
+    relation_hints = [
+        "relationship",
+        "related",
+        "relation",
+        "connect",
+        "connected",
+        "connection",
+        "dependency",
+        "depends on",
+        "impact of",
+        "influence",
+        "how does",
+        "how is",
+        "difference between",
+        "compare",
+    ]
+    return any(hint in q for hint in relation_hints)
 
 
 def _has_any_phrase(text: str, phrases: list[str]) -> bool:
@@ -269,7 +296,7 @@ def _parse_route_classifier_output(text: str) -> tuple[str, float, str]:
         elif lower.startswith("reason:"):
             reason = line.split(":", 1)[1].strip()
 
-    valid_routes = {"clarify", "rewrite", "math", "web", "rag", "hybrid", "general"}
+    valid_routes = {"clarify", "rewrite", "math", "web", "rag", "kg", "hybrid", "general"}
     if route not in valid_routes:
         route = "general"
     confidence = max(0.0, min(1.0, confidence))
@@ -279,13 +306,14 @@ def _parse_route_classifier_output(text: str) -> tuple[str, float, str]:
 async def _llm_route_classify(query: str, config: RunnableConfig) -> tuple[str, float, str]:
     system = (
         "You classify user queries into one route for a multi-agent system.\n"
-        "Allowed routes: clarify, rewrite, math, web, rag, hybrid, general.\n"
+        "Allowed routes: clarify, rewrite, math, web, rag, kg, hybrid, general.\n"
         "Definitions:\n"
         "- clarify: user intent is ambiguous and requires follow-up.\n"
         "- rewrite: vague but inferable and can be rewritten (e.g., 'news update').\n"
         "- math: arithmetic/calculation/equation solving.\n"
         "- web: latest/current/news/search intent from the web.\n"
         "- rag: local project/docs/codebase/local knowledge intent.\n"
+        "- kg: relationship reasoning over local knowledge (entity-to-entity links).\n"
         "- hybrid: needs both web and local/project context.\n"
         "- general: regular non-time-sensitive Q&A/chat.\n"
         "Return exactly 3 lines:\n"
@@ -315,6 +343,8 @@ def _build_execution_flow(state: AgentState) -> list[str]:
             flow.extend(["clarification_agent", "evaluation_agent"])
         case "web":
             flow.extend(["recency_guard_agent", "web_search_agent", "response_agent", "evaluation_agent"])
+        case "kg":
+            flow.extend(["knowledge_graph_agent", "rag_agent", "response_agent", "evaluation_agent"])
         case "hybrid":
             flow.extend(["recency_guard_agent", "web_search_agent", "rag_agent", "response_agent", "evaluation_agent"])
         case "rag":
@@ -344,13 +374,14 @@ def _finalize_user_output(text: str, state: AgentState) -> str:
         f"_Agents used: {unique_agents}_\n"
         f"_Flow: {flow_line}_"
     )
-    cache_bits: list[str] = []
-    for key in ("web_source_meta", "rag_source_meta"):
+    source_bits: list[str] = []
+    for key in ("web_source_meta", "rag_source_meta", "kg_source_meta", "answer_source_meta"):
         val = (state.get(key) or "").strip()
-        if "cache" in val.lower():
-            cache_bits.append(val)
-    if cache_bits:
-        meta += "\n" + f"_Cache: {' | '.join(cache_bits)}_"
+        lower = val.lower()
+        if "cache" in lower or "mcp" in lower or "kg" in lower:
+            source_bits.append(val)
+    if source_bits:
+        meta += "\n" + f"_Sources: {' | '.join(source_bits)}_"
     return f"{clean}\n\n{meta}"
 
 
@@ -369,6 +400,8 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "recency_notes": "",
         "web_source_meta": "",
         "rag_source_meta": "",
+        "kg_notes": "",
+        "kg_source_meta": "",
         "evaluation_score": 0,
         "evaluation_report": "",
         "answer_source_meta": "",
@@ -390,6 +423,19 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
         "service endpoint", "streamlit", "fastapi", "langgraph",
         "agent-service-toolkit", "local database", "rag",
     ]
+    relation_hints = [
+        "relationship",
+        "related",
+        "relation",
+        "connect",
+        "connected",
+        "dependency",
+        "depends on",
+        "compare",
+        "difference between",
+        "how does",
+        "how is",
+    ]
 
     route = "general"
     route_confidence = 0.6
@@ -397,7 +443,13 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
     low_signal = False
 
     if forced_local:
-        route = "rag" if _strip_local_prefix(query) else "clarify"
+        stripped = _strip_local_prefix(query)
+        if not stripped:
+            route = "clarify"
+        elif _looks_like_relation_query(stripped) or _has_any_phrase(stripped.lower(), relation_hints):
+            route = "kg"
+        else:
+            route = "rag"
         route_confidence = 1.0
         route_reason = "Forced local prefix."
     elif not rewrite_done and _needs_clarification(query):
@@ -416,6 +468,14 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
         route = "math"
         route_confidence = 0.98
         route_reason = "Math symbols/keywords detected."
+    elif _looks_like_relation_query(query) and _has_any_phrase(q, rag_hints):
+        route = "kg"
+        route_confidence = 0.9
+        route_reason = "Relation reasoning request over local/project context."
+    elif _has_any_phrase(q, relation_hints) and _has_any_phrase(q, rag_hints):
+        route = "kg"
+        route_confidence = 0.88
+        route_reason = "Relationship intent with local context hints detected."
     elif _has_any_phrase(q, web_hints) and _has_any_phrase(q, rag_hints):
         route = "hybrid"
         route_confidence = 0.9
@@ -533,6 +593,8 @@ def _next_node_from_route(state: AgentState) -> str:
             return "math_agent"
         case "web":
             return "recency_guard_agent"
+        case "kg":
+            return "knowledge_graph_agent"
         case "rag":
             return "rag_agent"
         case "hybrid":
@@ -592,6 +654,15 @@ async def web_search_agent(state: AgentState, config: RunnableConfig):
     if route not in {"web", "hybrid"}:
         return {"web_notes": "Not required for this route.", "web_source_meta": ""}
 
+    mcp_notes, _mcp_error = await mcp_web_search(
+        query=query,
+        max_results=5,
+        recency_days=recency_days if recency_days > 0 else None,
+        relevance_query=relevance_query,
+    )
+    if mcp_notes:
+        return {"web_notes": mcp_notes, "web_source_meta": "web via mcp"}
+
     try:
         web_result = perform_web_search(
             query,
@@ -620,10 +691,38 @@ async def web_search_agent(state: AgentState, config: RunnableConfig):
     return {"web_notes": web_notes, "web_source_meta": web_meta_label}
 
 
+async def knowledge_graph_agent(state: AgentState, config: RunnableConfig):
+    query = _strip_local_prefix(_active_query(state))
+    route = state.get("route", "general")
+    if route != "kg":
+        return {"kg_notes": "Not required for this route.", "kg_source_meta": ""}
+
+    try:
+        kg_result = query_knowledge_graph(query=query, limit=4, return_meta=True)
+        kg_meta_label = "kg via local graph"
+        if isinstance(kg_result, tuple):
+            kg_notes, kg_meta = kg_result
+            rag_meta = kg_meta.get("rag_meta", {}) if isinstance(kg_meta, dict) else {}
+            cache_hit = bool(rag_meta.get("cache_hit"))
+            cache_backend = str(rag_meta.get("cache_backend") or "")
+            if cache_hit and cache_backend:
+                kg_meta_label = f"kg via {cache_backend} cache"
+        else:
+            kg_notes = str(kg_result)
+    except Exception as e:
+        kg_notes = f"Knowledge graph retrieval failed: {e}"
+        kg_meta_label = ""
+
+    return {
+        "kg_notes": kg_notes,
+        "kg_source_meta": kg_meta_label,
+    }
+
+
 async def rag_agent(state: AgentState, config: RunnableConfig):
     query = _strip_local_prefix(_active_query(state))
     route = state.get("route", "general")
-    if route not in {"rag", "hybrid"}:
+    if route not in {"rag", "hybrid", "kg"}:
         return {"rag_notes": "Not required for this route.", "rag_source_meta": ""}
 
     try:
@@ -656,24 +755,36 @@ async def math_agent(state: AgentState, config: RunnableConfig):
     if not expr:
         return {"math_result": "Could not extract a valid math expression."}
 
+    mcp_value, mcp_error = await mcp_calculator(expr)
+    if mcp_value is not None and mcp_value != "":
+        return {"math_result": f"{expr} = {mcp_value}", "answer_source_meta": "calculator via mcp"}
+
     try:
         value = numexpr.evaluate(expr, global_dict={}, local_dict={"pi": 3.141592653589793, "e": 2.718281828459045})
         math_result = f"{expr} = {str(value).strip('[]')}"
     except Exception as e:
         math_result = f"Math evaluation failed for '{expr}': {e}"
-    return {"math_result": math_result}
+        if mcp_error:
+            math_result += f" (MCP error: {mcp_error})"
+    return {"math_result": math_result, "answer_source_meta": "calculator via local"}
 
 
 async def response_agent(state: AgentState, config: RunnableConfig):
     safety: LlamaGuardOutput = state.get("safety")
+    preserved_source_meta = (state.get("answer_source_meta") or "").strip()
     if safety and safety.safety_assessment == SafetyAssessment.UNSAFE:
         unsafe = ", ".join(safety.unsafe_categories) if safety.unsafe_categories else "unsafe content"
         final = f"I cannot help with that request because it may involve unsafe content ({unsafe})."
         final = _finalize_user_output(final, state)
-        return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
+        return {
+            "final_response": final,
+            "messages": [AIMessage(content=final)],
+            "answer_source_meta": preserved_source_meta,
+        }
 
     route = (state.get("route") or "").lower()
     web_notes = state.get("web_notes", "")
+    kg_notes = state.get("kg_notes", "")
     rewritten_query = (state.get("rewritten_query") or "").strip()
     recency_notes = (state.get("recency_notes") or "").strip()
     original_query = (state.get("query") or "").strip()
@@ -686,7 +797,11 @@ async def response_agent(state: AgentState, config: RunnableConfig):
                 "'AI startup funding news this week')."
             )
             final = _finalize_user_output(final, state)
-            return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
+            return {
+                "final_response": final,
+                "messages": [AIMessage(content=final)],
+                "answer_source_meta": preserved_source_meta,
+            }
         if "no dated results within last" in web_notes or "no results within last" in web_notes:
             final = (
                 "I could not find enough reliably dated sources inside your requested time window.\n\n"
@@ -694,14 +809,22 @@ async def response_agent(state: AgentState, config: RunnableConfig):
                 "Try broadening the time range (for example: 'this month') or adjusting the topic keywords."
             )
             final = _finalize_user_output(final, state)
-            return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
+            return {
+                "final_response": final,
+                "messages": [AIMessage(content=final)],
+                "answer_source_meta": preserved_source_meta,
+            }
         final = (
             "I could not complete live web retrieval for this request.\n\n"
             f"Technical detail: {web_notes}\n\n"
             "Please retry in a moment, or ask for a non-live summary."
         )
         final = _finalize_user_output(final, state)
-        return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
+        return {
+            "final_response": final,
+            "messages": [AIMessage(content=final)],
+            "answer_source_meta": preserved_source_meta,
+        }
 
     if route in {"web", "hybrid"}:
         entries = _parse_web_notes_entries(web_notes)
@@ -723,14 +846,22 @@ async def response_agent(state: AgentState, config: RunnableConfig):
                 if snippet:
                     lines.append(f"   - {snippet}")
             final = _finalize_user_output("\n".join(lines), state)
-            return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
+            return {
+                "final_response": final,
+                "messages": [AIMessage(content=final)],
+                "answer_source_meta": preserved_source_meta,
+            }
         final = (
             "I couldn't produce a source-linked web answer for that request.\n\n"
             "Please retry, or ask with a narrower scope (for example: "
             "'latest AI startup funding news this week')."
         )
         final = _finalize_user_output(final, state)
-        return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
+        return {
+            "final_response": final,
+            "messages": [AIMessage(content=final)],
+            "answer_source_meta": preserved_source_meta,
+        }
 
     final = await _call_llm(
         base_instructions,
@@ -740,13 +871,18 @@ async def response_agent(state: AgentState, config: RunnableConfig):
             f"Recency notes: {recency_notes}\n\n"
             f"Route:\n{state.get('route', '')}\n\n"
             f"Web evidence:\n{web_notes}\n\n"
+            f"Knowledge graph evidence:\n{kg_notes}\n\n"
             f"Local RAG evidence:\n{state.get('rag_notes', '')}\n\n"
             f"Math result:\n{state.get('math_result', '')}\n"
         ),
         config,
     )
     final = _finalize_user_output(final, state)
-    return {"final_response": final, "messages": [AIMessage(content=final)], "answer_source_meta": ""}
+    return {
+        "final_response": final,
+        "messages": [AIMessage(content=final)],
+        "answer_source_meta": preserved_source_meta,
+    }
 
 
 def _count_markdown_links(text: str) -> int:
@@ -758,6 +894,7 @@ def _evaluate_response_quality(state: AgentState) -> tuple[int, str]:
     final_response = (state.get("final_response") or "").strip()
     web_notes = (state.get("web_notes") or "").strip()
     rag_notes = (state.get("rag_notes") or "").strip()
+    kg_notes = (state.get("kg_notes") or "").strip()
     math_result = (state.get("math_result") or "").strip()
     safety: LlamaGuardOutput | None = state.get("safety")
 
@@ -804,6 +941,14 @@ def _evaluate_response_quality(state: AgentState) -> tuple[int, str]:
             score -= 6
             checks.append("rag_retrieval_missing_or_failed:-6")
 
+    if route == "kg":
+        if kg_notes and "failed" not in kg_notes.lower() and "not required" not in kg_notes.lower():
+            score += 10
+            checks.append("kg_retrieval_ok:+10")
+        else:
+            score -= 6
+            checks.append("kg_retrieval_missing_or_failed:-6")
+
     if route == "math":
         if math_result and "failed" not in math_result.lower():
             score += 12
@@ -845,7 +990,7 @@ async def evaluation_agent(state: AgentState, config: RunnableConfig):
 # Initialize the local knowledge store once on startup.
 init_local_knowledge_store()
 
-# Define the 10-agent orchestration graph.
+# Define the 11-agent orchestration graph.
 agent = StateGraph(AgentState)
 agent.add_node("safety_agent", safety_agent)
 agent.add_node("intent_router_agent", intent_router_agent)
@@ -853,6 +998,7 @@ agent.add_node("clarification_agent", clarification_agent)
 agent.add_node("query_rewriter_agent", query_rewriter_agent)
 agent.add_node("recency_guard_agent", recency_guard_agent)
 agent.add_node("web_search_agent", web_search_agent)
+agent.add_node("knowledge_graph_agent", knowledge_graph_agent)
 agent.add_node("rag_agent", rag_agent)
 agent.add_node("math_agent", math_agent)
 agent.add_node("response_agent", response_agent)
@@ -865,6 +1011,7 @@ agent.add_conditional_edges(
     _next_node_from_route,
     {
         "recency_guard_agent": "recency_guard_agent",
+        "knowledge_graph_agent": "knowledge_graph_agent",
         "rag_agent": "rag_agent",
         "math_agent": "math_agent",
         "clarification_agent": "clarification_agent",
@@ -883,6 +1030,7 @@ agent.add_conditional_edges(
         "response_agent": "response_agent",
     },
 )
+agent.add_edge("knowledge_graph_agent", "rag_agent")
 agent.add_edge("rag_agent", "response_agent")
 agent.add_edge("math_agent", "response_agent")
 agent.add_edge("response_agent", "evaluation_agent")

@@ -4,6 +4,9 @@ import os
 from typing import AsyncGenerator, Dict, Any, Generator
 import requests
 from schema import (
+    AuthLoginInput,
+    AuthRegisterInput,
+    AuthToken,
     ChatMessage,
     Feedback,
     StreamInput,
@@ -27,13 +30,75 @@ class AgentClient:
         """
         self.base_url = base_url
         self.auth_secret = os.getenv("AUTH_SECRET")
+        self.access_token: str | None = None
+
+    def set_access_token(self, token: str | None) -> None:
+        self.access_token = (token or "").strip() or None
 
     @property
     def _headers(self):
         headers = {}
-        if self.auth_secret:
+        if self.access_token:
+            headers["Authorization"] = f"Bearer {self.access_token}"
+        elif self.auth_secret:
             headers["Authorization"] = f"Bearer {self.auth_secret}"
         return headers
+
+    async def aregister(self, user_id: str, password: str) -> AuthToken:
+        async with aiohttp.ClientSession() as session:
+            request = AuthRegisterInput(user_id=user_id, password=password)
+            async with session.post(
+                f"{self.base_url}/auth/register",
+                json=model_dump_compat(request),
+                headers=self._headers,
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                payload = await response.json()
+                auth = model_validate_compat(AuthToken, payload)
+                self.set_access_token(auth.access_token)
+                return auth
+
+    def register(self, user_id: str, password: str) -> AuthToken:
+        request = AuthRegisterInput(user_id=user_id, password=password)
+        response = requests.post(
+            f"{self.base_url}/auth/register",
+            json=model_dump_compat(request),
+            headers=self._headers,
+        )
+        if response.status_code != 200:
+            raise Exception(f"Error: {response.status_code} - {response.text}")
+        auth = model_validate_compat(AuthToken, response.json())
+        self.set_access_token(auth.access_token)
+        return auth
+
+    async def alogin(self, user_id: str, password: str) -> AuthToken:
+        async with aiohttp.ClientSession() as session:
+            request = AuthLoginInput(user_id=user_id, password=password)
+            async with session.post(
+                f"{self.base_url}/auth/login",
+                json=model_dump_compat(request),
+                headers=self._headers,
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                payload = await response.json()
+                auth = model_validate_compat(AuthToken, payload)
+                self.set_access_token(auth.access_token)
+                return auth
+
+    def login(self, user_id: str, password: str) -> AuthToken:
+        request = AuthLoginInput(user_id=user_id, password=password)
+        response = requests.post(
+            f"{self.base_url}/auth/login",
+            json=model_dump_compat(request),
+            headers=self._headers,
+        )
+        if response.status_code != 200:
+            raise Exception(f"Error: {response.status_code} - {response.text}")
+        auth = model_validate_compat(AuthToken, response.json())
+        self.set_access_token(auth.access_token)
+        return auth
 
     async def ainvoke(self, message: str, model: str|None = None, thread_id: str|None = None) -> ChatMessage:
         """
