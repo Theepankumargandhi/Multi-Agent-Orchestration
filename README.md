@@ -92,7 +92,7 @@ flowchart TD
     STOREA --> RET[Return JSON or SSE]
     RET --> UI[Render in Streamlit]
 
-    API --> OPS[/healthz /readyz /metrics]
+    API --> OPS["/healthz | /readyz | /metrics"]
     OPS --> PROM[Prometheus scrape]
     PROM --> GRAF[Grafana dashboards]
 
