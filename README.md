@@ -53,7 +53,10 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 
 ## Full Architecture Flow (Mermaid)
 
+### 1) Runtime Agent Flow
+
 ```mermaid
+%%{init: {"flowchart":{"nodeSpacing":45,"rankSpacing":65},"themeVariables":{"fontSize":"16px"}}}%%
 flowchart TD
     U[User input in Streamlit] --> ST[streamlit_app.py]
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
@@ -95,16 +98,23 @@ flowchart TD
     API --> OPS["/healthz | /readyz | /metrics"]
     OPS --> PROM[Prometheus scrape]
     PROM --> GRAF[Grafana dashboards]
+```
 
-    subgraph K8S[Optional Local Kubernetes Deployment]
-      KAGENT[agent-service Deployment + Service]
+### 2) Optional Local Kubernetes Deployment
+
+```mermaid
+%%{init: {"flowchart":{"nodeSpacing":40,"rankSpacing":55},"themeVariables":{"fontSize":"16px"}}}%%
+flowchart LR
+    subgraph K8S["Optional Local Kubernetes Deployment"]
+      direction LR
       KUI[streamlit-app Deployment + Service]
+      KAGENT[agent-service Deployment + Service]
       KPROM[prometheus Deployment + Service]
       KGRAF[grafana Deployment + Service]
     end
+    KUI --> KAGENT
     KAGENT --> KPROM
     KPROM --> KGRAF
-    KUI --> KAGENT
 ```
 
 ### Flow Notes
