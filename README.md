@@ -114,9 +114,14 @@ flowchart TD
   - verifies both Docker images build successfully
 - `CD` workflow (`.github/workflows/cd-release.yml`)
   - triggers on version tags (`v*`) or manual dispatch
-  - builds and publishes Docker images to GitHub Container Registry (GHCR):
-    - `ghcr.io/<owner>/<repo>/service:<version>`
-    - `ghcr.io/<owner>/<repo>/app:<version>`
+  - builds and publishes Docker images to Docker Hub:
+    - `<namespace>/multi-agent-orchestration-service:<version>`
+    - `<namespace>/multi-agent-orchestration-app:<version>`
+  - required repo secrets:
+    - `DOCKERHUB_USERNAME`
+    - `DOCKERHUB_TOKEN` (Docker Hub access token)
+  - optional repo variable:
+    - `DOCKERHUB_NAMESPACE` (if omitted, username is used as namespace)
 
 ### Release Tag for CD
 
