@@ -375,7 +375,7 @@ http://localhost:8080/store/<thread_id>?limit=50
 - `conversation_store` -> human/AI messages + metadata
 - `checkpoints`, `checkpoint_writes`, `checkpoint_blobs` -> LangGraph checkpoint internals
 
-## Known Limitations (Honest / Interview-ready)
+## Known Limitations 
 
 - `evaluation_agent` is heuristic (not factual verification)
 - `clarification_agent` ends current run; final answer comes on next user turn
