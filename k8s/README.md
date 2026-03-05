@@ -1,4 +1,4 @@
-# Kubernetes Deployment (Beginner Friendly)
+# Kubernetes Deployment 
 
 This folder deploys your project to local Kubernetes (Docker Desktop Kubernetes) with:
 
