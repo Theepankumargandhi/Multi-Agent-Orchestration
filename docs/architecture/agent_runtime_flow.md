@@ -10,6 +10,11 @@ This flowchart matches the current codebase behavior (`agent/research_assistant.
 ```mermaid
 flowchart TD
     U[User input in Streamlit] --> ST[streamlit_app.py]
+    ST --> AUTH[Auth login/register]
+    AUTH --> THR[GET /store/threads]
+    THR --> TSEL[Sidebar conversation history]
+    TSEL --> HIST[GET /store/<thread_id>]
+    HIST --> ST
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
@@ -46,7 +51,7 @@ flowchart TD
     STOREA --> RET[Return JSON or SSE]
     RET --> UI[Render in Streamlit]
 
-    API --> OPS[/healthz /readyz /metrics]
+    API --> OPS["/healthz | /readyz | /metrics"]
     OPS --> PROM[Prometheus scrape]
     PROM --> GRAF[Grafana dashboards]
 
@@ -69,6 +74,7 @@ flowchart TD
 
 - `clarification_agent` does not continue to `response_agent` in the same run.
 - Clarified user reply comes as a new turn and is routed again by `intent_router_agent`.
+- On login, UI calls `GET /store/threads`, auto-loads latest thread, and can switch older thread history.
 - `local:` prefix routes to `rag` or `kg` depending on relationship intent.
 - `knowledge_graph_agent` reads from dedicated Graph RAG ingestion (`graph_rag_docs` -> `graph_chroma_db`).
 - `rag_agent` reads from local RAG ingestion (`rag_docs` -> `chroma_db`).

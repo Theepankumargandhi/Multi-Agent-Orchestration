@@ -34,6 +34,7 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 - Dual-layer persistence:
   - LangGraph PostgreSQL checkpointer (graph state continuity)
   - Conversation Store (PostgreSQL with SQLite fallback)
+- Per-user conversation history in UI (load latest thread + switch from sidebar)
 - Evaluation agent (heuristic quality audit)
 - Per-user authentication (user ID + password) with bearer tokens
 
@@ -59,6 +60,11 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 %%{init: {"flowchart":{"nodeSpacing":45,"rankSpacing":65},"themeVariables":{"fontSize":"16px"}}}%%
 flowchart TD
     U[User input in Streamlit] --> ST[streamlit_app.py]
+    ST --> AUTH[Auth login/register]
+    AUTH --> THR[GET /store/threads]
+    THR --> TSEL[Sidebar conversation history]
+    TSEL --> HIST[GET /store/<thread_id>]
+    HIST --> ST
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
@@ -121,6 +127,7 @@ flowchart LR
 
 - `clarification_agent` asks a follow-up question and ends the current run.
 - The next user message starts a new run and is routed again.
+- On login, UI fetches `GET /store/threads`, auto-loads latest thread, and allows switching thread history.
 - `local:` prefix routes to `rag_agent` or `knowledge_graph_agent` for relationship questions.
 - `recency_guard_agent` applies recency as a preference (fallback to most recent relevant results).
 - Mermaid graph edges remain stable for retrieval internals; new relationship reasoning runs in `knowledge_graph_agent`.
@@ -175,6 +182,7 @@ git push origin v1.0.0
 - `POST /auth/login` - login user and receive access token
 - `POST /invoke` - non-streaming chat response
 - `POST /stream` - streaming chat response
+- `GET /store/threads` - list authenticated user's recent conversation threads
 - `GET /store/{thread_id}` - inspect persisted conversation records
 - `POST /feedback` - user feedback/rating
 - `GET /healthz` - liveness probe endpoint
@@ -237,7 +245,7 @@ Beginner-friendly Kubernetes manifests are available in `k8s/` with step-by-step
 
 2. **Conversation Store (PostgreSQL, SQLite fallback)**
 - Stores durable human/AI messages + metadata
-- Used for history/debugging/audit (`/store/{thread_id}`)
+- Used for history/debugging/audit (`/store/threads`, `/store/{thread_id}`)
 
 ### PostgreSQL tables you will see
 
@@ -480,6 +488,7 @@ This improves local retrieval precision for paraphrases and keyword-heavy querie
 Open in browser (replace with your sidebar thread ID and correct backend port):
 
 ```text
+http://localhost:8080/store/threads?limit=30
 http://localhost:8080/store/<thread_id>?limit=50
 ```
 

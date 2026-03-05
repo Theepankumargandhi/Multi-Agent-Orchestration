@@ -4,6 +4,11 @@
 
 flowchart TD
     U[User input in Streamlit] --> ST[streamlit_app.py]
+    ST --> AUTH[Auth login/register]
+    AUTH --> THR[GET /store/threads]
+    THR --> TSEL[Sidebar conversation history]
+    TSEL --> HIST[GET /store/<thread_id>]
+    HIST --> ST
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
@@ -40,7 +45,7 @@ flowchart TD
     STOREA --> RET[Return JSON or SSE]
     RET --> UI[Render in Streamlit]
 
-    API --> OPS[/healthz /readyz /metrics]
+    API --> OPS["/healthz | /readyz | /metrics"]
     OPS --> PROM[Prometheus scrape]
     PROM --> GRAF[Grafana dashboards]
 
