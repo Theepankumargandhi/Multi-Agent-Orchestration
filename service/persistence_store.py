@@ -34,6 +34,9 @@ class BaseConversationStore:
     ) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
+    def list_threads(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
     def create_user(self, user_id: str, password_hash: str) -> bool:
         raise NotImplementedError
 
@@ -188,6 +191,46 @@ class SQLiteConversationStore(BaseConversationStore):
                     "created_at": row["created_at"],
                 }
             )
+        return output
+
+    def list_threads(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        clean_user_id = (user_id or "").strip()
+        if not clean_user_id:
+            return []
+        bounded_limit = max(1, min(int(limit), 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT thread_id, MAX(created_at) AS last_message_at, COUNT(*) AS message_count
+                FROM conversation_store
+                WHERE namespace = ? AND user_id = ?
+                GROUP BY thread_id
+                ORDER BY last_message_at DESC
+                LIMIT ?
+                """,
+                (self.namespace, clean_user_id, bounded_limit),
+            ).fetchall()
+
+            output: List[Dict[str, Any]] = []
+            for row in rows:
+                preview_row = conn.execute(
+                    """
+                    SELECT content
+                    FROM conversation_store
+                    WHERE namespace = ? AND user_id = ? AND thread_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (self.namespace, clean_user_id, row["thread_id"]),
+                ).fetchone()
+                output.append(
+                    {
+                        "thread_id": row["thread_id"],
+                        "message_count": int(row["message_count"] or 0),
+                        "last_message_at": row["last_message_at"],
+                        "last_message_preview": (preview_row["content"] if preview_row else "") or "",
+                    }
+                )
         return output
 
     def create_user(self, user_id: str, password_hash: str) -> bool:
@@ -376,6 +419,53 @@ class PostgresConversationStore(BaseConversationStore):
                     "created_at": row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6]),
                 }
             )
+        return output
+
+    def list_threads(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        clean_user_id = (user_id or "").strip()
+        if not clean_user_id:
+            return []
+        bounded_limit = max(1, min(int(limit), 200))
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT thread_id, MAX(created_at) AS last_message_at, COUNT(*) AS message_count
+                    FROM conversation_store
+                    WHERE namespace = %s AND user_id = %s
+                    GROUP BY thread_id
+                    ORDER BY MAX(created_at) DESC
+                    LIMIT %s
+                    """,
+                    (self.namespace, clean_user_id, bounded_limit),
+                )
+                rows = cur.fetchall()
+
+                output: List[Dict[str, Any]] = []
+                for thread_id, last_message_at, message_count in rows:
+                    cur.execute(
+                        """
+                        SELECT content
+                        FROM conversation_store
+                        WHERE namespace = %s AND user_id = %s AND thread_id = %s
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        (self.namespace, clean_user_id, thread_id),
+                    )
+                    preview_row = cur.fetchone()
+                    output.append(
+                        {
+                            "thread_id": thread_id,
+                            "message_count": int(message_count or 0),
+                            "last_message_at": (
+                                last_message_at.isoformat()
+                                if hasattr(last_message_at, "isoformat")
+                                else str(last_message_at)
+                            ),
+                            "last_message_preview": (preview_row[0] if preview_row else "") or "",
+                        }
+                    )
         return output
 
     def create_user(self, user_id: str, password_hash: str) -> bool:

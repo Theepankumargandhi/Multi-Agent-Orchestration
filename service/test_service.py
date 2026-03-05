@@ -113,6 +113,32 @@ def test_store_is_isolated_by_user():
     assert not any("message from A" in content for content in contents_b)
 
 
+def test_store_threads_are_isolated_by_user():
+    agent = type("MockAgent", (), {})()
+    agent.ainvoke = AsyncMock(return_value={"messages": [AIMessage(content="ok")]})
+
+    with client as c:
+        c.app.state.agent = agent
+        headers_a = _auth_headers(c, user_id=f"user-a-{uuid4().hex[:6]}")
+        headers_b = _auth_headers(c, user_id=f"user-b-{uuid4().hex[:6]}")
+
+        c.post("/invoke", json={"message": "A-1", "thread_id": "thread-a-1"}, headers=headers_a)
+        c.post("/invoke", json={"message": "A-2", "thread_id": "thread-a-2"}, headers=headers_a)
+        c.post("/invoke", json={"message": "B-1", "thread_id": "thread-b-1"}, headers=headers_b)
+
+        threads_a = c.get("/store/threads", headers=headers_a)
+        threads_b = c.get("/store/threads", headers=headers_b)
+        assert threads_a.status_code == 200
+        assert threads_b.status_code == 200
+
+    ids_a = {t["thread_id"] for t in threads_a.json()["threads"]}
+    ids_b = {t["thread_id"] for t in threads_b.json()["threads"]}
+    assert "thread-a-1" in ids_a
+    assert "thread-a-2" in ids_a
+    assert "thread-b-1" not in ids_a
+    assert "thread-b-1" in ids_b
+
+
 def test_monitoring_endpoints_are_public():
     with client as c:
         health = c.get("/healthz")

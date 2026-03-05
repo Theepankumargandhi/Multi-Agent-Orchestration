@@ -770,6 +770,35 @@ async def stream_agent(user_input: StreamInput, request: Request):
     )
 
 
+@app.get("/store/threads")
+async def list_user_threads(request: Request, limit: int = 30):
+    """
+    List recent conversation threads for the authenticated user.
+    """
+    store = getattr(app.state, "store", None)
+    backend = getattr(app.state, "store_backend", None)
+    user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+    if store is None or not user_id:
+        return {
+            "user_id": user_id or "",
+            "backend": backend,
+            "count": 0,
+            "threads": [],
+        }
+
+    try:
+        threads = await asyncio.to_thread(store.list_threads, user_id, limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "user_id": user_id,
+        "backend": backend,
+        "count": len(threads),
+        "threads": threads,
+    }
+
+
 @app.get("/store/{thread_id}")
 async def get_thread_store(thread_id: str, request: Request, limit: int = 50):
     """

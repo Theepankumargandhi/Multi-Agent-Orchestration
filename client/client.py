@@ -309,3 +309,45 @@ class AgentClient:
                 if response.status != 200:
                     raise Exception(f"Error: {response.status} - {await response.text()}")
                 await response.json()
+
+    async def aget_store(self, thread_id: str, limit: int = 200) -> Dict[str, Any]:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{self.base_url}/store/{thread_id}",
+                params={"limit": max(1, min(int(limit), 200))},
+                headers=self._headers,
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
+
+    def get_store(self, thread_id: str, limit: int = 200) -> Dict[str, Any]:
+        response = requests.get(
+            f"{self.base_url}/store/{thread_id}",
+            params={"limit": max(1, min(int(limit), 200))},
+            headers=self._headers,
+        )
+        if response.status_code != 200:
+            raise Exception(f"Error: {response.status_code} - {response.text}")
+        return response.json()
+
+    async def alist_threads(self, limit: int = 30) -> Dict[str, Any]:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{self.base_url}/store/threads",
+                params={"limit": max(1, min(int(limit), 200))},
+                headers=self._headers,
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
+
+    def list_threads(self, limit: int = 30) -> Dict[str, Any]:
+        response = requests.get(
+            f"{self.base_url}/store/threads",
+            params={"limit": max(1, min(int(limit), 200))},
+            headers=self._headers,
+        )
+        if response.status_code != 200:
+            raise Exception(f"Error: {response.status_code} - {response.text}")
+        return response.json()

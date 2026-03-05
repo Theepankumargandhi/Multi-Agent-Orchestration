@@ -32,6 +32,38 @@ USER_AUTH_ENABLED = os.getenv("ENABLE_USER_AUTH", "true").strip().lower() not in
     "off",
 }
 
+
+def _history_rows_to_chat_messages(rows: list[dict]) -> list[ChatMessage]:
+    messages: list[ChatMessage] = []
+    for row in reversed(rows or []):
+        role = str(row.get("role") or "").strip()
+        if role not in {"human", "ai", "tool"}:
+            continue
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        messages.append(
+            ChatMessage(
+                type=role,  # type: ignore[arg-type]
+                content=content,
+                run_id=str(row.get("run_id") or "") or None,
+            )
+        )
+    return messages
+
+
+def _thread_label(thread: dict) -> str:
+    thread_id = str(thread.get("thread_id") or "")
+    count = int(thread.get("message_count") or 0)
+    when = str(thread.get("last_message_at") or "")
+    preview = str(thread.get("last_message_preview") or "").replace("\n", " ").strip()
+    if len(preview) > 64:
+        preview = preview[:61] + "..."
+    when_short = when.replace("T", " ")[:19] if when else "-"
+    if preview:
+        return f"{when_short} | {count} msgs | {preview}"
+    return f"{when_short} | {count} msgs | {thread_id}"
+
 @st.cache_resource
 def get_agent_client():
     agent_url = os.getenv("AGENT_URL") or os.getenv("API_BASE_URL", "http://localhost:8000")
@@ -85,17 +117,15 @@ async def main():
             st.session_state.auth_user_id = ""
         if "auth_token" not in st.session_state:
             st.session_state.auth_token = ""
+        if "thread_summaries" not in st.session_state:
+            st.session_state.thread_summaries = []
         if st.session_state.auth_token:
             agent_client.set_access_token(st.session_state.auth_token)
 
     ctx = get_script_run_ctx()
-    thread_id = getattr(ctx, "session_id", None) if ctx else None
-    if not thread_id:
-        if "thread_id" not in st.session_state:
-            st.session_state.thread_id = str(uuid4())
-        thread_id = st.session_state.thread_id
-    else:
-        st.session_state.thread_id = thread_id
+    if "thread_id" not in st.session_state:
+        st.session_state.thread_id = (getattr(ctx, "session_id", None) if ctx else None) or str(uuid4())
+    thread_id = st.session_state.thread_id
 
     # Config options
     with st.sidebar:
@@ -104,10 +134,50 @@ async def main():
             st.subheader("Account")
             if st.session_state.auth_user_id:
                 st.success(f"Signed in: `{st.session_state.auth_user_id}`")
+                col_new, col_refresh = st.columns(2)
+                if col_new.button("New Chat"):
+                    st.session_state.messages = []
+                    st.session_state.thread_id = str(uuid4())
+                    st.rerun()
+                if col_refresh.button("Refresh"):
+                    try:
+                        threads_payload = await agent_client.alist_threads(limit=30)
+                        st.session_state.thread_summaries = threads_payload.get("threads", [])
+                        st.toast("Conversation list refreshed.")
+                        st.rerun()
+                    except Exception as e:
+                        st.warning(f"Could not refresh history: {e}")
+
+                thread_summaries = st.session_state.get("thread_summaries", [])
+                thread_ids = [str(t.get("thread_id") or "") for t in thread_summaries if t.get("thread_id")]
+                if thread_ids:
+                    if st.session_state.thread_id not in thread_ids:
+                        st.session_state.thread_id = thread_ids[0]
+                    label_map = {
+                        str(t.get("thread_id") or ""): _thread_label(t) for t in thread_summaries
+                    }
+                    selected_thread = st.selectbox(
+                        "Conversation History",
+                        options=thread_ids,
+                        index=thread_ids.index(st.session_state.thread_id),
+                        format_func=lambda tid: label_map.get(tid, tid),
+                    )
+                    if selected_thread != st.session_state.thread_id:
+                        try:
+                            history_payload = await agent_client.aget_store(selected_thread, limit=200)
+                            st.session_state.thread_id = selected_thread
+                            st.session_state.messages = _history_rows_to_chat_messages(
+                                history_payload.get("messages", [])
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to load selected conversation: {e}")
+
                 if st.button("Logout"):
                     st.session_state.auth_user_id = ""
                     st.session_state.auth_token = ""
                     st.session_state.messages = []
+                    st.session_state.thread_summaries = []
                     if "thread_id" in st.session_state:
                         del st.session_state.thread_id
                     agent_client.set_access_token(None)
@@ -129,9 +199,27 @@ async def main():
                         st.session_state.auth_user_id = auth.user_id
                         st.session_state.auth_token = auth.access_token
                         agent_client.set_access_token(auth.access_token)
-                        st.session_state.messages = []
-                        st.session_state.thread_id = str(uuid4())
-                        st.success("Authentication successful.")
+
+                        threads_payload = await agent_client.alist_threads(limit=30)
+                        thread_summaries = threads_payload.get("threads", [])
+                        st.session_state.thread_summaries = thread_summaries
+                        if thread_summaries:
+                            latest_thread_id = str(thread_summaries[0].get("thread_id") or "")
+                            if latest_thread_id:
+                                history_payload = await agent_client.aget_store(latest_thread_id, limit=200)
+                                st.session_state.thread_id = latest_thread_id
+                                st.session_state.messages = _history_rows_to_chat_messages(
+                                    history_payload.get("messages", [])
+                                )
+                                st.success("Authentication successful. Loaded latest conversation history.")
+                            else:
+                                st.session_state.messages = []
+                                st.session_state.thread_id = str(uuid4())
+                                st.success("Authentication successful. Started a new conversation.")
+                        else:
+                            st.session_state.messages = []
+                            st.session_state.thread_id = str(uuid4())
+                            st.success("Authentication successful. Started a new conversation.")
                         await asyncio.sleep(0.1)
                         st.rerun()
                     except Exception as e:
@@ -151,6 +239,8 @@ async def main():
 
     if USER_AUTH_ENABLED and not st.session_state.auth_user_id:
         st.stop()
+
+    thread_id = st.session_state.thread_id
 
     # Draw existing messages
     if "messages" not in st.session_state:
@@ -187,6 +277,14 @@ async def main():
                 )
                 messages.append(response)
                 st.chat_message("ai").write(response.content)
+
+            # Keep local thread summary fresh after successful send.
+            if USER_AUTH_ENABLED and st.session_state.get("auth_user_id"):
+                try:
+                    threads_payload = await agent_client.alist_threads(limit=30)
+                    st.session_state.thread_summaries = threads_payload.get("threads", [])
+                except Exception:
+                    pass
         except Exception as e:
             err = f"Request failed: {e}"
             st.chat_message("ai").error(err)
