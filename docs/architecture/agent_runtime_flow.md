@@ -9,74 +9,64 @@ This flowchart matches the current codebase behavior (`agent/research_assistant.
 
 ```mermaid
 flowchart TD
-    U[User input in Streamlit] --> ST[streamlit_app.py]
-    ST --> AUTH[Auth login/register]
-    AUTH --> THR[GET /store/threads]
-    THR --> TSEL[Sidebar conversation history]
-    TSEL --> HIST["GET /store/{thread_id}"]
-    HIST --> ST
-    ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
+    U[User in Streamlit] --> AUTH[Login or Register]
+    AUTH --> HIST[Load conversation history]
+    HIST --> Q[User sends message]
+    Q --> API[FastAPI invoke or stream]
 
     API --> STOREH[Store human message]
-    API --> HMAP[HITL decision mapper in service]
-    HMAP --> CFG[Build RunnableConfig - thread_id checkpoint model]
+    API --> HMAP[HITL mapper for plain approve or reject]
+    HMAP --> CFG[Build graph config model + thread_id]
     CFG --> LG[LangGraph research_assistant]
+    CFG --> CHK[Postgres checkpoints]
 
     LG --> SA[safety_agent]
     SA --> IR[intent_router_agent]
 
     IR -->|clarify| CA[clarification_agent]
+    CA --> EVA[evaluation_agent]
+
     IR -->|rewrite| QR[query_rewriter_agent]
     QR --> IR
 
     IR -->|math| MA[math_agent]
-    IR -->|web| RG[recency_guard_agent]
-    IR -->|kg| KG[knowledge_graph_agent]
+    MA --> RESP[response_agent]
+
     IR -->|rag| RA[rag_agent]
-    IR -->|hybrid| RG
-    IR -->|general| RESP[response_agent]
+    RA --> RESP
 
-    RG --> WH[web_hitl_gate_agent]
-    WH -->|awaiting preview| EVA
-    WH -->|rejected| EVA
-    WH -->|approved web| RESP
-    WH -->|approved hybrid| RA
-    WH -->|not required| WS[web_search_agent - web cache check]
-    WS -->|web| RESP
-    WS -->|hybrid| RA
+    IR -->|kg| KG[knowledge_graph_agent]
     KG --> RA
-    RA[RAG agent - local RAG cache check] --> RESP
-    MA --> RESP
 
-    CA --> EVA[evaluation_agent]
+    IR -->|general| RESP
+
+    IR -->|web or hybrid| RG[recency_guard_agent]
+    RG --> WH[web_hitl_gate_agent]
+
+    WH -->|awaiting| WAIT[Wait for decision]
+    WAIT --> BTN[UI buttons Approve or Reject]
+    BTN --> API
+
+    WH -->|approved web| WS[web_search_agent]
+    WS -->|web route| RESP
+
+    WH -->|approved hybrid| WS
+    WS -->|hybrid route| RA
+
+    WH -->|rejected| REJ[Reject follow-up message]
+    REJ --> EVA
+
     RESP --> EVA
-    EVA --> END[Graph END]
+    EVA --> END[Graph end]
+    END --> APIRESP[Return answer to Streamlit]
+    APIRESP --> STOREA[Store AI message]
+    STOREA --> CST[conversation_store]
+    END --> HITLDB[Store HITL decision]
+    HITLDB --> HITL[hitl_events]
 
-    END --> APIOUT[FastAPI serializes final AI message]
-    APIOUT --> HITAUDIT[Persist HITL decision in hitl_events]
-    HITAUDIT --> STOREA[Store AI message + metadata]
-    STOREA --> RET[Return JSON or SSE]
-    RET --> UI[Render in Streamlit]
-    UI --> HITLBTN[If preview shown: Approve/Reject buttons]
-    HITLBTN -->|same thread_id| API
-
-    API --> OPS["/healthz | /readyz | /metrics"]
-    OPS --> PROM[Prometheus scrape]
-    PROM --> GRAF[Grafana dashboards]
-
-    subgraph K8S[Optional Local Kubernetes Deployment]
-      KCM[ConfigMap + Secret]
-      KAGENT[agent-service Deployment + Service]
-      KUI[streamlit-app Deployment + Service]
-      KPROM[prometheus Deployment + Service]
-      KGRAF[grafana Deployment + Service]
-    end
-
-    KCM --> KAGENT
-    KCM --> KUI
-    KAGENT --> KPROM
-    KPROM --> KGRAF
-    KUI --> KAGENT
+    API --> METRICS["/healthz | /readyz | /metrics"]
+    METRICS --> PROM[Prometheus]
+    PROM --> GRAF[Grafana]
 ```
 
 ## Notes
@@ -85,7 +75,7 @@ flowchart TD
 - Clarified user reply comes as a new turn and is routed again by `intent_router_agent`.
 - On login, UI calls `GET /store/threads`, auto-loads latest thread, and can switch older thread history.
 - For recency/news prompts, graph-level HITL runs in `web_hitl_gate_agent`.
-- The assistant returns preview context; Streamlit shows `Approve`/`Reject` buttons (typing `approve` or `reject: <reason>` also works).
+- Streamlit shows `Approve`/`Reject` buttons for waiting HITL decisions (typing `approve` or `reject: <reason>` also works).
 - Service rewrites plain approve/reject input into internal HITL control payload using pending context for the same `user_id` + `thread_id`.
 - HITL decisions are audited automatically and persisted in `hitl_events`.
 - `local:` prefix routes to `rag` or `kg` depending on relationship intent.
