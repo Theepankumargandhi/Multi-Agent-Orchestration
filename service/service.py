@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from contextlib import AsyncExitStack, asynccontextmanager
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import importlib
@@ -24,6 +25,7 @@ from langsmith import Client as LangsmithClient
 from prometheus_client import Counter, Histogram, CONTENT_TYPE_LATEST, generate_latest
 
 from agent import research_assistant
+from agent.tools import perform_web_search
 from schema import (
     AuthLoginInput,
     AuthRegisterInput,
@@ -415,6 +417,84 @@ def _resolve_metric_path(request: Request) -> str:
     return request.url.path
 
 
+def _parse_ymd_date(value: str) -> datetime | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _parse_web_preview_items(web_notes: str, recency_days: int) -> list[dict[str, Any]]:
+    notes = (web_notes or "").strip()
+    if not notes or notes.lower().startswith("web retrieval failed:"):
+        return []
+
+    blocks = [block.strip() for block in re.split(r"\n(?=-\s)", notes) if block.strip()]
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(1, recency_days))
+        if recency_days > 0
+        else None
+    )
+
+    items: list[dict[str, Any]] = []
+    for block in blocks:
+        lines = [line.rstrip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        first = lines[0].strip()
+        if not first.startswith("- "):
+            continue
+
+        title = first[2:].strip()
+        url = ""
+        date_text = ""
+        snippet_parts: list[str] = []
+        for raw_line in lines[1:]:
+            line = raw_line.strip()
+            lower = line.lower()
+            if lower.startswith("link:"):
+                url = line.split(":", 1)[1].strip()
+            elif lower.startswith("date:"):
+                date_text = line.split(":", 1)[1].strip()
+            elif lower.startswith("snippet:"):
+                snippet_parts.append(line.split(":", 1)[1].strip())
+            else:
+                snippet_parts.append(line)
+
+        published_dt = _parse_ymd_date(date_text)
+        is_within: bool | None = None
+        if cutoff and published_dt:
+            is_within = published_dt >= cutoff
+
+        items.append(
+            {
+                "title": title,
+                "url": url,
+                "snippet": " ".join(part for part in snippet_parts if part).strip(),
+                "published_date": date_text,
+                "is_within_recency": is_within,
+            }
+        )
+
+    if items:
+        return items
+
+    # Fallback when provider output format is different.
+    first_line = notes.splitlines()[0].strip() if notes else ""
+    return [
+        {
+            "title": first_line[:120] if first_line else "Web search result",
+            "url": "",
+            "snippet": notes[:600],
+            "published_date": "",
+            "is_within_recency": None,
+        }
+    ]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
@@ -604,6 +684,33 @@ async def _store_message_safely(
     except Exception as e:
         print(f"[service] store write failed ({role}): {e}")
 
+
+async def _store_hitl_event_safely(
+    app: FastAPI,
+    user_id: str | None,
+    thread_id: str | None,
+    query: str,
+    decision: str,
+    reason: str = "",
+    metadata: Dict[str, Any] | None = None,
+) -> None:
+    store = getattr(app.state, "store", None)
+    if store is None:
+        return
+    try:
+        await asyncio.to_thread(
+            store.save_hitl_event,
+            user_id,
+            thread_id,
+            query,
+            decision,
+            reason,
+            metadata or {},
+        )
+    except Exception as e:
+        print(f"[service] store write failed (hitl:{decision}): {e}")
+
+
 @app.post("/invoke")
 async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
     """
@@ -768,6 +875,150 @@ async def stream_agent(user_input: StreamInput, request: Request):
         message_generator(user_input, user_id=user_id),
         media_type="text/event-stream",
     )
+
+
+@app.post("/web_search/preview")
+async def web_search_preview(payload: Dict[str, Any], request: Request):
+    """
+    Preview web-search results for human approval before final answer generation.
+    """
+    _ = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+
+    query = str(payload.get("query") or payload.get("message") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+
+    try:
+        recency_days = int(payload.get("recency_days") or 7)
+    except Exception:
+        recency_days = 7
+    recency_days = max(1, min(recency_days, 30))
+
+    try:
+        max_results = int(payload.get("max_results") or 5)
+    except Exception:
+        max_results = 5
+    max_results = max(1, min(max_results, 10))
+
+    try:
+        result = await asyncio.to_thread(
+            perform_web_search,
+            query,
+            max_results,
+            recency_days,
+            query,
+            True,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if isinstance(result, tuple):
+        web_notes, meta = result
+    else:
+        web_notes, meta = str(result), {}
+
+    items = _parse_web_preview_items(web_notes, recency_days)
+    dated_items = [item for item in items if item.get("published_date")]
+    all_within_recency = (
+        bool(dated_items) and all(item.get("is_within_recency") is True for item in dated_items)
+    )
+
+    return {
+        "query": query,
+        "recency_days": recency_days,
+        "max_results": max_results,
+        "count": len(items),
+        "all_within_recency": all_within_recency,
+        "source": str(meta.get("source") or ""),
+        "cache_hit": bool(meta.get("cache_hit")),
+        "items": items,
+        "web_notes": web_notes,
+    }
+
+
+@app.post("/hitl/web_decision")
+async def record_web_hitl_decision(payload: Dict[str, Any], request: Request):
+    """
+    Record web-search HITL decision (approved/rejected) for audit trail.
+    """
+    user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    query = str(payload.get("query") or "").strip()
+    decision = str(payload.get("decision") or "").strip().lower()
+    reason = str(payload.get("reason") or "").strip()
+    thread_id = str(payload.get("thread_id") or "").strip()
+
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    if decision not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="decision must be approved or rejected")
+    if decision == "approved":
+        reason = ""
+
+    metadata = {
+        "recency_days": int(payload.get("recency_days") or 0),
+        "preview_count": int(payload.get("preview_count") or 0),
+        "all_within_recency": bool(payload.get("all_within_recency")),
+        "source": str(payload.get("source") or ""),
+        "cache_hit": bool(payload.get("cache_hit")),
+    }
+
+    await _store_hitl_event_safely(
+        app,
+        user_id=user_id,
+        thread_id=thread_id,
+        query=query,
+        decision=decision,
+        reason=reason,
+        metadata=metadata,
+    )
+
+    return {
+        "status": "recorded",
+        "user_id": user_id,
+        "thread_id": thread_id,
+        "query": query,
+        "decision": decision,
+    }
+
+
+@app.get("/hitl/web_decisions")
+async def list_web_hitl_decisions(request: Request, limit: int = 50, thread_id: str | None = None):
+    """
+    List authenticated user's HITL decision audit records.
+    """
+    store = getattr(app.state, "store", None)
+    backend = getattr(app.state, "store_backend", None)
+    user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+    if store is None or not user_id:
+        return {
+            "user_id": user_id or "",
+            "backend": backend,
+            "count": 0,
+            "events": [],
+        }
+
+    bounded_limit = max(1, min(int(limit), 200))
+    clean_thread_id = (thread_id or "").strip() or None
+    try:
+        events = await asyncio.to_thread(
+            store.list_hitl_events,
+            user_id,
+            bounded_limit,
+            clean_thread_id,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "user_id": user_id,
+        "backend": backend,
+        "thread_id": clean_thread_id or "",
+        "count": len(events),
+        "events": events,
+    }
 
 
 @app.get("/store/threads")

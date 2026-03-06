@@ -13,8 +13,14 @@ flowchart TD
     ST --> AUTH[Auth login/register]
     AUTH --> THR[GET /store/threads]
     THR --> TSEL[Sidebar conversation history]
-    TSEL --> HIST[GET /store/<thread_id>]
+    TSEL --> HIST["GET /store/{thread_id}"]
     HIST --> ST
+    ST --> PREV["POST /web_search/preview (recency web queries)"]
+    PREV --> HR[Human approve/reject]
+    HR -->|approve| AUDA["POST /hitl/web_decision (approved)"]
+    HR -->|reject| AUDR["POST /hitl/web_decision (rejected)"]
+    AUDA --> API
+    AUDR --> ST
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
@@ -75,6 +81,8 @@ flowchart TD
 - `clarification_agent` does not continue to `response_agent` in the same run.
 - Clarified user reply comes as a new turn and is routed again by `intent_router_agent`.
 - On login, UI calls `GET /store/threads`, auto-loads latest thread, and can switch older thread history.
+- For recency/news prompts, UI can require human approval through `POST /web_search/preview`.
+- HITL approve/reject actions are audited via `POST /hitl/web_decision` and persisted in `hitl_events`.
 - `local:` prefix routes to `rag` or `kg` depending on relationship intent.
 - `knowledge_graph_agent` reads from dedicated Graph RAG ingestion (`graph_rag_docs` -> `graph_chroma_db`).
 - `rag_agent` reads from local RAG ingestion (`rag_docs` -> `chroma_db`).

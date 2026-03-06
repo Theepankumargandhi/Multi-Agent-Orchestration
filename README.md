@@ -30,6 +30,8 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 - TTL caching for web search and local RAG retrieval
 - Optional Redis-backed caching (with in-memory fallback)
 - MCP tool bridge for `web_search` and `calculator` (with local fallback)
+- Conditional HITL for recency web-news queries (preview + approve/reject)
+- HITL decision audit trail persisted per user/thread (`hitl_events`)
 - Monitoring stack with Prometheus + Grafana
 - Dual-layer persistence:
   - LangGraph PostgreSQL checkpointer (graph state continuity)
@@ -63,8 +65,14 @@ flowchart TD
     ST --> AUTH[Auth login/register]
     AUTH --> THR[GET /store/threads]
     THR --> TSEL[Sidebar conversation history]
-    TSEL --> HIST[GET /store/<thread_id>]
+    TSEL --> HIST["GET /store/{thread_id}"]
     HIST --> ST
+    ST --> PREV["POST /web_search/preview (recency web queries)"]
+    PREV --> HR[Human approve/reject]
+    HR -->|approve| AUDA["POST /hitl/web_decision (approved)"]
+    HR -->|reject| AUDR["POST /hitl/web_decision (rejected)"]
+    AUDA --> API
+    AUDR --> ST
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
@@ -128,6 +136,8 @@ flowchart LR
 - `clarification_agent` asks a follow-up question and ends the current run.
 - The next user message starts a new run and is routed again.
 - On login, UI fetches `GET /store/threads`, auto-loads latest thread, and allows switching thread history.
+- For recency/news prompts, UI can require human approval using `POST /web_search/preview` before invoking agents.
+- Every HITL approve/reject is recorded through `POST /hitl/web_decision` and persisted in `hitl_events`.
 - `local:` prefix routes to `rag_agent` or `knowledge_graph_agent` for relationship questions.
 - `recency_guard_agent` applies recency as a preference (fallback to most recent relevant results).
 - Mermaid graph edges remain stable for retrieval internals; new relationship reasoning runs in `knowledge_graph_agent`.
@@ -182,6 +192,9 @@ git push origin v1.0.0
 - `POST /auth/login` - login user and receive access token
 - `POST /invoke` - non-streaming chat response
 - `POST /stream` - streaming chat response
+- `POST /web_search/preview` - preview recency-focused web results for human approval
+- `POST /hitl/web_decision` - record HITL approve/reject audit event
+- `GET /hitl/web_decisions` - list authenticated user's HITL audit records
 - `GET /store/threads` - list authenticated user's recent conversation threads
 - `GET /store/{thread_id}` - inspect persisted conversation records
 - `POST /feedback` - user feedback/rating
@@ -256,6 +269,7 @@ Beginner-friendly Kubernetes manifests are available in `k8s/` with step-by-step
 - Conversation store table:
   - `conversation_store`
   - `users`
+  - `hitl_events`
 
 ## Routing Summary (Supervisor Logic)
 

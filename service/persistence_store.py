@@ -43,6 +43,25 @@ class BaseConversationStore:
     def get_user_password_hash(self, user_id: str) -> str | None:
         raise NotImplementedError
 
+    def save_hitl_event(
+        self,
+        user_id: str | None,
+        thread_id: str | None,
+        query: str,
+        decision: str,
+        reason: str = "",
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    def list_hitl_events(
+        self,
+        user_id: str,
+        limit: int = 50,
+        thread_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
 
 class SQLiteConversationStore(BaseConversationStore):
     def __init__(self, db_path: str, namespace: str = "default") -> None:
@@ -108,6 +127,33 @@ class SQLiteConversationStore(BaseConversationStore):
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(namespace, user_id)
                 )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hitl_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    namespace TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT '',
+                    thread_id TEXT NOT NULL DEFAULT '',
+                    query TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    reason TEXT,
+                    metadata TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hitl_events_user
+                ON hitl_events(namespace, user_id, created_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hitl_events_thread
+                ON hitl_events(namespace, user_id, thread_id, created_at DESC)
                 """
             )
             conn.commit()
@@ -271,6 +317,94 @@ class SQLiteConversationStore(BaseConversationStore):
             return None
         return str(row["password_hash"] or "")
 
+    def save_hitl_event(
+        self,
+        user_id: str | None,
+        thread_id: str | None,
+        query: str,
+        decision: str,
+        reason: str = "",
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        clean_query = (query or "").strip()
+        clean_decision = (decision or "").strip().lower()
+        if not clean_query or clean_decision not in {"approved", "rejected"}:
+            return
+        clean_user_id = (user_id or "").strip()
+        clean_thread_id = (thread_id or "").strip()
+        clean_reason = (reason or "").strip()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO hitl_events (namespace, user_id, thread_id, query, decision, reason, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.namespace,
+                    clean_user_id,
+                    clean_thread_id,
+                    clean_query,
+                    clean_decision,
+                    clean_reason,
+                    json.dumps(metadata or {}),
+                ),
+            )
+            conn.commit()
+
+    def list_hitl_events(
+        self,
+        user_id: str,
+        limit: int = 50,
+        thread_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        clean_user_id = (user_id or "").strip()
+        if not clean_user_id:
+            return []
+        clean_thread_id = (thread_id or "").strip()
+        bounded_limit = max(1, min(int(limit), 200))
+        with self._connect() as conn:
+            if clean_thread_id:
+                rows = conn.execute(
+                    """
+                    SELECT user_id, thread_id, query, decision, reason, metadata, created_at
+                    FROM hitl_events
+                    WHERE namespace = ? AND user_id = ? AND thread_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (self.namespace, clean_user_id, clean_thread_id, bounded_limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT user_id, thread_id, query, decision, reason, metadata, created_at
+                    FROM hitl_events
+                    WHERE namespace = ? AND user_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (self.namespace, clean_user_id, bounded_limit),
+                ).fetchall()
+
+        output: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                parsed_meta = json.loads(row["metadata"] or "{}")
+            except Exception:
+                parsed_meta = {}
+            output.append(
+                {
+                    "user_id": row["user_id"] or "",
+                    "thread_id": row["thread_id"] or "",
+                    "query": row["query"],
+                    "decision": row["decision"],
+                    "reason": row["reason"] or "",
+                    "metadata": parsed_meta,
+                    "created_at": row["created_at"],
+                }
+            )
+        return output
+
 
 class PostgresConversationStore(BaseConversationStore):
     def __init__(self, conn_string: str, namespace: str = "default") -> None:
@@ -328,6 +462,33 @@ class PostgresConversationStore(BaseConversationStore):
                         created_at TIMESTAMPTZ DEFAULT NOW(),
                         UNIQUE(namespace, user_id)
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS hitl_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        namespace TEXT NOT NULL,
+                        user_id TEXT NOT NULL DEFAULT '',
+                        thread_id TEXT NOT NULL DEFAULT '',
+                        query TEXT NOT NULL,
+                        decision TEXT NOT NULL,
+                        reason TEXT,
+                        metadata JSONB,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_hitl_events_user
+                    ON hitl_events(namespace, user_id, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_hitl_events_thread
+                    ON hitl_events(namespace, user_id, thread_id, created_at DESC)
                     """
                 )
 
@@ -507,6 +668,102 @@ class PostgresConversationStore(BaseConversationStore):
         if not row:
             return None
         return str(row[0] or "")
+
+    def save_hitl_event(
+        self,
+        user_id: str | None,
+        thread_id: str | None,
+        query: str,
+        decision: str,
+        reason: str = "",
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        clean_query = (query or "").strip()
+        clean_decision = (decision or "").strip().lower()
+        if not clean_query or clean_decision not in {"approved", "rejected"}:
+            return
+        clean_user_id = (user_id or "").strip()
+        clean_thread_id = (thread_id or "").strip()
+        clean_reason = (reason or "").strip()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO hitl_events (namespace, user_id, thread_id, query, decision, reason, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                    """,
+                    (
+                        self.namespace,
+                        clean_user_id,
+                        clean_thread_id,
+                        clean_query,
+                        clean_decision,
+                        clean_reason,
+                        json.dumps(metadata or {}),
+                    ),
+                )
+
+    def list_hitl_events(
+        self,
+        user_id: str,
+        limit: int = 50,
+        thread_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        clean_user_id = (user_id or "").strip()
+        if not clean_user_id:
+            return []
+        clean_thread_id = (thread_id or "").strip()
+        bounded_limit = max(1, min(int(limit), 200))
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                if clean_thread_id:
+                    cur.execute(
+                        """
+                        SELECT user_id, thread_id, query, decision, reason, metadata, created_at
+                        FROM hitl_events
+                        WHERE namespace = %s AND user_id = %s AND thread_id = %s
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT %s
+                        """,
+                        (self.namespace, clean_user_id, clean_thread_id, bounded_limit),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT user_id, thread_id, query, decision, reason, metadata, created_at
+                        FROM hitl_events
+                        WHERE namespace = %s AND user_id = %s
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT %s
+                        """,
+                        (self.namespace, clean_user_id, bounded_limit),
+                    )
+                rows = cur.fetchall()
+
+        output: List[Dict[str, Any]] = []
+        for row in rows:
+            raw_meta = row[5]
+            if isinstance(raw_meta, dict):
+                metadata = raw_meta
+            elif isinstance(raw_meta, str):
+                try:
+                    metadata = json.loads(raw_meta)
+                except Exception:
+                    metadata = {}
+            else:
+                metadata = {}
+            output.append(
+                {
+                    "user_id": row[0] or "",
+                    "thread_id": row[1] or "",
+                    "query": row[2],
+                    "decision": row[3],
+                    "reason": row[4] or "",
+                    "metadata": metadata,
+                    "created_at": row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6]),
+                }
+            )
+        return output
 
 
 def open_conversation_store(

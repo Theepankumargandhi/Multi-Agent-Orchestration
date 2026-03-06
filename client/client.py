@@ -351,3 +351,144 @@ class AgentClient:
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")
         return response.json()
+
+    async def aweb_search_preview(
+            self,
+            query: str,
+            recency_days: int = 7,
+            max_results: int = 5,
+        ) -> Dict[str, Any]:
+        payload = {
+            "query": query,
+            "recency_days": max(1, min(int(recency_days), 30)),
+            "max_results": max(1, min(int(max_results), 10)),
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.base_url}/web_search/preview",
+                json=payload,
+                headers=self._headers,
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
+
+    def web_search_preview(
+            self,
+            query: str,
+            recency_days: int = 7,
+            max_results: int = 5,
+        ) -> Dict[str, Any]:
+        payload = {
+            "query": query,
+            "recency_days": max(1, min(int(recency_days), 30)),
+            "max_results": max(1, min(int(max_results), 10)),
+        }
+        response = requests.post(
+            f"{self.base_url}/web_search/preview",
+            json=payload,
+            headers=self._headers,
+        )
+        if response.status_code != 200:
+            raise Exception(f"Error: {response.status_code} - {response.text}")
+        return response.json()
+
+    async def arecord_web_hitl_decision(
+            self,
+            query: str,
+            decision: str,
+            thread_id: str | None = None,
+            reason: str = "",
+            recency_days: int = 0,
+            preview_count: int = 0,
+            all_within_recency: bool = False,
+            source: str = "",
+            cache_hit: bool = False,
+        ) -> Dict[str, Any]:
+        payload = {
+            "query": str(query or "").strip(),
+            "decision": str(decision or "").strip().lower(),
+            "thread_id": str(thread_id or "").strip(),
+            "reason": str(reason or "").strip(),
+            "recency_days": int(recency_days or 0),
+            "preview_count": int(preview_count or 0),
+            "all_within_recency": bool(all_within_recency),
+            "source": str(source or ""),
+            "cache_hit": bool(cache_hit),
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.base_url}/hitl/web_decision",
+                json=payload,
+                headers=self._headers,
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
+
+    def record_web_hitl_decision(
+            self,
+            query: str,
+            decision: str,
+            thread_id: str | None = None,
+            reason: str = "",
+            recency_days: int = 0,
+            preview_count: int = 0,
+            all_within_recency: bool = False,
+            source: str = "",
+            cache_hit: bool = False,
+        ) -> Dict[str, Any]:
+        payload = {
+            "query": str(query or "").strip(),
+            "decision": str(decision or "").strip().lower(),
+            "thread_id": str(thread_id or "").strip(),
+            "reason": str(reason or "").strip(),
+            "recency_days": int(recency_days or 0),
+            "preview_count": int(preview_count or 0),
+            "all_within_recency": bool(all_within_recency),
+            "source": str(source or ""),
+            "cache_hit": bool(cache_hit),
+        }
+        response = requests.post(
+            f"{self.base_url}/hitl/web_decision",
+            json=payload,
+            headers=self._headers,
+        )
+        if response.status_code != 200:
+            raise Exception(f"Error: {response.status_code} - {response.text}")
+        return response.json()
+
+    async def alist_web_hitl_decisions(
+            self,
+            limit: int = 50,
+            thread_id: str | None = None,
+        ) -> Dict[str, Any]:
+        params = {"limit": max(1, min(int(limit), 200))}
+        if thread_id:
+            params["thread_id"] = str(thread_id).strip()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{self.base_url}/hitl/web_decisions",
+                params=params,
+                headers=self._headers,
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
+
+    def list_web_hitl_decisions(
+            self,
+            limit: int = 50,
+            thread_id: str | None = None,
+        ) -> Dict[str, Any]:
+        params = {"limit": max(1, min(int(limit), 200))}
+        if thread_id:
+            params["thread_id"] = str(thread_id).strip()
+        response = requests.get(
+            f"{self.base_url}/hitl/web_decisions",
+            params=params,
+            headers=self._headers,
+        )
+        if response.status_code != 200:
+            raise Exception(f"Error: {response.status_code} - {response.text}")
+        return response.json()

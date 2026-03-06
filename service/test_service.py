@@ -139,6 +139,33 @@ def test_store_threads_are_isolated_by_user():
     assert "thread-b-1" in ids_b
 
 
+@patch("service.service.perform_web_search")
+def test_web_search_preview_endpoint(mock_web_search):
+    mock_web_search.return_value = (
+        "- Example AI News\n"
+        "  Link: https://example.com/ai-news\n"
+        "  Date: 2026-03-01\n"
+        "  Snippet: Example summary.",
+        {"cache_hit": False, "source": "web_live"},
+    )
+
+    with client as c:
+        headers = _auth_headers(c)
+        resp = c.post(
+            "/web_search/preview",
+            json={"query": "latest ai news last week", "recency_days": 7, "max_results": 5},
+            headers=headers,
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["query"] == "latest ai news last week"
+    assert body["recency_days"] == 7
+    assert body["count"] >= 1
+    assert body["items"][0]["title"] == "Example AI News"
+    assert body["items"][0]["url"] == "https://example.com/ai-news"
+
+
 def test_monitoring_endpoints_are_public():
     with client as c:
         health = c.get("/healthz")
@@ -152,3 +179,43 @@ def test_monitoring_endpoints_are_public():
         metrics = c.get("/metrics")
         assert metrics.status_code == 200
         assert "http_requests_total" in metrics.text
+
+
+def test_hitl_web_decision_is_recorded_and_listed():
+    with client as c:
+        headers = _auth_headers(c, user_id=f"hitl-user-{uuid4().hex[:6]}")
+        thread_id = f"hitl-thread-{uuid4().hex[:6]}"
+        query = "latest ai news last week"
+
+        record = c.post(
+            "/hitl/web_decision",
+            json={
+                "query": query,
+                "decision": "rejected",
+                "thread_id": thread_id,
+                "reason": "results are outside last week",
+                "recency_days": 7,
+                "preview_count": 5,
+                "all_within_recency": False,
+                "source": "web_live",
+                "cache_hit": False,
+            },
+            headers=headers,
+        )
+        assert record.status_code == 200
+        assert record.json()["status"] == "recorded"
+
+        listed = c.get(
+            "/hitl/web_decisions",
+            params={"limit": 20, "thread_id": thread_id},
+            headers=headers,
+        )
+        assert listed.status_code == 200
+        body = listed.json()
+        assert body["count"] >= 1
+        assert any(
+            event["query"] == query
+            and event["decision"] == "rejected"
+            and event["reason"] == "results are outside last week"
+            for event in body["events"]
+        )
