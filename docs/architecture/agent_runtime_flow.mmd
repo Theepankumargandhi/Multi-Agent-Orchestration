@@ -9,16 +9,11 @@ flowchart TD
     THR --> TSEL[Sidebar conversation history]
     TSEL --> HIST["GET /store/{thread_id}"]
     HIST --> ST
-    ST --> PREV["POST /web_search/preview (recency web queries)"]
-    PREV --> HR[Human approve/reject]
-    HR -->|approve| AUDA["POST /hitl/web_decision (approved)"]
-    HR -->|reject| AUDR["POST /hitl/web_decision (rejected)"]
-    AUDA --> API
-    AUDR --> ST
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
-    API --> CFG[Build RunnableConfig - thread_id checkpoint model]
+    API --> HMAP[HITL decision mapper in service]
+    HMAP --> CFG[Build RunnableConfig - thread_id checkpoint model]
     CFG --> LG[LangGraph research_assistant]
 
     LG --> SA[safety_agent]
@@ -35,7 +30,12 @@ flowchart TD
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
 
-    RG --> WS[web_search_agent - web cache check]
+    RG --> WH[web_hitl_gate_agent]
+    WH -->|awaiting preview| EVA
+    WH -->|rejected| EVA
+    WH -->|approved web| RESP
+    WH -->|approved hybrid| RA
+    WH -->|not required| WS[web_search_agent - web cache check]
     WS -->|web| RESP
     WS -->|hybrid| RA
     KG --> RA
@@ -47,9 +47,12 @@ flowchart TD
     EVA --> END[Graph END]
 
     END --> APIOUT[FastAPI serializes final AI message]
-    APIOUT --> STOREA[Store AI message + metadata]
+    APIOUT --> HITAUDIT[Persist HITL decision in hitl_events]
+    HITAUDIT --> STOREA[Store AI message + metadata]
     STOREA --> RET[Return JSON or SSE]
     RET --> UI[Render in Streamlit]
+    UI --> HITLBTN[If preview shown: Approve/Reject buttons]
+    HITLBTN -->|same thread_id| API
 
     API --> OPS["/healthz | /readyz | /metrics"]
     OPS --> PROM[Prometheus scrape]

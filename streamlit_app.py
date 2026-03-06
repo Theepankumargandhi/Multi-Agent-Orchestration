@@ -32,13 +32,31 @@ USER_AUTH_ENABLED = os.getenv("ENABLE_USER_AUTH", "true").strip().lower() not in
     "no",
     "off",
 }
-WEB_HITL_ENABLED_DEFAULT = os.getenv("WEB_HITL_ENABLED", "true").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-WEB_HITL_MAX_RESULTS = max(1, min(int(os.getenv("WEB_HITL_MAX_RESULTS", "5")), 10))
+
+
+def _extract_hitl_preview_context(text: str) -> dict | None:
+    content = (text or "").strip()
+    if not content:
+        return None
+    if "Human approval required before web-answer generation." not in content:
+        return None
+
+    # Support both single-line and multi-line render variants.
+    query_match = re.search(
+        r"Query:\s*(.+?)(?:\s+Recency target:\s*last\s*(\d+)\s+days|$)",
+        content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not query_match:
+        return None
+
+    query = (query_match.group(1) or "").strip()
+    if not query:
+        return None
+
+    days_raw = query_match.group(2) or ""
+    recency_days = int(days_raw) if days_raw.isdigit() else 0
+    return {"query": query, "recency_days": recency_days}
 
 
 def _history_rows_to_chat_messages(rows: list[dict]) -> list[ChatMessage]:
@@ -72,54 +90,6 @@ def _thread_label(thread: dict) -> str:
         return f"{when_short} | {count} msgs | {preview}"
     return f"{when_short} | {count} msgs | {thread_id}"
 
-
-def _extract_hitl_recency_days(query: str) -> int:
-    q = (query or "").strip().lower()
-    if not q:
-        return 0
-    if "today" in q or "past 24 hour" in q or "last 24 hour" in q:
-        return 1
-
-    direct_match = re.search(r"\b(?:last|past)\s+(\d{1,3})\s+day", q)
-    if direct_match:
-        return max(1, min(int(direct_match.group(1)), 30))
-
-    week_match = re.search(r"\b(?:last|past)\s+(\d{1,2})\s+week", q)
-    if week_match:
-        return max(1, min(int(week_match.group(1)) * 7, 30))
-
-    if "last week" in q or "past week" in q or "this week" in q:
-        return 7
-    if "last month" in q or "past month" in q or "this month" in q:
-        return 30
-
-    if any(token in q for token in ("latest", "recent", "current", "news", "updates")):
-        return 7
-    return 0
-
-
-def _is_web_hitl_candidate(query: str) -> bool:
-    q = (query or "").strip().lower()
-    if not q:
-        return False
-    if q.startswith("local:"):
-        return False
-    if any(token in q for token in ("calculate", "equation", "math")):
-        return False
-    if re.fullmatch(r"[\d\.\s\+\-\*/\(\)\^=]+", q):
-        return False
-
-    recency_terms = (
-        "latest",
-        "recent",
-        "current",
-        "today",
-        "this week",
-        "last week",
-        "past",
-    )
-    web_terms = ("news", "update", "updates", "headline", "headlines", "happening", "trend", "trends")
-    return any(term in q for term in recency_terms) and any(term in q for term in web_terms)
 
 @st.cache_resource
 def get_agent_client():
@@ -179,13 +149,6 @@ async def main():
         if st.session_state.auth_token:
             agent_client.set_access_token(st.session_state.auth_token)
 
-    if "web_hitl_enabled" not in st.session_state:
-        st.session_state.web_hitl_enabled = WEB_HITL_ENABLED_DEFAULT
-    if "pending_web_hitl" not in st.session_state:
-        st.session_state.pending_web_hitl = None
-    if "web_hitl_reject_reason" not in st.session_state:
-        st.session_state.web_hitl_reject_reason = ""
-
     ctx = get_script_run_ctx()
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = (getattr(ctx, "session_id", None) if ctx else None) or str(uuid4())
@@ -202,8 +165,6 @@ async def main():
                 if col_new.button("New Chat"):
                     st.session_state.messages = []
                     st.session_state.thread_id = str(uuid4())
-                    st.session_state.pending_web_hitl = None
-                    st.session_state.web_hitl_reject_reason = ""
                     st.rerun()
                 if col_refresh.button("Refresh"):
                     try:
@@ -244,8 +205,6 @@ async def main():
                     st.session_state.auth_token = ""
                     st.session_state.messages = []
                     st.session_state.thread_summaries = []
-                    st.session_state.pending_web_hitl = None
-                    st.session_state.web_hitl_reject_reason = ""
                     if "thread_id" in st.session_state:
                         del st.session_state.thread_id
                     agent_client.set_access_token(None)
@@ -267,8 +226,6 @@ async def main():
                         st.session_state.auth_user_id = auth.user_id
                         st.session_state.auth_token = auth.access_token
                         agent_client.set_access_token(auth.access_token)
-                        st.session_state.pending_web_hitl = None
-                        st.session_state.web_hitl_reject_reason = ""
 
                         threads_payload = await agent_client.alist_threads(limit=30)
                         thread_summaries = threads_payload.get("threads", [])
@@ -304,11 +261,7 @@ async def main():
             m = st.radio("LLM to use", options=list(models.keys()))
             model = models[m]
             use_streaming = st.toggle("Stream results", value=True)
-            st.session_state.web_hitl_enabled = st.toggle(
-                "HITL for latest web news",
-                value=bool(st.session_state.web_hitl_enabled),
-                help="For recency/news queries, show web results first and require approve/reject before final answer.",
-            )
+            st.caption("Web HITL runs inside backend graph (reply `approve` / `reject: reason`).")
         with st.popover(":material/policy: Privacy"):
             st.write("Prompts, responses and feedback in this app are anonymously recorded and saved to LangSmith for product evaluation and improvement purposes only.")
 
@@ -334,9 +287,10 @@ async def main():
 
     await draw_messages(amessage_iter())
 
-    async def _submit_user_query(input_text: str) -> None:
-        messages.append(ChatMessage(type="human", content=input_text))
-        st.chat_message("human").write(input_text)
+    async def _submit_user_query(input_text: str, display_text: str | None = None) -> None:
+        shown = (display_text or input_text or "").strip()
+        messages.append(ChatMessage(type="human", content=shown))
+        st.chat_message("human").write(shown)
         try:
             if use_streaming:
                 stream = agent_client.astream(
@@ -366,127 +320,38 @@ async def main():
             st.chat_message("ai").error(err)
             messages.append(ChatMessage(type="ai", content=err))
 
-    pending_hitl = st.session_state.get("pending_web_hitl")
+    pending_hitl = None
+    if messages:
+        latest = messages[-1]
+        if latest.type == "ai":
+            pending_hitl = _extract_hitl_preview_context(latest.content or "")
+
     if pending_hitl:
-        with st.chat_message("ai"):
-            st.markdown("### Human Approval Needed: Web Search Results")
-            st.caption(
-                f"Query: {pending_hitl.get('query', '')} | Recency target: last {pending_hitl.get('recency_days', 7)} days"
+        with st.container(border=True):
+            st.caption("Web HITL decision")
+            st.write(
+                f"Preview is waiting for your decision for query: `{pending_hitl['query']}`"
             )
-            if pending_hitl.get("all_within_recency"):
-                st.success("All dated preview results are within your recency window.")
-            else:
-                st.warning("Some results may be outside the requested recency window. Review before continuing.")
-
-            preview_items = pending_hitl.get("items", [])
-            for idx, item in enumerate(preview_items, start=1):
-                title = str(item.get("title") or "Untitled result")
-                url = str(item.get("url") or "")
-                date_text = str(item.get("published_date") or "date unknown")
-                snippet = str(item.get("snippet") or "")
-                recency_flag = item.get("is_within_recency")
-                if recency_flag is True:
-                    marker = "within range"
-                elif recency_flag is False:
-                    marker = "outside range"
-                else:
-                    marker = "date unknown"
-                st.markdown(f"{idx}. **{title}**")
-                st.caption(f"{date_text} | {marker}")
-                if url:
-                    st.markdown(f"[Open source]({url})")
-                if snippet:
-                    st.write(snippet)
-
-            st.text_input(
+            reject_reason = st.text_input(
                 "Reject reason (optional)",
-                key="web_hitl_reject_reason",
-                placeholder="Example: Results are older than last week.",
+                key="web_hitl_reject_reason_input",
+                placeholder="Example: Please use only last 3 days and include Reuters.",
             )
             col_approve, col_reject = st.columns(2)
-            approve_clicked = col_approve.button("Approve and Continue", key="web_hitl_approve")
-            reject_clicked = col_reject.button("Reject", key="web_hitl_reject")
+            approve_clicked = col_approve.button("Approve", key="web_hitl_approve_btn")
+            reject_clicked = col_reject.button("Reject", key="web_hitl_reject_btn")
 
         if approve_clicked:
-            approved_query = str(pending_hitl.get("query") or "").strip()
-            try:
-                if approved_query:
-                    await agent_client.arecord_web_hitl_decision(
-                        query=approved_query,
-                        decision="approved",
-                        thread_id=str(st.session_state.get("thread_id") or ""),
-                        recency_days=int(pending_hitl.get("recency_days") or 0),
-                        preview_count=int(pending_hitl.get("count") or len(pending_hitl.get("items", []))),
-                        all_within_recency=bool(pending_hitl.get("all_within_recency")),
-                        source=str(pending_hitl.get("source") or ""),
-                        cache_hit=bool(pending_hitl.get("cache_hit")),
-                    )
-            except Exception as e:
-                st.warning(f"Could not persist HITL approval audit record: {e}")
-            st.session_state.pending_web_hitl = None
-            if approved_query:
-                await _submit_user_query(approved_query)
+            await _submit_user_query("approve", display_text="approve")
             st.rerun()
-
         if reject_clicked:
-            rejected_query = str(pending_hitl.get("query") or "").strip()
-            reason = str(st.session_state.get("web_hitl_reject_reason") or "").strip()
-            try:
-                if rejected_query:
-                    await agent_client.arecord_web_hitl_decision(
-                        query=rejected_query,
-                        decision="rejected",
-                        thread_id=str(st.session_state.get("thread_id") or ""),
-                        reason=reason,
-                        recency_days=int(pending_hitl.get("recency_days") or 0),
-                        preview_count=int(pending_hitl.get("count") or len(pending_hitl.get("items", []))),
-                        all_within_recency=bool(pending_hitl.get("all_within_recency")),
-                        source=str(pending_hitl.get("source") or ""),
-                        cache_hit=bool(pending_hitl.get("cache_hit")),
-                    )
-            except Exception as e:
-                st.warning(f"Could not persist HITL rejection audit record: {e}")
-            st.session_state.pending_web_hitl = None
-            rejection_note = "Web search results rejected. Please refine your news request."
-            if reason:
-                rejection_note = f"{rejection_note}\n\nReason: {reason}"
-            if rejected_query:
-                messages.append(ChatMessage(type="human", content=rejected_query))
-            messages.append(ChatMessage(type="ai", content=rejection_note))
+            reason = (reject_reason or "").strip()
+            reject_text = f"reject: {reason}" if reason else "reject"
+            await _submit_user_query(reject_text, display_text="reject")
             st.rerun()
 
-    input_text = st.chat_input(disabled=bool(st.session_state.get("pending_web_hitl")))
+    input_text = st.chat_input()
     if input_text:
-        if bool(st.session_state.get("web_hitl_enabled")) and _is_web_hitl_candidate(input_text):
-            recency_days = _extract_hitl_recency_days(input_text)
-            if recency_days > 0:
-                try:
-                    preview = await agent_client.aweb_search_preview(
-                        query=input_text,
-                        recency_days=recency_days,
-                        max_results=WEB_HITL_MAX_RESULTS,
-                    )
-                    if preview.get("count", 0) > 0:
-                        preview["query"] = input_text
-                        st.session_state.web_hitl_reject_reason = ""
-                        st.session_state.pending_web_hitl = preview
-                        st.rerun()
-                    else:
-                        messages.append(ChatMessage(
-                            type="ai",
-                            content=(
-                                "HITL preview found no web results, so the query was not sent. "
-                                "Please refine the request and try again."
-                            ),
-                        ))
-                        st.rerun()
-                except Exception as e:
-                    messages.append(ChatMessage(
-                        type="ai",
-                        content=f"HITL preview failed, so the query was not sent.\n\nError: {e}",
-                    ))
-                    st.rerun()
-
         await _submit_user_query(input_text)
         st.rerun()  # Clear stale containers
 

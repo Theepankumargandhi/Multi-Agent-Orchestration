@@ -18,7 +18,7 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 
 ## Highlights
 
-- 11-agent LangGraph orchestration graph
+- 12-agent LangGraph orchestration graph
 - FastAPI service with `/invoke` and `/stream`
 - Operational endpoints: `/metrics`, `/healthz`, `/readyz`
 - Streamlit chat UI
@@ -30,7 +30,9 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 - TTL caching for web search and local RAG retrieval
 - Optional Redis-backed caching (with in-memory fallback)
 - MCP tool bridge for `web_search` and `calculator` (with local fallback)
-- Conditional HITL for recency web-news queries (preview + approve/reject)
+- Graph-native HITL for recency web-news queries (`web_hitl_gate_agent`)
+- Streamlit HITL buttons (`Approve` / `Reject`) with plain-text fallback (`approve`, `reject: reason`)
+- Backend HITL decision mapper (service-side pending cache per `user_id` + `thread_id`)
 - HITL decision audit trail persisted per user/thread (`hitl_events`)
 - Monitoring stack with Prometheus + Grafana
 - Dual-layer persistence:
@@ -40,19 +42,20 @@ Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent r
 - Evaluation agent (heuristic quality audit)
 - Per-user authentication (user ID + password) with bearer tokens
 
-## Agent Architecture (11 Agents)
+## Agent Architecture (12 Agents)
 
 1. `safety_agent`
 2. `intent_router_agent`
 3. `clarification_agent`
 4. `query_rewriter_agent`
 5. `recency_guard_agent`
-6. `web_search_agent`
-7. `knowledge_graph_agent`
-8. `rag_agent`
-9. `math_agent`
-10. `response_agent`
-11. `evaluation_agent`
+6. `web_hitl_gate_agent`
+7. `web_search_agent`
+8. `knowledge_graph_agent`
+9. `rag_agent`
+10. `math_agent`
+11. `response_agent`
+12. `evaluation_agent`
 
 ## Full Architecture Flow (Mermaid)
 
@@ -67,16 +70,11 @@ flowchart TD
     THR --> TSEL[Sidebar conversation history]
     TSEL --> HIST["GET /store/{thread_id}"]
     HIST --> ST
-    ST --> PREV["POST /web_search/preview (recency web queries)"]
-    PREV --> HR[Human approve/reject]
-    HR -->|approve| AUDA["POST /hitl/web_decision (approved)"]
-    HR -->|reject| AUDR["POST /hitl/web_decision (rejected)"]
-    AUDA --> API
-    AUDR --> ST
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
-    API --> CFG[Build RunnableConfig - thread_id checkpoint model]
+    API --> HMAP[HITL decision mapper in service]
+    HMAP --> CFG[Build RunnableConfig - thread_id checkpoint model]
     CFG --> LG[LangGraph research_assistant]
 
     LG --> SA[safety_agent]
@@ -93,7 +91,12 @@ flowchart TD
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
 
-    RG --> WS[web_search_agent - web cache check]
+    RG --> WH[web_hitl_gate_agent]
+    WH -->|awaiting preview| EVA
+    WH -->|rejected| EVA
+    WH -->|approved web| RESP
+    WH -->|approved hybrid| RA
+    WH -->|not required| WS[web_search_agent - web cache check]
     WS -->|web| RESP
     WS -->|hybrid| RA
     KG --> RA
@@ -105,9 +108,12 @@ flowchart TD
     EVA --> END[Graph END]
 
     END --> APIOUT[FastAPI serializes final AI message]
-    APIOUT --> STOREA[Store AI message + metadata]
+    APIOUT --> HITAUDIT[Persist HITL decision in hitl_events]
+    HITAUDIT --> STOREA[Store AI message + metadata]
     STOREA --> RET[Return JSON or SSE]
     RET --> UI[Render in Streamlit]
+    UI --> HITLBTN[If preview shown: Approve/Reject buttons]
+    HITLBTN -->|same thread_id| API
 
     API --> OPS["/healthz | /readyz | /metrics"]
     OPS --> PROM[Prometheus scrape]
@@ -136,8 +142,10 @@ flowchart LR
 - `clarification_agent` asks a follow-up question and ends the current run.
 - The next user message starts a new run and is routed again.
 - On login, UI fetches `GET /store/threads`, auto-loads latest thread, and allows switching thread history.
-- For recency/news prompts, UI can require human approval using `POST /web_search/preview` before invoking agents.
-- Every HITL approve/reject is recorded through `POST /hitl/web_decision` and persisted in `hitl_events`.
+- For recency/news prompts, graph-level HITL runs in `web_hitl_gate_agent`.
+- The assistant returns a preview; Streamlit shows `Approve`/`Reject` buttons (typing `approve` or `reject: <reason>` also works).
+- Service maps plain approve/reject into internal HITL control payload using pending context keyed by `user_id` + `thread_id`.
+- HITL approve/reject is persisted in `hitl_events` automatically from graph state (`/invoke` and `/stream`).
 - `local:` prefix routes to `rag_agent` or `knowledge_graph_agent` for relationship questions.
 - `recency_guard_agent` applies recency as a preference (fallback to most recent relevant results).
 - Mermaid graph edges remain stable for retrieval internals; new relationship reasoning runs in `knowledge_graph_agent`.
@@ -192,8 +200,8 @@ git push origin v1.0.0
 - `POST /auth/login` - login user and receive access token
 - `POST /invoke` - non-streaming chat response
 - `POST /stream` - streaming chat response
-- `POST /web_search/preview` - preview recency-focused web results for human approval
-- `POST /hitl/web_decision` - record HITL approve/reject audit event
+- `POST /web_search/preview` - optional/manual preview endpoint for external clients (Streamlit default flow does not require this)
+- `POST /hitl/web_decision` - optional/manual HITL audit event record endpoint
 - `GET /hitl/web_decisions` - list authenticated user's HITL audit records
 - `GET /store/threads` - list authenticated user's recent conversation threads
 - `GET /store/{thread_id}` - inspect persisted conversation records

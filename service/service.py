@@ -495,6 +495,118 @@ def _parse_web_preview_items(web_notes: str, recency_days: int) -> list[dict[str
     ]
 
 
+def _b64url_encode_text(value: str) -> str:
+    raw = (value or "").encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _build_web_hitl_control_payload(
+    action: str,
+    query: str,
+    recency_days: int = 0,
+    route: str = "web",
+    reason: str = "",
+) -> str:
+    clean_action = (action or "").strip().lower()
+    clean_route = (route or "web").strip().lower()
+    clean_days = max(0, int(recency_days or 0))
+    return (
+        f"WEB_HITL_DECISION?action={clean_action}"
+        f"&route={clean_route}"
+        f"&days={clean_days}"
+        f"&query_b64={_b64url_encode_text(query or '')}"
+        f"&reason_b64={_b64url_encode_text(reason or '')}"
+    )
+
+
+def _parse_plain_hitl_decision_text(text: str) -> tuple[str, str]:
+    raw = (text or "").strip()
+    lower = raw.lower()
+    if not raw:
+        return "", ""
+    if lower.startswith("approve"):
+        return "approve", ""
+    if lower in {"yes", "y", "ok", "okay", "continue", "proceed"}:
+        return "approve", ""
+    if lower.startswith("reject"):
+        return "reject", raw[len("reject"):].strip(" :-")
+    if lower.startswith("no"):
+        return "reject", raw[len("no"):].strip(" :-")
+    return "", ""
+
+
+def _extract_pending_hitl_from_state(state: Dict[str, Any]) -> Dict[str, Any] | None:
+    decision = str(state.get("web_hitl_decision") or "").strip().lower()
+    if decision != "awaiting":
+        return None
+    query = str(state.get("web_hitl_pending_query") or "").strip()
+    if not query:
+        return None
+    route = str(state.get("web_hitl_pending_route") or state.get("route") or "web").strip().lower()
+    if route not in {"web", "hybrid"}:
+        route = "web"
+    recency_days = int(state.get("web_hitl_pending_recency_days") or state.get("recency_days") or 0)
+    return {
+        "query": query,
+        "route": route,
+        "recency_days": recency_days,
+    }
+
+
+def _maybe_rewrite_hitl_message(
+    app: FastAPI,
+    user_id: str | None,
+    thread_id: str,
+    raw_message: str,
+) -> str:
+    message = (raw_message or "").strip()
+    if not message:
+        return message
+    if "WEB_HITL_DECISION?" in message or "__WEB_HITL__|" in message:
+        return message
+
+    action, reason = _parse_plain_hitl_decision_text(message)
+    if action not in {"approve", "reject"}:
+        return message
+
+    cache = getattr(app.state, "web_hitl_pending_cache", {})
+    cache_key = f"{(user_id or '').strip()}::{thread_id}"
+    pending = cache.get(cache_key) or {}
+    pending_query = str(pending.get("query") or "").strip()
+    if not pending_query:
+        return message
+    pending_route = str(pending.get("route") or "web").strip().lower()
+    if pending_route not in {"web", "hybrid"}:
+        pending_route = "web"
+    pending_days = int(pending.get("recency_days") or 0)
+    return _build_web_hitl_control_payload(
+        action=action,
+        query=pending_query,
+        recency_days=pending_days,
+        route=pending_route,
+        reason=reason,
+    )
+
+
+def _update_hitl_pending_cache(
+    app: FastAPI,
+    user_id: str | None,
+    thread_id: str,
+    state: Dict[str, Any],
+) -> None:
+    cache = getattr(app.state, "web_hitl_pending_cache", None)
+    if not isinstance(cache, dict):
+        return
+    cache_key = f"{(user_id or '').strip()}::{thread_id}"
+    decision = str(state.get("web_hitl_decision") or "").strip().lower()
+    if decision in {"approved", "rejected"}:
+        cache.pop(cache_key, None)
+        return
+    pending = _extract_pending_hitl_from_state(state)
+    if pending:
+        cache[cache_key] = pending
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
@@ -510,6 +622,7 @@ async def lifespan(app: FastAPI):
         app.state.checkpoint_backend = backend
         app.state.store = store_result.store
         app.state.store_backend = store_result.backend_label
+        app.state.web_hitl_pending_cache = {}
         print(f"[service] Checkpointer backend: {backend}")
         print(f"[service] Conversation store backend: {store_result.backend_label}")
         yield
@@ -711,6 +824,40 @@ async def _store_hitl_event_safely(
         print(f"[service] store write failed (hitl:{decision}): {e}")
 
 
+def _extract_hitl_audit_event(state: Dict[str, Any]) -> Dict[str, Any] | None:
+    decision = str(state.get("web_hitl_decision") or "").strip().lower()
+    if decision not in {"approved", "rejected"}:
+        return None
+
+    query = str(
+        state.get("web_hitl_audit_query")
+        or state.get("web_hitl_pending_query")
+        or state.get("query")
+        or ""
+    ).strip()
+    if not query:
+        return None
+
+    reason = str(state.get("web_hitl_reject_reason") or "").strip()
+    if decision == "approved":
+        reason = ""
+
+    metadata = {
+        "recency_days": int(state.get("web_hitl_pending_recency_days") or state.get("recency_days") or 0),
+        "preview_count": int(state.get("web_hitl_preview_count") or 0),
+        "all_within_recency": bool(state.get("web_hitl_all_within_recency")),
+        "source": str(state.get("web_hitl_pending_source_meta") or state.get("web_source_meta") or ""),
+        "cache_hit": False,
+        "audit_source": "graph",
+    }
+    return {
+        "query": query,
+        "decision": decision,
+        "reason": reason,
+        "metadata": metadata,
+    }
+
+
 @app.post("/invoke")
 async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
     """
@@ -721,7 +868,19 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
     """
     agent: CompiledGraph = app.state.agent
     user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
-    kwargs, run_id = _parse_input(user_input, user_id=user_id)
+    preview_thread_id = user_input.thread_id or str(uuid4())
+    effective_message = _maybe_rewrite_hitl_message(
+        app,
+        user_id,
+        preview_thread_id,
+        user_input.message,
+    )
+    effective_input = UserInput(
+        message=effective_message,
+        model=user_input.model,
+        thread_id=user_input.thread_id,
+    )
+    kwargs, run_id = _parse_input(effective_input, user_id=user_id)
     thread_id = kwargs["config"]["configurable"]["thread_id"]
     await _store_message_safely(
         app,
@@ -758,6 +917,18 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
                 "evaluation_report": response.get("evaluation_report"),
             },
         )
+        hitl_event = _extract_hitl_audit_event(response)
+        _update_hitl_pending_cache(app, user_id, thread_id, response)
+        if hitl_event:
+            await _store_hitl_event_safely(
+                app,
+                user_id=user_id,
+                thread_id=thread_id,
+                query=hitl_event["query"],
+                decision=hitl_event["decision"],
+                reason=hitl_event["reason"],
+                metadata=hitl_event["metadata"],
+            )
         return output
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -772,7 +943,20 @@ async def message_generator(
     This is the workhorse method for the /stream endpoint.
     """
     agent: CompiledGraph = app.state.agent
-    kwargs, run_id = _parse_input(user_input, user_id=user_id)
+    preview_thread_id = user_input.thread_id or str(uuid4())
+    effective_message = _maybe_rewrite_hitl_message(
+        app,
+        user_id,
+        preview_thread_id,
+        user_input.message,
+    )
+    effective_input = StreamInput(
+        message=effective_message,
+        model=user_input.model,
+        thread_id=user_input.thread_id,
+        stream_tokens=user_input.stream_tokens,
+    )
+    kwargs, run_id = _parse_input(effective_input, user_id=user_id)
     thread_id = kwargs["config"]["configurable"]["thread_id"]
     await _store_message_safely(
         app,
@@ -815,6 +999,7 @@ async def message_generator(
             await output_queue.put(None)
     stream_task = asyncio.create_task(run_agent_stream())
     stored_message_fingerprints = set()
+    hitl_event: Dict[str, Any] | None = None
 
     # Process the queue and yield messages over the SSE stream.
     while s := await output_queue.get():
@@ -830,6 +1015,10 @@ async def message_generator(
         # s could have updates for multiple nodes, so check each for messages.
         new_messages = []
         for _, state in s.items():
+            candidate = _extract_hitl_audit_event(state)
+            if candidate:
+                hitl_event = candidate
+            _update_hitl_pending_cache(app, user_id, thread_id, state)
             new_messages.extend(state.get("messages", []))
         for message in new_messages:
             try:
@@ -860,6 +1049,16 @@ async def message_generator(
             yield f"data: {json.dumps({'type': 'message', 'content': model_dump_compat(chat_message)})}\n\n"
     
     await stream_task
+    if hitl_event:
+        await _store_hitl_event_safely(
+            app,
+            user_id=user_id,
+            thread_id=thread_id,
+            query=hitl_event["query"],
+            decision=hitl_event["decision"],
+            reason=hitl_event["reason"],
+            metadata=hitl_event["metadata"],
+        )
     yield "data: [DONE]\n\n"
 
 @app.post("/stream")

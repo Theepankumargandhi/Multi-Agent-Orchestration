@@ -15,16 +15,11 @@ flowchart TD
     THR --> TSEL[Sidebar conversation history]
     TSEL --> HIST["GET /store/{thread_id}"]
     HIST --> ST
-    ST --> PREV["POST /web_search/preview (recency web queries)"]
-    PREV --> HR[Human approve/reject]
-    HR -->|approve| AUDA["POST /hitl/web_decision (approved)"]
-    HR -->|reject| AUDR["POST /hitl/web_decision (rejected)"]
-    AUDA --> API
-    AUDR --> ST
     ST -->|message, model, thread_id| API[FastAPI /invoke or /stream]
 
     API --> STOREH[Store human message]
-    API --> CFG[Build RunnableConfig - thread_id checkpoint model]
+    API --> HMAP[HITL decision mapper in service]
+    HMAP --> CFG[Build RunnableConfig - thread_id checkpoint model]
     CFG --> LG[LangGraph research_assistant]
 
     LG --> SA[safety_agent]
@@ -41,7 +36,12 @@ flowchart TD
     IR -->|hybrid| RG
     IR -->|general| RESP[response_agent]
 
-    RG --> WS[web_search_agent - web cache check]
+    RG --> WH[web_hitl_gate_agent]
+    WH -->|awaiting preview| EVA
+    WH -->|rejected| EVA
+    WH -->|approved web| RESP
+    WH -->|approved hybrid| RA
+    WH -->|not required| WS[web_search_agent - web cache check]
     WS -->|web| RESP
     WS -->|hybrid| RA
     KG --> RA
@@ -53,9 +53,12 @@ flowchart TD
     EVA --> END[Graph END]
 
     END --> APIOUT[FastAPI serializes final AI message]
-    APIOUT --> STOREA[Store AI message + metadata]
+    APIOUT --> HITAUDIT[Persist HITL decision in hitl_events]
+    HITAUDIT --> STOREA[Store AI message + metadata]
     STOREA --> RET[Return JSON or SSE]
     RET --> UI[Render in Streamlit]
+    UI --> HITLBTN[If preview shown: Approve/Reject buttons]
+    HITLBTN -->|same thread_id| API
 
     API --> OPS["/healthz | /readyz | /metrics"]
     OPS --> PROM[Prometheus scrape]
@@ -81,8 +84,10 @@ flowchart TD
 - `clarification_agent` does not continue to `response_agent` in the same run.
 - Clarified user reply comes as a new turn and is routed again by `intent_router_agent`.
 - On login, UI calls `GET /store/threads`, auto-loads latest thread, and can switch older thread history.
-- For recency/news prompts, UI can require human approval through `POST /web_search/preview`.
-- HITL approve/reject actions are audited via `POST /hitl/web_decision` and persisted in `hitl_events`.
+- For recency/news prompts, graph-level HITL runs in `web_hitl_gate_agent`.
+- The assistant returns preview context; Streamlit shows `Approve`/`Reject` buttons (typing `approve` or `reject: <reason>` also works).
+- Service rewrites plain approve/reject input into internal HITL control payload using pending context for the same `user_id` + `thread_id`.
+- HITL decisions are audited automatically and persisted in `hitl_events`.
 - `local:` prefix routes to `rag` or `kg` depending on relationship intent.
 - `knowledge_graph_agent` reads from dedicated Graph RAG ingestion (`graph_rag_docs` -> `graph_chroma_db`).
 - `rag_agent` reads from local RAG ingestion (`rag_docs` -> `chroma_db`).

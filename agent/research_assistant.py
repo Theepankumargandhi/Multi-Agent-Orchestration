@@ -1,6 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import base64
 import os
 import re
+from urllib.parse import parse_qs
 
 import numexpr
 from langchain_openai import ChatOpenAI
@@ -29,6 +31,17 @@ class AgentState(MessagesState):
     recency_query: str
     recency_days: int
     recency_notes: str
+    web_hitl_decision: str
+    web_hitl_reject_reason: str
+    web_hitl_pending_query: str
+    web_hitl_pending_route: str
+    web_hitl_pending_recency_query: str
+    web_hitl_pending_recency_days: int
+    web_hitl_pending_web_notes: str
+    web_hitl_pending_source_meta: str
+    web_hitl_preview_count: int
+    web_hitl_all_within_recency: bool
+    web_hitl_audit_query: str
     web_notes: str
     web_source_meta: str
     rag_notes: str
@@ -42,13 +55,14 @@ class AgentState(MessagesState):
     evaluation_report: str
 
 
-# 11 specialized agents in this orchestration graph.
+# 12 specialized agents in this orchestration graph.
 SPECIALIZED_AGENTS = [
     "safety_agent",
     "intent_router_agent",
     "clarification_agent",
     "query_rewriter_agent",
     "recency_guard_agent",
+    "web_hitl_gate_agent",
     "web_search_agent",
     "knowledge_graph_agent",
     "rag_agent",
@@ -63,6 +77,8 @@ _model_cache = {}
 DEFAULT_VAGUE_NEWS_TOPIC = os.getenv("DEFAULT_VAGUE_NEWS_TOPIC", "ai").strip().lower()
 HYBRID_ROUTER_ENABLE = os.getenv("HYBRID_ROUTER_ENABLE", "true").strip().lower() in {"1", "true", "yes", "on"}
 HYBRID_ROUTER_MIN_CONFIDENCE = float(os.getenv("HYBRID_ROUTER_MIN_CONFIDENCE", "0.75"))
+GRAPH_WEB_HITL_ENABLED = os.getenv("GRAPH_WEB_HITL_ENABLED", os.getenv("WEB_HITL_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+GRAPH_WEB_HITL_MAX_RESULTS = max(1, min(int(os.getenv("GRAPH_WEB_HITL_MAX_RESULTS", os.getenv("WEB_HITL_MAX_RESULTS", "5"))), 10))
 
 
 def _build_model(model_name: str) -> BaseChatModel:
@@ -269,6 +285,173 @@ def _extract_recency_days(query: str) -> int | None:
     return None
 
 
+def _parse_ymd_date(value: str) -> datetime | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _b64url_decode_text(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    try:
+        padding = "=" * ((4 - len(text) % 4) % 4)
+        raw = base64.urlsafe_b64decode(text + padding)
+        return raw.decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+def _parse_web_hitl_control_message(user_text: str) -> dict[str, str | int] | None:
+    """
+    Parse Streamlit button control payload:
+    __WEB_HITL__|<action>|<route>|<recency_days>|<query_b64>|<reason_b64>
+    """
+    text = (user_text or "").strip()
+    # Preferred format:
+    # WEB_HITL_DECISION?action=<approve|reject>&route=<web|hybrid>&days=<int>&query_b64=<...>&reason_b64=<...>
+    marker_new = "WEB_HITL_DECISION?"
+    idx_new = text.find(marker_new)
+    if idx_new >= 0:
+        payload = text[idx_new + len(marker_new):]
+        params = parse_qs(payload, keep_blank_values=True)
+        action = str((params.get("action") or [""])[0]).strip().lower()
+        if action not in {"approve", "reject"}:
+            return None
+        route = str((params.get("route") or ["web"])[0]).strip().lower()
+        if route not in {"web", "hybrid"}:
+            route = "web"
+        try:
+            recency_days = max(0, min(int((params.get("days") or ["0"])[0]), 365))
+        except Exception:
+            recency_days = 0
+        query = _b64url_decode_text(str((params.get("query_b64") or [""])[0]))
+        reason = _b64url_decode_text(str((params.get("reason_b64") or [""])[0]))
+        return {
+            "action": action,
+            "route": route,
+            "recency_days": recency_days,
+            "query": query,
+            "reason": reason,
+        }
+
+    # Backward-compatible legacy format:
+    # __WEB_HITL__|<action>|<route>|<recency_days>|<query_b64>|<reason_b64>
+    marker_old = "__WEB_HITL__|"
+    idx_old = text.find(marker_old)
+    if idx_old >= 0:
+        payload = text[idx_old:]
+        parts = payload.split("|", 5)
+        if len(parts) != 6:
+            return None
+        _, action_raw, route_raw, days_raw, query_b64, reason_b64 = parts
+        action = action_raw.strip().lower()
+        if action not in {"approve", "reject"}:
+            return None
+        route = route_raw.strip().lower()
+        if route not in {"web", "hybrid"}:
+            route = "web"
+        try:
+            recency_days = max(0, min(int(days_raw or 0), 365))
+        except Exception:
+            recency_days = 0
+        query = _b64url_decode_text(query_b64)
+        reason = _b64url_decode_text(reason_b64)
+        return {
+            "action": action,
+            "route": route,
+            "recency_days": recency_days,
+            "query": query,
+            "reason": reason,
+        }
+
+    return None
+
+
+def _looks_like_web_hitl_candidate(query: str, recency_days: int) -> bool:
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    if recency_days > 0:
+        return True
+    recency_terms = ("latest", "recent", "current", "today", "this week", "last week", "past")
+    web_terms = ("news", "update", "updates", "headline", "headlines", "happening", "trend", "trends")
+    return any(term in q for term in recency_terms) and any(term in q for term in web_terms)
+
+
+def _parse_hitl_decision(user_text: str) -> tuple[str, str]:
+    text = (user_text or "").strip()
+    lower = text.lower()
+
+    if not text:
+        return "", ""
+
+    if lower.startswith("approve"):
+        return "approved", ""
+    if lower in {"yes", "y", "ok", "okay", "continue", "proceed"}:
+        return "approved", ""
+
+    if lower.startswith("reject"):
+        reason = text[len("reject"):].strip(" :-")
+        return "rejected", reason
+    if lower.startswith("no"):
+        reason = text[len("no"):].strip(" :-")
+        return "rejected", reason
+
+    return "", ""
+
+
+def _format_web_hitl_preview(
+    query: str,
+    recency_days: int,
+    entries: list[dict[str, str]],
+    all_within_recency: bool,
+) -> str:
+    lines = [
+        "Human approval required before web-answer generation.",
+        "",
+        f"Query: {query}",
+    ]
+    if recency_days > 0:
+        lines.append(f"Recency target: last {recency_days} days")
+    lines.append("")
+
+    if all_within_recency:
+        lines.append("All dated preview results are within the recency window.")
+    else:
+        lines.append("Some results may be outside your recency window.")
+    lines.append("")
+
+    if entries:
+        lines.append("Preview results:")
+        for i, entry in enumerate(entries[:GRAPH_WEB_HITL_MAX_RESULTS], start=1):
+            title = entry.get("title", "").strip() or "Untitled"
+            url = entry.get("url", "").strip()
+            date = entry.get("date", "").strip() or "date unknown"
+            snippet = entry.get("snippet", "").strip()
+            if url:
+                lines.append(f"{i}. [{title}]({url}) ({date})")
+            else:
+                lines.append(f"{i}. {title} ({date})")
+            if snippet:
+                lines.append(f"   - {snippet}")
+    else:
+        lines.append("No preview results available.")
+
+    lines.extend(
+        [
+            "",
+            "Reply with `approve` to continue, or `reject: <reason>` to stop.",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
 def _parse_route_classifier_output(text: str) -> tuple[str, float, str]:
     """
     Parse classifier output into (route, confidence, reason).
@@ -342,11 +525,11 @@ def _build_execution_flow(state: AgentState) -> list[str]:
         case "clarify":
             flow.extend(["clarification_agent", "evaluation_agent"])
         case "web":
-            flow.extend(["recency_guard_agent", "web_search_agent", "response_agent", "evaluation_agent"])
+            flow.extend(["recency_guard_agent", "web_hitl_gate_agent", "web_search_agent", "response_agent", "evaluation_agent"])
         case "kg":
             flow.extend(["knowledge_graph_agent", "rag_agent", "response_agent", "evaluation_agent"])
         case "hybrid":
-            flow.extend(["recency_guard_agent", "web_search_agent", "rag_agent", "response_agent", "evaluation_agent"])
+            flow.extend(["recency_guard_agent", "web_hitl_gate_agent", "web_search_agent", "rag_agent", "response_agent", "evaluation_agent"])
         case "rag":
             flow.extend(["rag_agent", "response_agent", "evaluation_agent"])
         case "math":
@@ -387,9 +570,14 @@ def _finalize_user_output(text: str, state: AgentState) -> str:
 
 async def safety_agent(state: AgentState, config: RunnableConfig):
     safety_output = await llama_guard("User", state["messages"])
+    latest_user = _latest_user_query(state)
+    control = _parse_web_hitl_control_message(latest_user)
+    query = str(control.get("query") or "").strip() if control else latest_user
+    if not query:
+        query = latest_user
     return {
         "safety": safety_output,
-        "query": _latest_user_query(state),
+        "query": query,
         "route_confidence": 0.0,
         "route_reason": "",
         "rewritten_query": "",
@@ -398,6 +586,9 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "recency_query": "",
         "recency_days": 0,
         "recency_notes": "",
+        "web_hitl_decision": "",
+        "web_hitl_reject_reason": "",
+        "web_hitl_audit_query": "",
         "web_source_meta": "",
         "rag_source_meta": "",
         "kg_notes": "",
@@ -410,9 +601,39 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
 
 async def intent_router_agent(state: AgentState, config: RunnableConfig):
     query = _active_query(state)
+    control = _parse_web_hitl_control_message(_latest_user_query(state))
     rewrite_done = bool(state.get("rewrite_done", False))
     q = query.lower()
     forced_local = _has_local_prefix(query)
+    pending_hitl_query = (state.get("web_hitl_pending_query") or "").strip()
+
+    if control:
+        control_route = str(control.get("route") or "web").strip().lower()
+        if control_route not in {"web", "hybrid"}:
+            control_route = "web"
+        return {
+            "route": control_route,
+            "route_confidence": 1.0,
+            "route_reason": "Explicit web HITL control message.",
+        }
+
+    # Guardrail: never treat leaked HITL control payload as a web search query.
+    if "web_hitl" in q and not pending_hitl_query:
+        return {
+            "route": "clarify",
+            "route_confidence": 1.0,
+            "route_reason": "Leaked HITL control payload without pending context.",
+        }
+
+    if pending_hitl_query:
+        pending_route = (state.get("web_hitl_pending_route") or "web").strip().lower()
+        if pending_route not in {"web", "hybrid"}:
+            pending_route = "web"
+        return {
+            "route": pending_route,
+            "route_confidence": 1.0,
+            "route_reason": "Pending web HITL decision in progress.",
+        }
 
     web_hints = [
         "latest", "news", "today", "current", "recent", "update", "updates",
@@ -570,10 +791,25 @@ async def query_rewriter_agent(state: AgentState, config: RunnableConfig):
 async def recency_guard_agent(state: AgentState, config: RunnableConfig):
     route = (state.get("route") or "").lower()
     query = _active_query(state)
+    control = _parse_web_hitl_control_message(_latest_user_query(state))
     if route not in {"web", "hybrid"}:
         return {"recency_query": query, "recency_days": 0, "recency_notes": "Not required for this route."}
 
+    pending_query = (state.get("web_hitl_pending_query") or "").strip()
+    if pending_query:
+        pending_recency_query = (state.get("web_hitl_pending_recency_query") or "").strip() or pending_query
+        pending_days = int(state.get("web_hitl_pending_recency_days") or 0)
+        return {
+            "recency_query": pending_recency_query,
+            "recency_days": pending_days,
+            "recency_notes": "Using pending HITL web query context.",
+        }
+
     days = _extract_recency_days(query)
+    if control and str(control.get("action")) == "approve":
+        control_days = int(control.get("recency_days") or 0)
+        if control_days > 0:
+            days = control_days
     if days is None:
         return {"recency_query": query, "recency_days": 0, "recency_notes": "No recency constraint applied."}
 
@@ -601,6 +837,25 @@ def _next_node_from_route(state: AgentState) -> str:
             return "recency_guard_agent"
         case _:
             return "response_agent"
+
+
+def _next_node_after_web_hitl(state: AgentState) -> str:
+    decision = (state.get("web_hitl_decision") or "").lower()
+    route = (state.get("route") or "").lower()
+
+    if decision in {"awaiting", "rejected"}:
+        return "evaluation_agent"
+    if decision == "approved":
+        web_notes = (state.get("web_notes") or "").strip()
+        has_preview_notes = bool(web_notes and "not required for this route" not in web_notes.lower())
+        if has_preview_notes:
+            if route == "hybrid":
+                return "rag_agent"
+            return "response_agent"
+        return "web_search_agent"
+
+    # default path when HITL is not required for this query
+    return "web_search_agent"
 
 
 def _next_node_after_web(state: AgentState) -> str:
@@ -689,6 +944,225 @@ async def web_search_agent(state: AgentState, config: RunnableConfig):
         web_notes = f"Web retrieval failed: {e}"
         web_meta_label = ""
     return {"web_notes": web_notes, "web_source_meta": web_meta_label}
+
+
+async def web_hitl_gate_agent(state: AgentState, config: RunnableConfig):
+    route = (state.get("route") or "").lower()
+    if route not in {"web", "hybrid"}:
+        return {"web_hitl_decision": "not_required"}
+
+    control = _parse_web_hitl_control_message(_latest_user_query(state))
+    query = _active_query(state)
+    recency_query = _web_query(state)
+    recency_days = int(state.get("recency_days") or 0)
+    pending_query = (state.get("web_hitl_pending_query") or "").strip()
+
+    if pending_query:
+        if control:
+            decision = "approved" if str(control.get("action")) == "approve" else "rejected"
+            reason = str(control.get("reason") or "").strip()
+        else:
+            user_reply = _latest_user_query(state)
+            decision, reason = _parse_hitl_decision(user_reply)
+
+        if decision == "approved":
+            approved_query = pending_query
+            approved_route = (state.get("web_hitl_pending_route") or route or "web").strip().lower()
+            if approved_route not in {"web", "hybrid"}:
+                approved_route = "web"
+            approved_recency_query = (
+                (state.get("web_hitl_pending_recency_query") or "").strip() or approved_query
+            )
+            approved_days = int(state.get("web_hitl_pending_recency_days") or 0)
+            approved_notes = (state.get("web_hitl_pending_web_notes") or "").strip()
+            approved_source_meta = (state.get("web_hitl_pending_source_meta") or "").strip()
+            return {
+                "web_hitl_decision": "approved",
+                "web_hitl_reject_reason": "",
+                "web_hitl_audit_query": approved_query,
+                "route": approved_route,
+                "query": approved_query,
+                "rewritten_query": approved_query,
+                "recency_query": approved_recency_query,
+                "recency_days": approved_days,
+                "web_notes": approved_notes,
+                "web_source_meta": approved_source_meta,
+                "web_hitl_pending_query": "",
+                "web_hitl_pending_route": "",
+                "web_hitl_pending_recency_query": "",
+                "web_hitl_pending_recency_days": 0,
+                "web_hitl_pending_web_notes": "",
+                "web_hitl_pending_source_meta": "",
+            }
+
+        if decision == "rejected":
+            reject_msg = (
+                "Web search results rejected.\n\n"
+                "What should I change for the next try? "
+                "Tell me a tighter topic, source preference, or time window."
+            )
+            if reason:
+                reject_msg = f"{reject_msg}\n\nReason: {reason}"
+            final = _finalize_user_output(reject_msg, state)
+            return {
+                "web_hitl_decision": "rejected",
+                "web_hitl_reject_reason": reason,
+                "web_hitl_audit_query": pending_query,
+                "web_hitl_pending_query": "",
+                "web_hitl_pending_route": "",
+                "web_hitl_pending_recency_query": "",
+                "web_hitl_pending_recency_days": 0,
+                "web_hitl_pending_web_notes": "",
+                "web_hitl_pending_source_meta": "",
+                "final_response": final,
+                "messages": [AIMessage(content=final)],
+            }
+
+        reminder = _finalize_user_output(
+            "A web HITL decision is pending. Reply with `approve` or `reject: <reason>`.",
+            state,
+        )
+        return {
+            "web_hitl_decision": "awaiting",
+            "final_response": reminder,
+            "messages": [AIMessage(content=reminder)],
+        }
+
+    # Fallback when checkpoint state is missing but UI sent explicit HITL control.
+    if control and str(control.get("action")) == "approve":
+        approved_query = str(control.get("query") or "").strip() or query
+        approved_route = str(control.get("route") or route or "web").strip().lower()
+        if approved_route not in {"web", "hybrid"}:
+            approved_route = "web"
+        approved_days = int(control.get("recency_days") or 0) or recency_days
+        return {
+            "web_hitl_decision": "approved",
+            "web_hitl_reject_reason": "",
+            "web_hitl_audit_query": approved_query,
+            "route": approved_route,
+            "query": approved_query,
+            "rewritten_query": approved_query,
+            "recency_query": approved_query,
+            "recency_days": approved_days,
+            "web_notes": "",
+            "web_source_meta": "",
+            "web_hitl_pending_query": "",
+            "web_hitl_pending_route": "",
+            "web_hitl_pending_recency_query": "",
+            "web_hitl_pending_recency_days": 0,
+            "web_hitl_pending_web_notes": "",
+            "web_hitl_pending_source_meta": "",
+        }
+
+    if control and str(control.get("action")) == "reject":
+        reason = str(control.get("reason") or "").strip()
+        rejected_query = str(control.get("query") or "").strip() or query
+        reject_msg = (
+            "Web search results rejected.\n\n"
+            "What should I change for the next try? "
+            "Tell me a tighter topic, source preference, or time window."
+        )
+        if reason:
+            reject_msg = f"{reject_msg}\n\nReason: {reason}"
+        final = _finalize_user_output(reject_msg, state)
+        return {
+            "web_hitl_decision": "rejected",
+            "web_hitl_reject_reason": reason,
+            "web_hitl_audit_query": rejected_query,
+            "web_hitl_pending_query": "",
+            "web_hitl_pending_route": "",
+            "web_hitl_pending_recency_query": "",
+            "web_hitl_pending_recency_days": 0,
+            "web_hitl_pending_web_notes": "",
+            "web_hitl_pending_source_meta": "",
+            "final_response": final,
+            "messages": [AIMessage(content=final)],
+        }
+
+    # Guardrail for malformed control text.
+    if "web_hitl" in (query or "").lower():
+        final = _finalize_user_output(
+            (
+                "I received an invalid HITL control payload.\n\n"
+                "Please retry your original query to regenerate preview, then click Approve/Reject again."
+            ),
+            state,
+        )
+        return {
+            "web_hitl_decision": "rejected",
+            "web_hitl_reject_reason": "invalid control payload",
+            "web_hitl_audit_query": "",
+            "final_response": final,
+            "messages": [AIMessage(content=final)],
+        }
+
+    if not GRAPH_WEB_HITL_ENABLED or not _looks_like_web_hitl_candidate(query, recency_days):
+        return {"web_hitl_decision": "not_required"}
+
+    preview_source_meta = ""
+    try:
+        preview_result = perform_web_search(
+            recency_query,
+            max_results=GRAPH_WEB_HITL_MAX_RESULTS,
+            recency_days=recency_days if recency_days > 0 else None,
+            relevance_query=query,
+            return_meta=True,
+        )
+        if isinstance(preview_result, tuple):
+            web_notes, preview_meta = preview_result
+            web_notes = (web_notes or "").strip()
+            source = str(preview_meta.get("source") or "").strip()
+            cache_hit = bool(preview_meta.get("cache_hit"))
+            if source:
+                preview_source_meta = source
+            elif cache_hit:
+                preview_source_meta = "web cache"
+        else:
+            web_notes = str(preview_result).strip()
+        if not web_notes:
+            web_notes = "No web preview results returned."
+    except Exception as e:
+        web_notes = f"Web retrieval failed: {e}"
+
+    entries = _parse_web_notes_entries(web_notes)
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(1, recency_days))
+        if recency_days > 0
+        else None
+    )
+    all_within = True
+    has_dated = False
+    for entry in entries:
+        parsed_dt = _parse_ymd_date(entry.get("date", ""))
+        if parsed_dt and cutoff:
+            has_dated = True
+            if parsed_dt < cutoff:
+                all_within = False
+                break
+    if not has_dated:
+        all_within = False
+
+    prompt = _format_web_hitl_preview(
+        query=query,
+        recency_days=recency_days,
+        entries=entries,
+        all_within_recency=all_within,
+    )
+    final = _finalize_user_output(prompt, state)
+    return {
+        "web_hitl_decision": "awaiting",
+        "web_hitl_reject_reason": "",
+        "web_hitl_pending_query": query,
+        "web_hitl_pending_route": route,
+        "web_hitl_pending_recency_query": recency_query,
+        "web_hitl_pending_recency_days": recency_days,
+        "web_hitl_pending_web_notes": web_notes,
+        "web_hitl_pending_source_meta": preview_source_meta,
+        "web_hitl_preview_count": len(entries),
+        "web_hitl_all_within_recency": all_within,
+        "final_response": final,
+        "messages": [AIMessage(content=final)],
+    }
 
 
 async def knowledge_graph_agent(state: AgentState, config: RunnableConfig):
@@ -990,13 +1464,14 @@ async def evaluation_agent(state: AgentState, config: RunnableConfig):
 # Initialize the local knowledge store once on startup.
 init_local_knowledge_store()
 
-# Define the 11-agent orchestration graph.
+# Define the 12-agent orchestration graph.
 agent = StateGraph(AgentState)
 agent.add_node("safety_agent", safety_agent)
 agent.add_node("intent_router_agent", intent_router_agent)
 agent.add_node("clarification_agent", clarification_agent)
 agent.add_node("query_rewriter_agent", query_rewriter_agent)
 agent.add_node("recency_guard_agent", recency_guard_agent)
+agent.add_node("web_hitl_gate_agent", web_hitl_gate_agent)
 agent.add_node("web_search_agent", web_search_agent)
 agent.add_node("knowledge_graph_agent", knowledge_graph_agent)
 agent.add_node("rag_agent", rag_agent)
@@ -1021,7 +1496,17 @@ agent.add_conditional_edges(
 )
 agent.add_edge("clarification_agent", "evaluation_agent")
 agent.add_edge("query_rewriter_agent", "intent_router_agent")
-agent.add_edge("recency_guard_agent", "web_search_agent")
+agent.add_edge("recency_guard_agent", "web_hitl_gate_agent")
+agent.add_conditional_edges(
+    "web_hitl_gate_agent",
+    _next_node_after_web_hitl,
+    {
+        "web_search_agent": "web_search_agent",
+        "rag_agent": "rag_agent",
+        "response_agent": "response_agent",
+        "evaluation_agent": "evaluation_agent",
+    },
+)
 agent.add_conditional_edges(
     "web_search_agent",
     _next_node_after_web,
