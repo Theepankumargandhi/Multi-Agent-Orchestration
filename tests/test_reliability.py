@@ -46,6 +46,7 @@ DATASET = Path("evals/datasets/agent_reliability_scenarios.jsonl")
 ARENA_DATASET = Path("evals/datasets/agent_arena_scenarios.jsonl")
 ARENA_CONFIG = Path("evals/experiments/agent_arena.json")
 GATEWAY_DATASET = Path("evals/datasets/model_gateway_scenarios.jsonl")
+RELIABILITY_DASHBOARD = Path(__file__).resolve().parents[1] / "evals" / "reliability_dashboard.py"
 
 
 def _arena_report():
@@ -209,7 +210,8 @@ def test_reliability_command_center_renders_without_exceptions(tmp_path, monkeyp
     )
     monkeypatch.setenv("AGENTOPS_RESULTS_DIR", str(results))
     monkeypatch.setenv("AGENTOPS_DATASETS_DIR", str(DATASET.parent))
-    app = AppTest.from_file("evals/reliability_dashboard.py").run(timeout=20)
+    assert RELIABILITY_DASHBOARD.is_file()
+    app = AppTest.from_file(RELIABILITY_DASHBOARD).run(timeout=20)
     assert not app.exception
     assert app.title[0].value == "AgentForge Reliability Command Center"
 
