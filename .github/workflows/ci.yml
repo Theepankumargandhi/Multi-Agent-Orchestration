@@ -50,7 +50,16 @@ jobs:
       - name: Build coding sandbox image
         run: docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
 
-      - name: Run tests
+      - name: Run unit and integration tests
+        env:
+          CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
+          STORE_DB_PATH: data/store/store_ci.db
+          LOCAL_RAG_DB_PATH: data/rag/local_rag_ci.db
+          ENABLE_USER_AUTH: "true"
+          USER_AUTH_SECRET: ci-user-auth-secret
+        run: python -m pytest -q --cov --cov-report=term-missing --cov-report=xml --junitxml=test-results.xml
+
+      - name: Run offline AI evaluation gates
         env:
           CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
           STORE_DB_PATH: data/store/store_ci.db
@@ -58,7 +67,6 @@ jobs:
           ENABLE_USER_AUTH: "true"
           USER_AUTH_SECRET: ci-user-auth-secret
         run: |
-          python -m pytest -q --cov --cov-report=term-missing --cov-report=xml
           python -m evals.run_offline_evals --min-score 0.95
           python -m evals.run_experiments --no-store --min-score 0.95
           python -m evals.build_seed_dataset --check
@@ -94,10 +102,19 @@ jobs:
             --ignore-vuln CVE-2026-45833
 
       - name: Upload coverage
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
           path: coverage.xml
+          if-no-files-found: ignore
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-junit
+          path: test-results.xml
           if-no-files-found: ignore
 
       - name: Upload code-context ablation
