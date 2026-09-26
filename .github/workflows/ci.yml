@@ -41,7 +41,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
+          python -m pip install --no-deps --editable .
 
       - name: Prepare local sqlite directories
         run: mkdir -p data/checkpoints data/store data/rag
@@ -57,7 +58,7 @@ jobs:
           ENABLE_USER_AUTH: "true"
           USER_AUTH_SECRET: ci-user-auth-secret
         run: |
-          pytest -q --cov --cov-report=term-missing --cov-report=xml
+          python -m pytest -q --cov --cov-report=term-missing --cov-report=xml
           python -m evals.run_offline_evals --min-score 0.95
           python -m evals.run_experiments --no-store --min-score 0.95
           python -m evals.build_seed_dataset --check
@@ -81,7 +82,7 @@ jobs:
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
 
       - name: Lint
-        run: ruff check agent client code_agent evals post_training schema service tests
+        run: python -m ruff check agent client code_agent evals post_training schema service tests
 
       - name: Dependency audit
         run: |
