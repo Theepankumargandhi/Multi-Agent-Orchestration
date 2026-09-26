@@ -15,6 +15,32 @@ class DockerUnavailableError(RuntimeError):
     pass
 
 
+_WORKSPACE_CLEANUP_SCRIPT = """
+import os
+
+
+def remove(path):
+    if os.path.islink(path) or not os.path.isdir(path):
+        try:
+            os.unlink(path)
+        except PermissionError:
+            os.chmod(path, 0o600)
+            os.unlink(path)
+        return
+    try:
+        os.chmod(path, 0o700)
+    except PermissionError:
+        pass
+    for entry in os.scandir(path):
+        remove(entry.path)
+    os.rmdir(path)
+
+
+for entry in os.scandir('/workspace'):
+    remove(entry.path)
+"""
+
+
 class DockerSandbox:
     def __init__(self, repository: Path, policy: SandboxPolicy):
         self.repository = repository.resolve()
@@ -165,6 +191,7 @@ class DockerSandbox:
 
     def close(self) -> None:
         container_id, self.container_id = self.container_id, None
+        workspace_root = self.workspace.root
         try:
             if container_id:
                 try:
@@ -178,6 +205,44 @@ class DockerSandbox:
                 except (OSError, subprocess.TimeoutExpired):
                     pass
         finally:
+            if workspace_root and workspace_root.exists():
+                try:
+                    subprocess.run(
+                        [
+                            "docker",
+                            "run",
+                            "--rm",
+                            "--network",
+                            "none",
+                            "--cpus",
+                            str(self.policy.cpus),
+                            "--memory",
+                            self.policy.memory,
+                            "--pids-limit",
+                            str(self.policy.pids_limit),
+                            "--read-only",
+                            "--cap-drop",
+                            "ALL",
+                            "--security-opt",
+                            "no-new-privileges",
+                            "--user",
+                            "65532:65532",
+                            "--mount",
+                            f"type=bind,source={workspace_root},target=/workspace",
+                            "--entrypoint",
+                            "python",
+                            self.policy.image,
+                            "-I",
+                            "-c",
+                            _WORKSPACE_CLEANUP_SCRIPT,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
             self.workspace.cleanup()
 
     def __enter__(self) -> "DockerSandbox":

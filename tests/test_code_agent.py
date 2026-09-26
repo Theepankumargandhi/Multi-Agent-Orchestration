@@ -89,6 +89,14 @@ def test_sandbox_container_command_enforces_hardening(tmp_path: Path, monkeypatc
     finally:
         sandbox.close()
     assert ["docker", "rm", "--force", "sandbox-id"] in commands
+    cleanup = next(command for command in commands if command[:2] == ["docker", "run"])
+    assert cleanup[cleanup.index("--network") + 1] == "none"
+    assert "--read-only" in cleanup
+    assert cleanup[cleanup.index("--cap-drop") + 1] == "ALL"
+    assert cleanup[cleanup.index("--security-opt") + 1] == "no-new-privileges"
+    assert cleanup[cleanup.index("--user") + 1] == "65532:65532"
+    assert cleanup[cleanup.index("--entrypoint") + 1] == "python"
+    assert cleanup[-3:-1] == ["-I", "-c"]
 
 
 @pytest.mark.integration
