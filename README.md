@@ -1,532 +1,340 @@
-# Agent Orchestration: LangGraph Multi-Agent Supervisor (FastAPI + Streamlit + RAG)
+# AgentForge
 
-Production-ready **LangGraph multi-agent orchestration** project with a **supervisor routing agent**, FastAPI backend, Streamlit frontend, PostgreSQL persistence, local RAG (ChromaDB), knowledge graph retrieval, and MCP tool integration.
-
-If you are searching for a **LangGraph multi-agent orchestration example**, **supervisor agent architecture**, or a **production multi-agent AI template**, this repository is built for that exact use case.
+**A reliability-first platform for building, evaluating, and operating AI agents.**
 
 [![CI](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml)
 [![CD](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml)
 
-Keywords: `langgraph`, `multi-agent orchestration`, `supervisor agent`, `agent routing`, `fastapi`, `streamlit`, `rag`, `knowledge graph`, `mcp`, `genai`.
+AgentForge began as a LangGraph research assistant. It has grown into a practical AI-engineering platform that answers a harder question: *how do you let an agent use retrieval, memory, tools, and additional inference without silently releasing an unsafe or unsupported answer?*
 
-## What You Can Build With This Repo
+The repository contains two working agent systems:
 
-- Multi-agent assistants with a supervisor/router pattern
-- Agentic RAG systems with hybrid retrieval (vector + BM25 + reranking)
-- Real-time chat services using FastAPI + Streamlit + SSE streaming
-- Tool-using agents via MCP (`web_search`, `calculator`)
+- an evidence-aware research agent with hybrid RAG, durable human approval, memory, grounding, calibrated uncertainty, and adaptive test-time compute;
+- a sandboxed coding agent that retrieves repository context, proposes a patch, tests it in an isolated container, and produces a reviewable evidence dossier without modifying the source repository.
 
-## Highlights
+Around those agents is the part that matters in production: an inference gateway, evaluation suites, adversarial testing, trace-based observability, release gates, persistence, and deployable FastAPI, Docker, and Kubernetes infrastructure.
 
-- 12-agent LangGraph orchestration graph
-- FastAPI service with `/invoke` and `/stream`
-- Operational endpoints: `/metrics`, `/healthz`, `/readyz`
-- Streamlit chat UI
-- Hybrid supervisor routing (`intent_router_agent`: rules first, LLM fallback for low-signal cases)
-- LlamaGuard moderation (`safety_agent`)
-- Web retrieval with recency preferences + relevance filtering
-- Local RAG with ChromaDB + hybrid retrieval (vector + BM25 + reranking), SQLite fallback
-- Knowledge graph reasoning agent (NetworkX) for relationship-style local queries
-- TTL caching for web search and local RAG retrieval
-- Optional Redis-backed caching (with in-memory fallback)
-- MCP tool bridge for `web_search` and `calculator` (with local fallback)
-- Graph-native HITL for recency web-news queries (`web_hitl_gate_agent`)
-- Streamlit HITL buttons (`Approve` / `Reject`) with plain-text fallback (`approve`, `reject: reason`)
-- Backend HITL decision mapper (service-side pending cache per `user_id` + `thread_id`)
-- HITL decision audit trail persisted per user/thread (`hitl_events`)
-- Monitoring stack with Prometheus + Grafana
-- Dual-layer persistence:
-  - LangGraph PostgreSQL checkpointer (graph state continuity)
-  - Conversation Store (PostgreSQL with SQLite fallback)
-- Per-user conversation history in UI (load latest thread + switch from sidebar)
-- Evaluation agent (heuristic quality audit)
-- Per-user authentication (user ID + password) with bearer tokens
+> This is not presented as a production factuality guarantee or an official benchmark result. The checked-in evaluations are reproducible engineering evidence; the [limitations](#what-the-results-do-not-claim) explain where human-labelled and live-model validation is still required.
 
-## Agent Architecture (12 Agents)
+## Why this project exists
 
-1. `safety_agent`
-2. `intent_router_agent`
-3. `clarification_agent`
-4. `query_rewriter_agent`
-5. `recency_guard_agent`
-6. `web_hitl_gate_agent`
-7. `web_search_agent`
-8. `knowledge_graph_agent`
-9. `rag_agent`
-10. `math_agent`
-11. `response_agent`
-12. `evaluation_agent`
+Most agent demos stop after the model produces a plausible answer. AgentForge treats generation as the middle of the workflow, not the end.
 
-## Full Architecture Flow (Mermaid)
+A request may need to be rejected by a safety policy, clarified, routed to a tool, approved by a person, grounded in several sources, repaired, or withheld when confidence is too low. Each of those decisions must be observable and testable. AgentForge makes those decisions explicit in the graph and attaches evaluation evidence to them.
 
-### 1) Runtime Agent Flow
+That makes the project useful for demonstrating the work expected from an AI engineer:
+
+- designing agent workflows rather than a single prompt;
+- building and measuring retrieval systems;
+- controlling hallucination, uncertainty, cost, and tool risk;
+- evaluating complete trajectories, not only final text;
+- operating model calls behind stable service boundaries;
+- shipping with tests, telemetry, persistence, and deployment controls.
+
+## System at a glance
 
 ```mermaid
-%%{init: {"flowchart":{"nodeSpacing":45,"rankSpacing":65},"themeVariables":{"fontSize":"16px"}}}%%
 flowchart TD
-    U[User in Streamlit] --> AUTH[Login or Register]
-    AUTH --> HIST[Load conversation history]
-    HIST --> Q[User sends message]
-    Q --> API[FastAPI invoke or stream]
+    User[User or API client] --> API[FastAPI service]
+    API --> Auth[Authentication, limits, and tenant context]
+    Auth --> Safety{Safety gate}
 
-    API --> STOREH[Store human message]
-    API --> HMAP[HITL mapper for plain approve or reject]
-    HMAP --> CFG[Build graph config model + thread_id]
-    CFG --> LG[LangGraph research_assistant]
-    CFG --> CHK[Postgres checkpoints]
+    Safety -->|blocked or unavailable| Stop[Safe response]
+    Safety -->|allowed| Memory[Retrieve consented memory]
+    Memory --> Router{Structured intent router}
 
-    LG --> SA[safety_agent]
-    SA --> IR[intent_router_agent]
+    Router -->|needs context| Clarify[Ask for clarification]
+    Router -->|math| Math[Math tool]
+    Router -->|local knowledge| RAG[Hybrid RAG]
+    Router -->|relationships| Graph[Knowledge graph retrieval]
+    Router -->|current information| Approval{{Human approval}}
+    Router -->|general| Draft[Draft answer]
 
-    IR -->|clarify| CA[clarification_agent]
-    CA --> EVA[evaluation_agent]
+    Approval -->|approved| Web[Web retrieval]
+    Approval -->|rejected| Stop
+    Graph --> RAG
+    Math --> Evidence
+    RAG --> Evidence[Evidence adjudication]
+    Web --> Evidence
+    Evidence -->|injection, stale, duplicated, or conflicting| Abstain[Abstain or degrade]
+    Evidence -->|acceptable| Draft
 
-    IR -->|rewrite| QR[query_rewriter_agent]
-    QR --> IR
+    Draft --> Ground[Claim and citation verification]
+    Ground -->|unsupported| Repair[Bounded repair]
+    Ground -->|supported| Uncertainty{Conformal uncertainty gate}
+    Repair --> Final
+    Uncertainty -->|confident| Final[Release answer]
+    Uncertainty -->|recoverable uncertainty| Compute[Budgeted multi-candidate deliberation]
+    Compute -->|grounded consensus| Final
+    Compute -->|no consensus or budget exhausted| Abstain
 
-    IR -->|math| MA[math_agent]
-    MA --> RESP[response_agent]
+    Final --> Evaluate[Record quality and feedback signals]
+    Abstain --> Evaluate
+    Stop --> Evaluate
+    Clarify --> Evaluate
+    Evaluate --> WriteMemory[Write memory only with explicit consent]
 
-    IR -->|rag| RA[rag_agent]
-    RA --> RESP
-
-    IR -->|kg| KG[knowledge_graph_agent]
-    KG --> RA
-
-    IR -->|general| RESP
-
-    IR -->|web or hybrid| RG[recency_guard_agent]
-    RG --> WH[web_hitl_gate_agent]
-
-    WH -->|awaiting| WAIT[Wait for decision]
-    WAIT --> BTN[UI buttons Approve or Reject]
-    BTN --> API
-
-    WH -->|approved web| WS[web_search_agent]
-    WS -->|web route| RESP
-
-    WH -->|approved hybrid| WS
-    WS -->|hybrid route| RA
-
-    WH -->|rejected| REJ[Reject follow-up message]
-    REJ --> EVA
-
-    RESP --> EVA
-    EVA --> END[Graph end]
-    END --> APIRESP[Return answer to Streamlit]
-    APIRESP --> STOREA[Store AI message]
-    STOREA --> CST[conversation_store]
-    END --> HITLDB[Store HITL decision]
-    HITLDB --> HITL[hitl_events]
-
-    API --> METRICS["/healthz | /readyz | /metrics"]
-    METRICS --> PROM[Prometheus]
-    PROM --> GRAF[Grafana]
+    API <--> State[(PostgreSQL or SQLite checkpoints)]
+    API <--> Cache[(Redis or local cache)]
+    API --> Telemetry[Prometheus, OpenTelemetry, and LangSmith]
+    API --> Gateway[Inference gateway]
+    Gateway --> Models[Primary, fallback, canary, and shadow models]
+    Gateway --> Online[Online SLO and rollback controller]
 ```
 
-### 2) Optional Local Kubernetes Deployment
+The research workflow is an **18-node LangGraph state machine**. The trust controls are independently configurable, so they can be evaluated in isolation or enabled together. Native LangGraph interrupts persist web-approval state in the checkpointer, which means an approval can survive an API restart.
+
+The line-by-line graph description lives in [the runtime flow](docs/architecture/agent_runtime_flow.md), and important trade-offs are recorded as [architecture decisions](docs/architecture/decisions.md).
+
+## What is implemented
+
+| Area | What the implementation demonstrates |
+|---|---|
+| Agent orchestration | Typed LangGraph state, structured routing, clarification, bounded repair, native interrupts, and route-scoped evidence |
+| Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, caching, and retrieval ablations |
+| Evidence intelligence | Prompt-injection quarantine, source-independence checks, cross-domain duplicate detection, freshness policy, and numeric/negation conflict graphs |
+| Trustworthy generation | Claim-to-evidence alignment, citation allowlisting, high-risk thresholds, conformal selective answering, and fail-closed abstention |
+| Test-time compute | Confidence-aware early exit, bounded candidate generation, grounded candidate filtering, consensus, and token/call/latency budgets |
+| Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
+| Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, canaries, shadow evaluation, and online rollback decisions |
+| Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
+| Observability | Content-free OpenTelemetry GenAI spans, Prometheus metrics, LangSmith hooks, request/node latency, privacy checks, and reliability fault injection |
+| Deployment | FastAPI + SSE, PostgreSQL/SQLite, Redis, Docker Compose, non-root containers, health checks, Kubernetes manifests, and network policy |
+
+The controls are designed to compose. For example, retrieved documents do not go straight into a prompt: the evidence layer first removes suspicious or redundant material; the grounding layer then checks claims against the surviving evidence; the uncertainty layer decides whether the answer can be released; and adaptive compute is reserved for cases that are uncertain but still recoverable.
+
+## Sandboxed coding agent
+
+The coding workflow is deliberately separated from the research graph because code execution has a different risk model.
 
 ```mermaid
-%%{init: {"flowchart":{"nodeSpacing":40,"rankSpacing":55},"themeVariables":{"fontSize":"16px"}}}%%
 flowchart LR
-    subgraph K8S["Optional Local Kubernetes Deployment"]
-      direction LR
-      KUI[streamlit-app Deployment + Service]
-      KAGENT[agent-service Deployment + Service]
-      KPROM[prometheus Deployment + Service]
-      KGRAF[grafana Deployment + Service]
-    end
-    KUI --> KAGENT
-    KAGENT --> KPROM
-    KPROM --> KGRAF
+    Issue[Repository-scoped issue] --> Queue[Durable job queue]
+    Queue --> Lease[Leased worker]
+    Lease --> Copy[Filtered ephemeral copy]
+    Copy --> Context[Tree-sitter code intelligence]
+    Context --> Roles[Analyst, implementer, and test author]
+    Roles --> Policy{Tool policy and taint checks}
+    Policy -->|denied| Dossier[Evidence dossier]
+    Policy -->|allowed| Sandbox[Network-disabled Docker sandbox]
+    Sandbox --> Verify{Tests, lint, scope, secrets, integrity}
+    Verify -->|repairable| Repair[Bounded repair loop]
+    Repair --> Verify
+    Verify -->|failed| Dossier
+    Verify -->|verified| Review[Independent reviewer]
+    Review --> Dossier
+    Dossier --> Owner{{Owner approval}}
+    Owner -->|approved| Patch[Release unified diff]
 ```
 
-### Flow Notes
+Code intelligence uses Tree-sitter for Python, TypeScript, JavaScript, Java, Go, and Rust. A decomposed query searches symbols, files, tests, and dependencies using BM25, semantic embeddings, graph propagation, and reranking. The resulting context is deduplicated, compressed to a token budget, and accompanied by provenance receipts.
 
-- `clarification_agent` asks a follow-up question and ends the current run.
-- The next user message starts a new run and is routed again.
-- On login, UI fetches `GET /store/threads`, auto-loads latest thread, and allows switching thread history.
-- For recency/news prompts, graph-level HITL runs in `web_hitl_gate_agent`.
-- The assistant returns a preview; Streamlit shows `Approve`/`Reject` buttons (typing `approve` or `reject: <reason>` also works).
-- Service maps plain approve/reject into internal HITL control payload using pending context keyed by `user_id` + `thread_id`.
-- HITL approve/reject is persisted in `hitl_events` automatically from graph state (`/invoke` and `/stream`).
-- `local:` prefix routes to `rag_agent` or `knowledge_graph_agent` for relationship questions.
-- `recency_guard_agent` applies recency as a preference (fallback to most recent relevant results).
-- Mermaid graph edges remain stable for retrieval internals; new relationship reasoning runs in `knowledge_graph_agent`.
-- Cache checks happen inside `web_search_agent`, `rag_agent`, and graph-rag retrieval functions (Redis/in-memory fallback).
+The worker never edits the original repository. It operates on a filtered temporary copy and executes tests inside a non-root container with no network, a read-only root filesystem, dropped capabilities, and CPU, memory, PID, and time limits. Jobs are transactional and recoverable: submissions are deduplicated, workers hold expiring leases, abandoned jobs can be reclaimed, and completed artifacts are checked by digest.
 
-## Project Structure (Key Files)
+See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code-intelligence.md), and [coding-agent evaluation](docs/coding-agent-evaluation.md).
 
-- `agent/research_assistant.py` - LangGraph orchestration, agents, routing logic
-- `agent/tools.py` - web search + filtering logic
-- `agent/local_rag.py` - local RAG (ChromaDB + SQLite fallback)
-- `agent/graph_rag.py` - dedicated graph RAG Chroma retrieval store
-- `agent/knowledge_graph.py` - NetworkX relationship extraction over graph RAG evidence
-- `agent/llama_guard.py` - moderation logic
-- `service/service.py` - FastAPI service + endpoints + checkpointer/store wiring
-- `service/persistence_store.py` - conversation Store layer (Postgres/SQLite)
-- `streamlit_app.py` - Streamlit UI
-- `monitoring/prometheus.yml` - Prometheus scrape config for `/metrics`
-- `scripts/ingestion/ingest_local_rag_pdfs.py` - PDF ingestion to local RAG ChromaDB
-- `scripts/ingestion/ingest_graph_rag_pdfs.py` - separate PDF ingestion for knowledge graph store
-- `scripts/ingestion/generate_synthetic_graph_pdfs.py` - synthetic graph PDFs for KG testing
-- `k8s/` - local Kubernetes manifests (app + monitoring stack)
-- `docs/architecture/agent_runtime_flow.md` - runtime flow explainer (human-readable)
-- `docs/architecture/agent_runtime_flow.mmd` - raw Mermaid source for the same flow
+## Evaluation evidence
 
-## GitHub Actions CI/CD
+The repository currently contains **212 automated tests** with **60.60% branch-aware coverage**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; the newest trust modules have focused coverage between 94% and 98%.
 
-- `CI` workflow (`.github/workflows/ci.yml`)
-  - triggers on `push` and `pull_request` to `main`
-  - runs Python tests: `service/test_service.py` and `schema/test_schema.py`
-  - verifies both Docker images build successfully
-- `CD` workflow (`.github/workflows/cd-release.yml`)
-  - triggers on version tags (`v*`) or manual dispatch
-  - builds and publishes Docker images to Docker Hub:
-    - `<namespace>/multi-agent-orchestration-service:<version>`
-    - `<namespace>/multi-agent-orchestration-app:<version>`
-  - required repo secrets:
-    - `DOCKERHUB_USERNAME`
-    - `DOCKERHUB_TOKEN` (Docker Hub access token)
-  - optional repo variable:
-    - `DOCKERHUB_NAMESPACE` (if omitted, username is used as namespace)
+| Module | Focused coverage |
+|---|---:|
+| Adaptive test-time compute | 98% |
+| Evidence quality | 97% |
+| Conformal uncertainty | 95% |
+| Grounding verification | 94% |
+| Inference gateway | 94% |
+| Agent memory | 92% |
+| Online quality controller | 89% |
 
-### Release Tag for CD
+The deterministic evaluation suites cover more than happy-path output. They exercise evidence injection, copied-source laundering, stale and contradictory evidence, fabricated citations, unsafe high-risk claims, calibration drift, compute-budget violations, cross-tenant memory access, poisoning, provider failures, cache isolation, canary rollback, unsafe tool calls, worker-lease recovery, artifact tampering, and retrieval regressions.
+
+Run the same core checks used in CI:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+python -m pytest -q --cov --cov-report=term-missing --cov-report=xml
+python -m evals.run_offline_evals --min-score 0.95
+ruff check agent client code_agent evals post_training schema service tests
+python -m pip check
 ```
 
-## Endpoints
-
-- `POST /auth/register` - register user and receive access token
-- `POST /auth/login` - login user and receive access token
-- `POST /invoke` - non-streaming chat response
-- `POST /stream` - streaming chat response
-- `POST /web_search/preview` - optional/manual preview endpoint for external clients (Streamlit default flow does not require this)
-- `POST /hitl/web_decision` - optional/manual HITL audit event record endpoint
-- `GET /hitl/web_decisions` - list authenticated user's HITL audit records
-- `GET /store/threads` - list authenticated user's recent conversation threads
-- `GET /store/{thread_id}` - inspect persisted conversation records
-- `POST /feedback` - user feedback/rating
-- `GET /healthz` - liveness probe endpoint
-- `GET /readyz` - readiness probe endpoint
-- `GET /metrics` - Prometheus scrape endpoint
-
-When `ENABLE_USER_AUTH=true`, all non-auth endpoints require `Authorization: Bearer <access_token>`.
-
-## Monitoring (Prometheus + Grafana)
-
-### Docker Compose (Local)
-
-Bring up full stack:
+Run the reliability command center locally:
 
 ```bash
-docker compose up -d --build
+python -m evals.reliability --output data/evaluations/reliability/latest.json
+streamlit run evals/reliability_dashboard.py --server.port 8506
 ```
 
-Access:
+It combines experiment results, retrieval ablations, security attacks, failure recovery, model-gateway behavior, memory governance, grounding, uncertainty, adaptive compute, and evidence-quality results in one place. Every report retains configuration and dataset fingerprints so a result can be tied back to the exact experiment that produced it.
 
-- FastAPI: `http://localhost:8000`
-- Streamlit: `http://localhost:8501`
-- Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3001` (default `admin` / `admin`)
+For the evaluation methodology and measured case studies, read [evaluation strategy](docs/evaluation.md) and the [recruiter-facing case study](docs/agentforge-case-study.md).
 
-Prometheus target should show `agent_service` as `UP` at:
+## Quick start
 
-```text
-http://localhost:9090/targets
-```
+### 1. Create the environment
 
-### Recommended Grafana Panels
-
-- Request Rate: `sum(rate(http_requests_total[5m]))`
-- Error Rate (5xx):
-  - `sum(rate(http_requests_total{status_code=~"5.."}[15m])) / clamp_min(sum(rate(http_requests_total[15m])), 1e-9)`
-- P95 Latency:
-  - `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[15m])))`
-- Traffic by endpoint:
-  - `sum by (path) (rate(http_requests_total[5m]))`
-- Status code distribution:
-  - `sum by (status_code) (rate(http_requests_total[5m]))`
-
-## Kubernetes (Local)
-
-Beginner-friendly Kubernetes manifests are available in `k8s/` with step-by-step instructions:
-
-- See [k8s/README.md](k8s/README.md)
-- Includes app + streamlit + Prometheus + Grafana manifests
-- Includes health/readiness probes
-- Supports one-command apply via `kubectl apply -k k8s`
-
-## Data & Persistence
-
-### Dual-layer persistence
-
-1. **Checkpointer (LangGraph, PostgreSQL)**
-- Stores graph execution/checkpoint state by `thread_id`
-- Used for workflow state continuity/resume
-
-2. **Conversation Store (PostgreSQL, SQLite fallback)**
-- Stores durable human/AI messages + metadata
-- Used for history/debugging/audit (`/store/threads`, `/store/{thread_id}`)
-
-### PostgreSQL tables you will see
-
-- Checkpointer tables:
-  - `checkpoints`
-  - `checkpoint_writes`
-  - `checkpoint_blobs`
-- Conversation store table:
-  - `conversation_store`
-  - `users`
-  - `hitl_events`
-
-## Routing Summary (Supervisor Logic)
-
-`intent_router_agent` uses a hybrid strategy:
-
-1. Deterministic rules first (high precision, low latency)
-2. Optional LLM classifier fallback for low-signal queries (confidence-gated)
-3. Safe fallback to `general` if classifier confidence is low/unavailable
-
-Primary deterministic rules:
-
-- `local:` prefix -> `rag` (or `kg` when relation intent is detected)
-- relationship reasoning + local context -> `kg`
-- ambiguous (`help me`, `this`, `that`) -> `clarify`
-- vague but rewritable (`news`, `latest news`) -> `rewrite`
-- math-like query -> `math`
-- web keywords -> `web`
-- local/project keywords -> `rag`
-- both web + local keywords -> `hybrid`
-- fallback -> `general`
-
-Router debug metadata written into state:
-- `route_confidence`
-- `route_reason`
-
-## Setup
-
-### 1. Clone
+Python 3.11–3.13 is supported.
 
 ```bash
-git clone https://github.com/Theepankumargandhi/Agent-Orchestration.git
-cd Agent-Orchestration
+python -m venv .venv
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# macOS or Linux
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements-service.txt -r requirements-app.txt
 ```
 
-### 2. Environment variables (`.env`)
-
-Set at least the following (adjust values to your machine):
-
-```env
-OPENAI_API_KEY=...
-GROQ_API_KEY=...
-
-# FastAPI service port (your current setup uses 8080)
-PORT=8080
-API_BASE_URL=http://localhost:8080
-
-# LangGraph checkpointer (PostgreSQL)
-POSTGRES_CHECKPOINT_URI=postgresql://postgres:password@localhost:5432/agentdb
-CHECKPOINT_FALLBACK_SQLITE=true
-CHECKPOINT_DB_PATH=data/checkpoints/checkpoints.db
-
-# Conversation Store (defaults to checkpoint URI if omitted)
-POSTGRES_STORE_URI=postgresql://postgres:password@localhost:5432/agentdb
-STORE_FALLBACK_SQLITE=true
-STORE_DB_PATH=data/store/store.db
-STORE_NAMESPACE=default
-
-# RAG / ChromaDB
-USE_CHROMA_RAG=true
-CHROMA_PERSIST_DIR=data/chroma_db
-CHROMA_COLLECTION_NAME=local_pdf_docs
-RAG_PDF_DIR=rag_docs
-LOCAL_RAG_DB_PATH=data/rag/local_rag.db
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-RAG_CHUNK_SIZE=1000
-RAG_CHUNK_OVERLAP=150
-
-# Optional hybrid router (rules + LLM fallback)
-HYBRID_ROUTER_ENABLE=true
-HYBRID_ROUTER_MIN_CONFIDENCE=0.75
-
-# Optional hybrid RAG retrieval + reranking (Chroma path)
-RAG_VECTOR_TOP_K=8
-RAG_BM25_TOP_K=8
-RAG_RERANK_TOP_K=6
-RAG_RRF_K=60
-RAG_ENABLE_LLM_RERANKER=true
-
-# Graph RAG (separate store for knowledge_graph_agent)
-GRAPH_RAG_ENABLED=true
-GRAPH_RAG_PDF_DIR=graph_rag_docs
-GRAPH_CHROMA_PERSIST_DIR=data/graph_chroma_db
-GRAPH_CHROMA_COLLECTION_NAME=graph_pdf_docs
-GRAPH_RAG_CHUNK_SIZE=1000
-GRAPH_RAG_CHUNK_OVERLAP=150
-GRAPH_RAG_CACHE_TTL_SECONDS=600
-
-# Optional TTL caches (latency/cost optimization)
-WEB_CACHE_TTL_SECONDS=300
-RAG_CACHE_TTL_SECONDS=600
-
-# Optional Redis cache backend (shared cache across processes/containers)
-CACHE_USE_REDIS=true
-REDIS_URL=redis://localhost:6379/0
-
-# Optional API auth
-AUTH_SECRET=
-
-# Per-user auth (enabled by default)
-ENABLE_USER_AUTH=true
-USER_AUTH_SECRET=change_me_to_a_long_random_secret
-USER_AUTH_TOKEN_TTL_SECONDS=86400
-PASSWORD_HASH_ITERATIONS=210000
-
-# Optional MCP tools (web_search + calculator)
-MCP_TOOLS_ENABLED=true
-MCP_TOOL_SERVER_COMMAND=.venv\Scripts\python.exe
-MCP_TOOL_SERVER_SCRIPT=agent\mcp_tool_server.py
-MCP_TOOL_SERVER_ARGS=
-MCP_BRIDGE_COMMAND=.venv\Scripts\python.exe
-MCP_BRIDGE_SCRIPT=agent\mcp_bridge_client.py
-MCP_CALL_TIMEOUT_SECONDS=20
-```
-
-### 3. Install dependencies
+### 2. Configure a model provider
 
 ```bash
-pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### 4. Run backend
+On Windows PowerShell, use `Copy-Item .env.example .env`. Add at least one of `OPENAI_API_KEY` or `GROQ_API_KEY`. Model credentials stay in the service; clients discover only the configured model IDs through `/capabilities`.
+
+The advanced reliability controls are opt-in so the basic application can start without calibration artifacts or signing keys. Their defaults and explanations are in [.env.example](.env.example).
+
+### 3. Start the API and UI
+
+Use two terminals:
 
 ```bash
 python run_service.py
 ```
 
-### 4b. MCP sidecar dependencies (only in `.venv`, not in `llm_env`)
-
-If your main runtime is `llm_env`, install MCP only in the separate `.venv` used by `MCP_BRIDGE_COMMAND` / `MCP_TOOL_SERVER_COMMAND`:
-
-```bash
-.venv\Scripts\python.exe -m pip install mcp==1.12.4
-```
-
-If `.venv\Scripts\python.exe` shows `No Python at ...`, recreate `.venv` first:
-
-```bash
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m pip install mcp==1.12.4
-```
-
-### 5. Run Streamlit UI (separate terminal)
-
 ```bash
 streamlit run streamlit_app.py
 ```
 
-On first launch, use the sidebar `Register` flow (user ID + password), then sign in.
+Open `http://localhost:8501`. API documentation is available at `http://localhost:8000/docs`.
 
-## Optional: Ingest PDFs into ChromaDB
-
-1. Put PDFs in `rag_docs/`
-2. Run:
+### Docker Compose
 
 ```bash
-python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs --reset
+docker compose up --build
 ```
 
-3. Ask a forced local query:
-
-```text
-local: summarize the uploaded pdfs
-```
-
-## Optional: Ingest Graph PDFs (Separate KG Store)
-
-1. Put relationship-focused PDFs in `graph_rag_docs/`
-2. Run:
+The default stack starts the API, UI, PostgreSQL, Redis, Prometheus, and Grafana. Evaluation dashboards are behind the `evaluation` profile:
 
 ```bash
-python scripts/ingestion/ingest_graph_rag_pdfs.py --pdf-dir graph_rag_docs --reset
+docker compose --profile evaluation up --build
 ```
 
-3. Ask a relationship query:
+| Service | URL |
+|---|---|
+| API documentation | `http://localhost:8000/docs` |
+| Agent UI | `http://localhost:8501` |
+| Coding-agent evaluation | `http://localhost:8502` |
+| Post-training lab | `http://localhost:8503` |
+| Code-context lab | `http://localhost:8504` |
+| Security lab | `http://localhost:8505` |
+| Reliability command center | `http://localhost:8506` |
+| Prometheus | `http://localhost:9090` |
+| Grafana | `http://localhost:3001` |
+
+Change the example PostgreSQL, Grafana, authentication, and integrity-signing secrets before exposing the stack outside a local environment.
+
+## Try the main workflows
+
+### Research agent
+
+After registering through `POST /auth/register`, call `POST /invoke` or `POST /stream` with a stable `thread_id`. Current-information questions pause at a native graph interrupt. Resume with `approve` or `reject: reason` on the same user and thread; the service verifies that an active checkpoint interrupt exists before accepting the decision.
+
+Useful demo prompts:
+
+- `Calculate (125 * 8) / 4` — deterministic routing and tool execution.
+- `local: explain the checkpoint implementation` — source-grounded local RAG.
+- `How does FastAPI connect to LangGraph in this project?` — relationship and graph retrieval.
+- `What changed in AI news this week?` — web approval, evidence adjudication, and durable resume.
+
+### Ingest local documents
+
+Place PDFs in `rag_docs/` or `graph_rag_docs/`, then run:
+
+```bash
+python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs
+python scripts/ingestion/ingest_graph_rag_pdfs.py --pdf-dir graph_rag_docs
+```
+
+Ingestion is idempotent for unchanged content. Chunks receive deterministic IDs, and stale chunks for a changed source are removed only after the replacement write succeeds.
+
+### Run a coding task
+
+Build the purpose-specific sandbox image, then enable `CODE_AGENT_ENABLED`:
+
+```bash
+docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
+```
+
+Submit an authenticated issue to `POST /code/tasks` with an `Idempotency-Key`. Poll the task, inspect its event history and evidence dossier, then explicitly approve or reject the verified patch. The original repository remains unchanged throughout the workflow.
+
+## Repository map
 
 ```text
-local: how is streamlit connected to fastapi in this project
+agent/          LangGraph runtime, retrieval, memory, grounding, and model controls
+code_agent/     Sandboxed coding workflow, code intelligence, security, and benchmarks
+service/        FastAPI endpoints, authentication, persistence, and streaming
+evals/          Datasets, experiment runners, graders, dashboards, and release gates
+post_training/  Reviewed SFT/DPO preparation, LoRA/QLoRA training, and model lineage
+monitoring/     Prometheus and Grafana configuration
+docker/         Runtime and hardened coding-sandbox images
+k8s/            Kubernetes deployment, storage, secrets, and network policy
+docs/           Architecture decisions, threat model, subsystem guides, and case studies
+tests/          Unit, integration, security, and evaluation tests
 ```
 
-### Ingestion Separation 
+## Design choices worth discussing
 
-- `scripts/ingestion/ingest_local_rag_pdfs.py` updates **Local RAG** only (`rag_docs` -> `chroma_db`).
-- `scripts/ingestion/ingest_graph_rag_pdfs.py` updates **Graph RAG / KG** only (`graph_rag_docs` -> `graph_chroma_db`).
-- `knowledge_graph_agent` uses Graph RAG retrieval, then forwards to `rag_agent` for extra grounding before `response_agent`.
+**Why several release gates?** Evidence quality, grounding, uncertainty, and adaptive compute answer different questions. A source can be suspicious before synthesis; a generated claim can be unsupported afterward; a supported answer can still fall outside the calibrated release region; and extra inference is useful only for uncertain cases that have enough evidence to recover.
 
-### Local RAG retrieval pipeline 
+**Why are most advanced controls opt-in?** Some require a calibration artifact, a dedicated integrity key, or an operational policy that should be owned by the deploying team. Silent defaults would make a demo easier but would hide those dependencies.
 
-When ChromaDB is enabled, local retrieval now uses a hybrid pipeline inside `agent/local_rag.py`:
+**Why deterministic evaluations?** Credential-free tests are stable enough for every pull request. They validate control flow, isolation, accounting, and failure behavior. Live-model and human-labelled evaluations remain a separate layer because they are slower, more expensive, and statistically variable.
 
-1. Chroma vector retrieval (semantic)
-2. BM25-style lexical ranking over local Chroma corpus
-3. Reciprocal Rank Fusion (RRF)
-4. Optional LLM reranker (falls back to heuristic reranker)
+**Why not let the coding agent apply changes?** The project keeps generation and authorization separate. A verified patch is evidence for a human decision, not permission to mutate the source repository.
 
-This improves local retrieval precision for paraphrases and keyword-heavy queries.
+## What the results do not claim
 
-### Caching 
+The checked-in datasets are intentionally useful for regression testing, but several are authored or synthetic. They prove that the mechanisms behave as designed; they do not prove broad real-world model quality.
 
-- **Web search TTL cache** (`agent/tools.py`)
-  - caches `perform_web_search(...)` results by query/recency/relevance key
-  - default TTL: `300s`
-- **Local RAG TTL cache** (`agent/local_rag.py`)
-  - caches `search_local_knowledge(...)` results by query/limit/backend key
-  - default TTL: `600s`
-  - cache is cleared automatically after PDF ingestion/reset
-- **Redis support (optional)**
-  - if `REDIS_URL` is configured and reachable, web/RAG caches use Redis (`setex`)
-  - if Redis is unavailable, system falls back to local in-memory TTL cache automatically
-- **UI cache visibility**
-  - the response footer shows source path when available (for example: `Sources: web via mcp` or `Sources: web via memory cache`)
-  - live retrievals may omit source footer when no source metadata is present
+- Evidence, grounding, conformal, and adaptive-compute results need larger human-labelled, multilingual, temporal, and live-model datasets before they support production quality claims.
+- The behavioral arena uses synthetic seed scenarios and deterministic policy simulators; it is not a substitute for repeated adversarial testing with real models and calibrated judges.
+- Retrieval uses an embedded Chroma deployment and hashed embeddings by default in some offline paths. Larger deployments should use managed/shared indexes and evaluated production embeddings.
+- The inference gateway, online event stream, memory store, coding queue, and artifact store are durable single-host reference implementations, not distributed control planes.
+- The Docker sandbox is strong process isolation for a portfolio system, but hostile multi-tenant execution should use isolated microVM workers and an external immutable artifact store.
+- Kubernetes manifests are a secure starting point, not a complete managed-cloud architecture.
+- Post-training plumbing is implemented, but no fine-tuned-model quality claim should be made without reviewed data, accelerator training, and a frozen holdout evaluation.
 
-### MCP tools 
+These boundaries are intentional. Good AI engineering includes knowing what the evidence supports—and what it does not.
 
-- `web_search_agent` calls an MCP stdio tool server first for web search.
-- `math_agent` calls an MCP stdio calculator tool first.
-- Main app env (`llm_env`) does not need the `mcp` package anymore.
-- MCP client calls a sidecar bridge script (`agent/mcp_bridge_client.py`) using `MCP_BRIDGE_COMMAND`.
-- In `llm_env`, point both `MCP_BRIDGE_COMMAND` and `MCP_TOOL_SERVER_COMMAND` to a separate `.venv` Python where `mcp` is installed.
-- If MCP is disabled/unavailable, both agents automatically fall back to existing local logic.
-- Defaults:
-  - `MCP_TOOL_SERVER_SCRIPT` -> `agent/mcp_tool_server.py`
-  - `MCP_BRIDGE_SCRIPT` -> `agent/mcp_bridge_client.py`
+## Resume summary
 
-## Verify Persistence
+> Built AgentForge, an 18-node LangGraph agent platform combining hybrid and graph RAG, durable human approval, evidence-conflict detection, claim-level grounding, conformal selective answering, adaptive test-time compute, tenant-isolated memory, and a policy-gated coding agent with six-language Tree-sitter retrieval and hardened Docker execution. Added FastAPI/SSE serving, an inference gateway, privacy-safe telemetry, adversarial and reliability evaluation, 212 automated tests, and Docker/Kubernetes deployment assets.
 
-### Conversation Store 
+When using this project in a resume or interview, lead with one measurable workflow rather than listing every subsystem. A strong walkthrough is: retrieve evidence, detect a conflict, withhold an unsupported answer, show the trace and evaluation result, then explain the trade-off between answer coverage, accuracy, latency, and cost.
 
-Open in browser (replace with your sidebar thread ID and correct backend port):
+## Documentation
 
-```text
-http://localhost:8080/store/threads?limit=30
-http://localhost:8080/store/<thread_id>?limit=50
-```
+- [Architecture and runtime flow](docs/architecture/agent_runtime_flow.md)
+- [Architecture decision records](docs/architecture/decisions.md)
+- [Evaluation strategy](docs/evaluation.md)
+- [AgentForge case study](docs/agentforge-case-study.md)
+- [Evidence intelligence](docs/evidence-intelligence.md)
+- [Grounding verification](docs/grounding-verification.md)
+- [Uncertainty calibration](docs/uncertainty-calibration.md)
+- [Adaptive test-time compute](docs/adaptive-test-time-compute.md)
+- [Agent memory](docs/agent-memory.md)
+- [Inference gateway](docs/inference-gateway.md)
+- [Online AI governance](docs/online-ai-governance.md)
+- [Code agent](docs/code-agent.md)
+- [Code intelligence](docs/code-intelligence.md)
+- [Security threat model](docs/security/threat-model.md)
+- [GenAI observability](docs/genai-observability.md)
+- [Self-improvement flywheel](docs/self-improvement-flywheel.md)
+- [Post-training](docs/post-training.md)
 
-### PostgreSQL (pgAdmin)
-
-- `conversation_store` -> human/AI messages + metadata
-- `checkpoints`, `checkpoint_writes`, `checkpoint_blobs` -> LangGraph checkpoint internals
-
-## Known Limitations 
-
-- `evaluation_agent` is heuristic (not factual verification)
-- `clarification_agent` ends current run; final answer comes on next user turn
-- hybrid router still depends on classifier confidence thresholds and can misroute low-signal queries
-- RAG quality still depends on chunking, embeddings, ingestion quality, and reranker behavior
-
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). AgentForge is released under the [MIT License](LICENSE).

@@ -1,7 +1,7 @@
 import os
 
-from dotenv import load_dotenv
 import uvicorn
+from dotenv import load_dotenv
 
 from service import app
 

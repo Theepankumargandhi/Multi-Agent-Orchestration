@@ -1,0 +1,3 @@
+# Optional learned semantic retrieval and cross-encoder reranking.
+-r requirements-service.txt
+sentence-transformers>=6,<7

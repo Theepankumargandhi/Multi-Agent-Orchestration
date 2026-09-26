@@ -1,0 +1,5 @@
+{"id":"durable-worker-leases","query":"Where are durable coding jobs claimed with worker leases, heartbeats, retries, and dead-letter recovery?","relevant_paths":["code_agent/execution.py","code_agent/worker.py"],"tags":["execution","reliability"]}
+{"id":"verified-pr-review","query":"How does the verified PR workflow run independent code review, deterministic gates, and bounded repair rounds?","relevant_paths":["code_agent/verified_pr.py","code_agent/verification.py"],"tags":["review","safety"]}
+{"id":"swebench-sanitization","query":"Where does SWE-bench import remove the gold solution patch and hidden test patch?","relevant_paths":["code_agent/swebench.py"],"tags":["evaluation","contamination"]}
+{"id":"conversation-isolation","query":"How are authenticated users and conversation records isolated in durable persistence?","relevant_paths":["service/persistence_store.py","service/service.py"],"tags":["auth","persistence"]}
+{"id":"knowledge-graph-paths","query":"Where are directed predicates extracted and multi-hop knowledge graph paths retrieved?","relevant_paths":["agent/knowledge_graph.py","agent/graph_rag.py"],"tags":["retrieval","graph"]}

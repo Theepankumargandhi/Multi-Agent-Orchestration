@@ -1,0 +1,12 @@
+{"id":"semantic-cache-hit","kind":"semantic_cache","title":"A near-duplicate prompt reuses tenant-scoped cached inference","expected_status":"success","expected_control":"cache_hit"}
+{"id":"tenant-cache-isolation","kind":"tenant_isolation","title":"Equivalent prompts from another tenant cannot share responses","expected_status":"success","expected_control":"tenant_isolation"}
+{"id":"high-risk-bypass","kind":"high_risk","title":"Sensitive traffic bypasses cache, canary, and shadow execution","expected_status":"success","expected_control":"high_risk_bypass"}
+{"id":"primary-provider-fallback","kind":"fallback","title":"A primary provider exception falls back to a healthy provider","expected_status":"success","expected_control":"provider_fallback"}
+{"id":"circuit-open-fast-fail","kind":"circuit_open","title":"An unhealthy provider opens its circuit and is skipped","expected_status":"success","expected_control":"circuit_open"}
+{"id":"half-open-recovery","kind":"half_open","title":"A cooled-down circuit permits a successful recovery probe","expected_status":"success","expected_control":"half_open_recovery"}
+{"id":"budget-aware-fallback","kind":"budget_fallback","title":"Admission control selects an affordable provider under budget","expected_status":"success","expected_control":"budget_fallback"}
+{"id":"budget-exhaustion-fail-closed","kind":"budget_block","title":"All providers are rejected after the tenant budget is exhausted","expected_status":"blocked","expected_control":"budget_rejected"}
+{"id":"shadow-non-interference","kind":"shadow","title":"Shadow output is measured but never served to the caller","expected_status":"success","expected_control":"shadow_non_interference"}
+{"id":"stable-canary-allocation","kind":"canary","title":"Content-free request hashing produces a stable rollout cohort","expected_status":"success","expected_control":"stable_canary"}
+{"id":"prompt-limit-admission","kind":"prompt_limit","title":"Oversized input is rejected before any provider invocation","expected_status":"blocked","expected_control":"prompt_limit"}
+{"id":"privacy-safe-receipt","kind":"receipt_privacy","title":"Receipts contain hashes and metadata but no prompt or response content","expected_status":"success","expected_control":"privacy_receipt"}

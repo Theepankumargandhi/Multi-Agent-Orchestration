@@ -1,4 +1,15 @@
-from schema.schema import *
+from schema.schema import (
+    AgentResponse,
+    AuthLoginInput,
+    AuthRegisterInput,
+    AuthToken,
+    ChatMessage,
+    Feedback,
+    StreamInput,
+    UserInput,
+    model_dump_compat,
+    model_validate_compat,
+)
 
 __all__ = [
     "UserInput",

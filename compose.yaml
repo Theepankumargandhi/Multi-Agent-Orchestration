@@ -8,8 +8,68 @@ services:
     env_file:
       - .env
     environment:
-      - HOST=0.0.0.0
-      - PORT=8000
+      HOST: 0.0.0.0
+      PORT: 8000
+      APP_ENV: development
+      POSTGRES_CHECKPOINT_URI: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-agent-local-only}@postgres:5432/${POSTGRES_DB:-agent_platform}
+      POSTGRES_STORE_URI: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-agent-local-only}@postgres:5432/${POSTGRES_DB:-agent_platform}
+      CACHE_USE_REDIS: "true"
+      REDIS_URL: redis://redis:6379/0
+      MCP_TOOLS_ENABLED: "false"
+      ADAPTIVE_MODEL_ROUTER_ENABLED: "false"
+      ADAPTIVE_MODEL_ROUTER_PATH: /app/data/evaluations/cost_router.json
+      MODEL_GATEWAY_ENABLED: "false"
+      MODEL_GATEWAY_POLICY_VERSION: inference-policy-v1
+      MODEL_GATEWAY_DAILY_BUDGET_USD: "5"
+      MODEL_GATEWAY_SEMANTIC_CACHE_ENABLED: "false"
+      MODEL_GATEWAY_SHADOW_ENABLED: "false"
+      MODEL_GATEWAY_ONLINE_EVENT_PATH: ""
+      AGENT_MEMORY_ENABLED: "false"
+      AGENT_MEMORY_DB_PATH: /app/data/memory/agent_memory.db
+      AGENT_MEMORY_TOKEN_BUDGET: "384"
+      GROUNDING_VERIFICATION_ENABLED: "false"
+      GROUNDING_MIN_CLAIM_SCORE: "0.22"
+      GROUNDING_MIN_COVERAGE: "0.80"
+      GROUNDING_FAIL_CLOSED: "true"
+      UNCERTAINTY_CALIBRATION_ENABLED: "false"
+      UNCERTAINTY_CALIBRATOR_PATH: /app/data/evaluations/uncertainty/calibrator.json
+      ADAPTIVE_COMPUTE_ENABLED: "false"
+      ADAPTIVE_COMPUTE_MAX_CANDIDATES: "3"
+      ADAPTIVE_COMPUTE_MAX_EXTRA_TOKENS: "1800"
+      ADAPTIVE_COMPUTE_MAX_LATENCY_MS: "15000"
+      EVIDENCE_QUALITY_ENABLED: "false"
+      EVIDENCE_MIN_WEB_SOURCES: "2"
+      EVIDENCE_DUPLICATE_SIMILARITY: "0.82"
+      EVIDENCE_AUTHORITY_DOMAINS: openai.com,github.com,python.org
+      GENAI_OTEL_ENABLED: "false"
+      OTEL_SERVICE_NAME: agentforge-agent-service
+      GENAI_TRACE_JSONL_PATH: ""
+      CODE_AGENT_ENABLED: "false"
+      CODE_AGENT_EXECUTION_MODE: embedded
+      CODE_AGENT_WORKFLOW: verified_pr
+      CODE_AGENT_SECURITY_POLICY_ENABLED: "true"
+      CODE_AGENT_SECURITY_POLICY_VERSION: agentforge-security-v1
+      CODE_AGENT_DB_PATH: /app/data/code-agent/jobs.db
+      CODE_AGENT_ARTIFACT_ROOT: /app/data/code-agent/artifacts
+      CODE_AGENT_MAX_ARTIFACT_BYTES: "4000000"
+      CODE_AGENT_MAX_CHANGED_FILES: "20"
+      CODE_AGENT_MAX_REPAIR_ROUNDS: "2"
+      CODE_AGENT_MAX_WORKFLOW_WRITES: "16"
+      CODE_AGENT_MIN_CHANGED_LINE_COVERAGE: "0.8"
+      CHECKPOINT_DB_PATH: /app/data/checkpoints/checkpoints.db
+      STORE_DB_PATH: /app/data/store/store.db
+      CHROMA_PERSIST_DIR: /app/data/chroma_db
+      GRAPH_CHROMA_PERSIST_DIR: /app/data/graph_chroma_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - agent_data:/app/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     develop:
       watch:
         - path: agent/
@@ -29,9 +89,13 @@ services:
     ports:
       - "8501:8501"
     depends_on:
-      - agent_service
+      agent_service:
+        condition: service_healthy
     environment:
-      - AGENT_URL=http://agent_service:8000
+      AGENT_URL: http://agent_service:8000
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     develop:
       watch:
         - path: client/
@@ -43,6 +107,108 @@ services:
         - path: streamlit_app.py
           action: sync+restart
           target: /app/streamlit_app.py
+
+  code_eval_dashboard:
+    profiles: ["evaluation"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.eval-dashboard
+    ports:
+      - "8502:8502"
+    environment:
+      CODE_AGENT_EVAL_DIR: /app/data/evaluations/code-agent
+    volumes:
+      - ./data/evaluations/code-agent:/app/data/evaluations/code-agent:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  code_context_dashboard:
+    profiles: ["evaluation"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.context-dashboard
+    ports:
+      - "8504:8504"
+    environment:
+      CODE_CONTEXT_EVAL_DIR: /app/data/evaluations/code-context
+    volumes:
+      - ./data/evaluations/code-context:/app/data/evaluations/code-context:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  security_dashboard:
+    profiles: ["evaluation"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.security-dashboard
+    ports:
+      - "8505:8505"
+    environment:
+      CODE_SECURITY_EVAL_DIR: /app/data/evaluations/security
+    volumes:
+      - ./data/evaluations/security:/app/data/evaluations/security:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  reliability_dashboard:
+    profiles: ["evaluation"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.reliability-dashboard
+    ports:
+      - "8506:8506"
+    environment:
+      AGENTOPS_RESULTS_DIR: /app/data/evaluations
+      AGENTOPS_DATASETS_DIR: /app/evals/datasets
+    volumes:
+      - ./data/evaluations:/app/data/evaluations:ro
+      - ./evals/datasets:/app/evals/datasets:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  post_training_dashboard:
+    profiles: ["evaluation"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.post-training-dashboard
+    ports:
+      - "8503:8503"
+    environment:
+      POST_TRAINING_RESULTS_DIR: /app/data/evaluations/post-training
+    volumes:
+      - ./data/evaluations/post-training:/app/data/evaluations/post-training:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:v2.54.1
@@ -61,11 +227,41 @@ services:
     depends_on:
       - prometheus
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-local-only}
     volumes:
       - grafana_data:/var/lib/grafana
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent-local-only}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_platform}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
 volumes:
+  agent_data:
   grafana_data:
+  postgres_data:
+  redis_data:

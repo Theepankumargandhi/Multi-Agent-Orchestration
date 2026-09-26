@@ -16,6 +16,8 @@ data/store/*.db
 data/rag/*.db
 data/chroma_db/
 data/graph_chroma_db/
+data/code-agent/
+data/memory/
 
 # VSCode
 .vscode
@@ -169,6 +171,13 @@ id_rsa.pub
 
 # Local screenshots / notes created during development
 User Input Processing-*.png
+
+# Local evaluation runs (datasets and experiment definitions remain versioned)
+data/evaluations/
+
+# Local repositories submitted to the sandboxed coding agent
+repositories/*
+!repositories/README.md
 
 # Spyder project settings
 .spyderproject

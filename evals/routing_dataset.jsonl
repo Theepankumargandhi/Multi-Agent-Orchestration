@@ -1,0 +1,7 @@
+{"input":"calculate (125 * 8) / 4","expected_route":"math"}
+{"input":"latest foundation model news today","expected_route":"web"}
+{"input":"explain this repository FastAPI service","expected_route":"rag"}
+{"input":"compare current AI agent news with this codebase","expected_route":"hybrid"}
+{"input":"how does FastAPI connect to LangGraph in this project","expected_route":"kg"}
+{"input":"local: explain the checkpoint implementation","expected_route":"rag"}
+{"input":"hello there","expected_route":"general"}

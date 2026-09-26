@@ -7,9 +7,9 @@ from uuid import uuid4
 import streamlit as st
 from dotenv import load_dotenv
 from streamlit.runtime.scriptrunner import get_script_run_ctx
+
 from client import AgentClient
 from schema import ChatMessage, model_dump_compat, model_validate_compat
-
 
 # A Streamlit app for interacting with the langgraph agent via a simple chat interface.
 # The app has three main functions which are all run async:
@@ -97,12 +97,13 @@ def get_agent_client():
     return AgentClient(agent_url)
 
 
-def get_available_models() -> dict[str, str]:
+def get_available_models(capabilities: dict | None = None) -> dict[str, str]:
     models: dict[str, str] = {}
-    if os.getenv("OPENAI_API_KEY"):
-        models["OpenAI GPT-4o-mini (streaming)"] = "gpt-4o-mini"
-    if os.getenv("GROQ_API_KEY"):
-        models["llama-3.1-70b on Groq"] = "llama-3.1-70b"
+    for item in (capabilities or {}).get("models", []):
+        model_id = str(item.get("id") or "").strip()
+        label = str(item.get("label") or model_id).strip()
+        if model_id:
+            models[label] = model_id
     return models
 
 
@@ -130,15 +131,20 @@ async def main():
         await asyncio.sleep(0.1)
         st.rerun()
 
-    models = get_available_models()
+    agent_client = get_agent_client()
+    try:
+        runtime_capabilities = await agent_client.acapabilities()
+    except Exception as exc:
+        st.error(f"Agent service is unavailable: {exc}")
+        st.stop()
+    models = get_available_models(runtime_capabilities)
     if not models:
         st.error(
-            "No model API key found. Add OPENAI_API_KEY or GROQ_API_KEY to .env and restart Streamlit."
+            "The agent service has no configured model provider. Configure OPENAI_API_KEY or GROQ_API_KEY on the backend."
         )
-        st.code("OPENAI_API_KEY=your_key_here\nGROQ_API_KEY=your_key_here")
+        st.code("OPENAI_API_KEY=your_key_here")
         st.stop()
 
-    agent_client = get_agent_client()
     if USER_AUTH_ENABLED:
         if "auth_user_id" not in st.session_state:
             st.session_state.auth_user_id = ""

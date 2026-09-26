@@ -13,6 +13,14 @@ spec:
       labels:
         app: grafana
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: grafana
           image: grafana/grafana-oss:11.2.0
@@ -22,9 +30,19 @@ spec:
               name: http
           env:
             - name: GF_SECURITY_ADMIN_USER
-              value: admin
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: GRAFANA_ADMIN_USER
             - name: GF_SECURITY_ADMIN_PASSWORD
-              value: admin
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: GRAFANA_ADMIN_PASSWORD
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: grafana-data
               mountPath: /var/lib/grafana
@@ -40,7 +58,19 @@ spec:
               memory: "1Gi"
       volumes:
         - name: grafana-data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: grafana-data
         - name: grafana-datasource
           configMap:
             name: grafana-datasource
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: agent-platform
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi

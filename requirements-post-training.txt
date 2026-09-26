@@ -1,0 +1,10 @@
+# Install in a dedicated accelerator environment; not required by the API service.
+torch>=2.6,<3
+transformers>=5,<6
+datasets>=4,<5
+accelerate>=1,<2
+peft>=0.17,<1
+trl>=0.25,<1
+bitsandbytes>=0.48,<1
+safetensors>=0.5,<1
+sentencepiece>=0.2,<1

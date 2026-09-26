@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=78"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evidence-agent-platform"
+version = "0.4.0"
+description = "An evaluation-driven LangGraph agent platform with hybrid retrieval, durable HITL, and experiment tracking."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+dependencies = [
+  "argon2-cffi>=25,<26",
+  "fastapi>=0.135,<0.142",
+  "langchain-core>=1.2,<2",
+  "langchain-openai>=1.0,<2",
+  "langchain-groq>=1.0,<2",
+  "langchain-community>=0.4,<0.5",
+  "langchain-chroma>=1.0,<2",
+  "langgraph>=1.0,<2",
+  "langgraph-checkpoint-sqlite>=3.0,<4",
+  "langgraph-checkpoint-postgres>=3.0,<4",
+  "opentelemetry-api>=1.43,<1.44",
+  "opentelemetry-sdk>=1.43,<1.44",
+  "opentelemetry-exporter-otlp-proto-http>=1.43,<1.44",
+  "pydantic>=2.11,<3",
+  "tree-sitter>=0.26,<0.27",
+  "tree-sitter-language-pack>=1.17,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "coverage[toml]>=7.10,<8",
+  "httpx>=0.28,<1",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=6,<8",
+  "ruff>=0.12,<1",
+]
+code-intelligence-ml = [
+  "sentence-transformers>=6,<7",
+]
+
+[project.scripts]
+agentforge-eval = "evals.run_experiments:main"
+agentforge-judge-calibration = "evals.run_judge_calibration:main"
+agentforge-retrieval-eval = "evals.run_retrieval_evals:main"
+agentforge-review = "evals.review_dataset:main"
+agentforge-train-router = "evals.train_cost_router:main"
+agentforge-code-eval = "code_agent.evaluation:main"
+agentforge-swebench-import = "code_agent.swebench:main"
+agentforge-flywheel = "evals.flywheel:main"
+agentforge-post-train = "post_training.cli:main"
+agentforge-code-worker = "code_agent.worker:main"
+agentforge-code-context-eval = "code_agent.context_evaluation:main"
+agentforge-security-eval = "code_agent.security_evaluation:main"
+agentforge-benchmark-release = "code_agent.benchmark_release:main"
+agentforge-telemetry-eval = "code_agent.observability:main"
+agentforge-reliability-eval = "evals.reliability:main"
+agentforge-arena = "evals.arena:main"
+agentforge-gateway-eval = "evals.model_gateway_evaluation:main"
+agentforge-online-eval = "evals.online_monitor_evaluation:main"
+agentforge-memory-eval = "evals.memory_evaluation:main"
+agentforge-grounding-eval = "evals.grounding_evaluation:main"
+agentforge-uncertainty-eval = "evals.uncertainty_evaluation:main"
+agentforge-adaptive-compute-eval = "evals.adaptive_compute_evaluation:main"
+agentforge-evidence-quality-eval = "evals.evidence_quality_evaluation:main"
+
+[tool.setuptools.packages.find]
+include = ["agent*", "client*", "code_agent*", "evals*", "post_training*", "schema*", "service*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "service", "schema"]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"
+markers = [
+  "integration: requires external services or model credentials",
+  "eval: offline or model-based quality evaluation",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["agent", "client", "code_agent", "schema", "service"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 30
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+exclude = ["conda"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]

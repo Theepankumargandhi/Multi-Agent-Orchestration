@@ -1,0 +1,37 @@
+{
+  "name": "live-agent-quality-seed",
+  "dataset": "evals/datasets/agent_quality_seed.jsonl",
+  "variants": [
+    {
+      "name": "small-model",
+      "adapter": "live-graph",
+      "model": "gpt-4o-mini",
+      "parameters": {
+        "input_cost_per_million": 0.0,
+        "output_cost_per_million": 0.0
+      }
+    },
+    {
+      "name": "strong-model",
+      "adapter": "live-graph",
+      "model": "replace-with-strong-model",
+      "parameters": {
+        "input_cost_per_million": 0.0,
+        "output_cost_per_million": 0.0
+      }
+    }
+  ],
+  "metric_weights": {
+    "route_accuracy": 1.0,
+    "citation_coverage": 1.0,
+    "safety_accuracy": 2.0,
+    "forbidden_term_safety": 2.0,
+    "tool_call_f1": 1.0,
+    "latency_slo": 0.25
+  },
+  "pass_threshold": 0.85,
+  "concurrency": 2,
+  "splits": ["train", "validation", "test"],
+  "bootstrap_samples": 2000,
+  "confidence_level": 0.95
+}

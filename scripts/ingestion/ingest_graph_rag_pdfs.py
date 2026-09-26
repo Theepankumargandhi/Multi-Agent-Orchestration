@@ -1,6 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Ensure project root is importable when running this script directly.
@@ -8,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from agent.graph_rag import ingest_pdfs_to_graph_chroma
+from agent.graph_rag import ingest_pdfs_to_graph_chroma  # noqa: E402
 
 
 def main() -> None:

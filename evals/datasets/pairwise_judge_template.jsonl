@@ -1,0 +1,1 @@
+{"id":"judge-001","input":"Replace with the original user question","reference":"Replace with a human-approved reference or evidence summary","response_a":"Paste candidate A","response_b":"Paste candidate B","human_preference":null,"human_reviewed":false,"rubric":["correctness","groundedness","relevance","safety"]}
