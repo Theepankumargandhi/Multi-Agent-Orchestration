@@ -1,8 +1,10 @@
-import aiohttp
 import json
 import os
-from typing import AsyncGenerator, Dict, Any, Generator
+from typing import Any, AsyncGenerator, Dict, Generator
+
+import aiohttp
 import requests
+
 from schema import (
     AuthLoginInput,
     AuthRegisterInput,
@@ -31,9 +33,41 @@ class AgentClient:
         self.base_url = base_url
         self.auth_secret = os.getenv("AUTH_SECRET")
         self.access_token: str | None = None
+        self._async_timeout = aiohttp.ClientTimeout(total=120, connect=10)
+        self._sync_timeout = (10, 120)
+        self._sync_session = requests.Session()
 
     def set_access_token(self, token: str | None) -> None:
         self.access_token = (token or "").strip() or None
+
+    async def acapabilities(self) -> Dict[str, Any]:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(f"{self.base_url}/capabilities") as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
+
+    async def alist_evaluation_experiments(self, limit: int = 50) -> Dict[str, Any]:
+        """List reports from an evaluation-enabled service."""
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(
+                f"{self.base_url}/evals/experiments",
+                params={"limit": max(1, min(limit, 500))},
+                headers=self._headers,
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
+
+    async def aget_evaluation_experiment(self, experiment_id: str) -> Dict[str, Any]:
+        """Fetch one portable evaluation report by opaque experiment ID."""
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(
+                f"{self.base_url}/evals/experiments/{experiment_id}", headers=self._headers
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Error: {response.status} - {await response.text()}")
+                return await response.json()
 
     @property
     def _headers(self):
@@ -45,7 +79,7 @@ class AgentClient:
         return headers
 
     async def aregister(self, user_id: str, password: str) -> AuthToken:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             request = AuthRegisterInput(user_id=user_id, password=password)
             async with session.post(
                 f"{self.base_url}/auth/register",
@@ -61,10 +95,11 @@ class AgentClient:
 
     def register(self, user_id: str, password: str) -> AuthToken:
         request = AuthRegisterInput(user_id=user_id, password=password)
-        response = requests.post(
+        response = self._sync_session.post(
             f"{self.base_url}/auth/register",
             json=model_dump_compat(request),
             headers=self._headers,
+            timeout=self._sync_timeout,
         )
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")
@@ -73,7 +108,7 @@ class AgentClient:
         return auth
 
     async def alogin(self, user_id: str, password: str) -> AuthToken:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             request = AuthLoginInput(user_id=user_id, password=password)
             async with session.post(
                 f"{self.base_url}/auth/login",
@@ -89,10 +124,11 @@ class AgentClient:
 
     def login(self, user_id: str, password: str) -> AuthToken:
         request = AuthLoginInput(user_id=user_id, password=password)
-        response = requests.post(
+        response = self._sync_session.post(
             f"{self.base_url}/auth/login",
             json=model_dump_compat(request),
             headers=self._headers,
+            timeout=self._sync_timeout,
         )
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")
@@ -112,7 +148,7 @@ class AgentClient:
         Returns:
             AnyMessage: The response from the agent
         """
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             request = UserInput(message=message)
             if thread_id:
                 request.thread_id = thread_id
@@ -146,10 +182,11 @@ class AgentClient:
             request.thread_id = thread_id
         if model:
             request.model = model
-        response = requests.post(
+        response = self._sync_session.post(
             f"{self.base_url}/invoke",
             json=model_dump_compat(request),
             headers=self._headers,
+            timeout=self._sync_timeout,
         )
         if response.status_code == 200:
             return model_validate_compat(ChatMessage, response.json())
@@ -215,11 +252,12 @@ class AgentClient:
             request.thread_id = thread_id
         if model:
             request.model = model
-        response = requests.post(
+        response = self._sync_session.post(
             f"{self.base_url}/stream",
             json=model_dump_compat(request),
             headers=self._headers,
             stream=True,
+            timeout=self._sync_timeout,
         )
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")
@@ -257,7 +295,7 @@ class AgentClient:
         Returns:
             AsyncGenerator[ChatMessage | str, None]: The response from the agent
         """
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             request = StreamInput(message=message, stream_tokens=stream_tokens)
             if thread_id:
                 request.thread_id = thread_id
@@ -294,7 +332,7 @@ class AgentClient:
         credentials can be stored and managed in the service rather than the client.
         See: https://api.smith.langchain.com/redoc#tag/feedback/operation/create_feedback_api_v1_feedback_post
         """
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             request = Feedback(
                 run_id=run_id,
                 key=key,
@@ -311,7 +349,7 @@ class AgentClient:
                 await response.json()
 
     async def aget_store(self, thread_id: str, limit: int = 200) -> Dict[str, Any]:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             async with session.get(
                 f"{self.base_url}/store/{thread_id}",
                 params={"limit": max(1, min(int(limit), 200))},
@@ -322,17 +360,18 @@ class AgentClient:
                 return await response.json()
 
     def get_store(self, thread_id: str, limit: int = 200) -> Dict[str, Any]:
-        response = requests.get(
+        response = self._sync_session.get(
             f"{self.base_url}/store/{thread_id}",
             params={"limit": max(1, min(int(limit), 200))},
             headers=self._headers,
+            timeout=self._sync_timeout,
         )
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")
         return response.json()
 
     async def alist_threads(self, limit: int = 30) -> Dict[str, Any]:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             async with session.get(
                 f"{self.base_url}/store/threads",
                 params={"limit": max(1, min(int(limit), 200))},
@@ -343,10 +382,11 @@ class AgentClient:
                 return await response.json()
 
     def list_threads(self, limit: int = 30) -> Dict[str, Any]:
-        response = requests.get(
+        response = self._sync_session.get(
             f"{self.base_url}/store/threads",
             params={"limit": max(1, min(int(limit), 200))},
             headers=self._headers,
+            timeout=self._sync_timeout,
         )
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")
@@ -363,7 +403,7 @@ class AgentClient:
             "recency_days": max(1, min(int(recency_days), 30)),
             "max_results": max(1, min(int(max_results), 10)),
         }
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             async with session.post(
                 f"{self.base_url}/web_search/preview",
                 json=payload,
@@ -384,10 +424,11 @@ class AgentClient:
             "recency_days": max(1, min(int(recency_days), 30)),
             "max_results": max(1, min(int(max_results), 10)),
         }
-        response = requests.post(
+        response = self._sync_session.post(
             f"{self.base_url}/web_search/preview",
             json=payload,
             headers=self._headers,
+            timeout=self._sync_timeout,
         )
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")
@@ -416,7 +457,7 @@ class AgentClient:
             "source": str(source or ""),
             "cache_hit": bool(cache_hit),
         }
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             async with session.post(
                 f"{self.base_url}/hitl/web_decision",
                 json=payload,
@@ -449,10 +490,11 @@ class AgentClient:
             "source": str(source or ""),
             "cache_hit": bool(cache_hit),
         }
-        response = requests.post(
+        response = self._sync_session.post(
             f"{self.base_url}/hitl/web_decision",
             json=payload,
             headers=self._headers,
+            timeout=self._sync_timeout,
         )
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")
@@ -466,7 +508,7 @@ class AgentClient:
         params = {"limit": max(1, min(int(limit), 200))}
         if thread_id:
             params["thread_id"] = str(thread_id).strip()
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._async_timeout) as session:
             async with session.get(
                 f"{self.base_url}/hitl/web_decisions",
                 params=params,
@@ -484,10 +526,11 @@ class AgentClient:
         params = {"limit": max(1, min(int(limit), 200))}
         if thread_id:
             params["thread_id"] = str(thread_id).strip()
-        response = requests.get(
+        response = self._sync_session.get(
             f"{self.base_url}/hitl/web_decisions",
             params=params,
             headers=self._headers,
+            timeout=self._sync_timeout,
         )
         if response.status_code != 200:
             raise Exception(f"Error: {response.status_code} - {response.text}")

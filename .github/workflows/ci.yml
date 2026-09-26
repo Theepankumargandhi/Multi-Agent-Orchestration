@@ -34,27 +34,176 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'test-requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r test-requirements.txt
+          python -m pip install -r requirements.txt
+          python -m pip install --no-deps --editable .
 
       - name: Prepare local sqlite directories
         run: mkdir -p data/checkpoints data/store data/rag
 
-      - name: Run tests
+      - name: Build coding sandbox image
+        run: docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
+
+      - name: Run unit and integration tests
         env:
           CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
           STORE_DB_PATH: data/store/store_ci.db
           LOCAL_RAG_DB_PATH: data/rag/local_rag_ci.db
           ENABLE_USER_AUTH: "true"
           USER_AUTH_SECRET: ci-user-auth-secret
-        run: pytest -q service/test_service.py schema/test_schema.py
+        run: python -m pytest -q --cov --cov-report=term-missing --cov-report=xml --junitxml=test-results.xml
+
+      - name: Annotate pytest failures
+        if: failure() && hashFiles('test-results.xml') != ''
+        run: python scripts/ci/report_junit_failures.py test-results.xml
+
+      - name: Run offline AI evaluation gates
+        env:
+          CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
+          STORE_DB_PATH: data/store/store_ci.db
+          LOCAL_RAG_DB_PATH: data/rag/local_rag_ci.db
+          ENABLE_USER_AUTH: "true"
+          USER_AUTH_SECRET: ci-user-auth-secret
+        run: |
+          python -m evals.run_offline_evals --min-score 0.95
+          python -m evals.run_experiments --no-store --min-score 0.95
+          python -m evals.build_seed_dataset --check
+          python -m code_agent.evaluation evals/datasets/code_agent_smoke.jsonl --validate-only
+          python -m code_agent.context_evaluation --repository-root . --top-k 8 --min-recall 0.90
+          python -m code_agent.context_evaluation --repository-root . --top-k 8 --ablation --token-budgets 256,512,1024,2048 --output data/evaluations/code-context/ci.json
+          python -m code_agent.security_evaluation --max-asr 0.05 --min-benign-pass-rate 0.95 --output data/evaluations/security/ci.json
+          python -m code_agent.benchmark_release validate evals/experiments/code_agent_release_matrix.json
+          python -m code_agent.observability evals/datasets/genai_telemetry_smoke.jsonl --output data/evaluations/telemetry/ci.json
+          python -m evals.reliability --output data/evaluations/reliability/ci.json --min-pass-rate 1 --min-recovery-rate 1 --max-p95-ms 250
+          python -m evals.arena evals/experiments/agent_arena.json --output data/evaluations/arena/ci.json --require-promotion
+          python -m evals.model_gateway_evaluation --output data/evaluations/model-gateway/ci.json --min-pass-rate 1 --max-privacy-violations 0 --max-canary-deviation 2.5
+          python -m evals.online_monitor_evaluation --output data/evaluations/online-monitor/ci.json --require-decision rollback --min-integrity-rate 1 --max-privacy-violations 0 --require-alert
+          python -m evals.memory_evaluation --output data/evaluations/memory/ci.json --min-pass-rate 1 --max-cross-tenant-leakage 0 --max-poisoning-asr 0 --max-deletion-violations 0
+          python -m evals.grounding_evaluation --output data/evaluations/grounding/ci.json --min-pass-rate 1 --max-unsafe-release-rate 0 --min-receipt-integrity 1
+          python -m evals.uncertainty_evaluation --output data/evaluations/uncertainty/ci.json --artifact data/evaluations/uncertainty/calibrator.json --target-error-rate 0.2 --min-selective-accuracy 1 --max-empirical-error 0 --min-incorrect-abstention 1 --require-drift-detection
+          python -m evals.adaptive_compute_evaluation --output data/evaluations/adaptive-compute/ci.json --min-pass-rate 1 --min-recovery-rate 1 --max-unsafe-release-rate 0 --max-budget-violation-rate 0
+          python -m evals.evidence_quality_evaluation --output data/evaluations/evidence-quality/ci.json --min-pass-rate 1 --min-benign-utility 1 --max-unsafe-release-rate 0
+          python -m evals.flywheel --help
+          python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
+          python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
+
+      - name: Lint
+        run: python -m ruff check agent client code_agent evals post_training schema scripts service tests
+
+      - name: Dependency audit
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements-service.txt \
+            --ignore-vuln PYSEC-2026-311 \
+            --ignore-vuln CVE-2026-45830 \
+            --ignore-vuln CVE-2026-45831 \
+            --ignore-vuln CVE-2026-45833
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-junit
+          path: test-results.xml
+          if-no-files-found: ignore
+
+      - name: Upload code-context ablation
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-context-ablation
+          path: data/evaluations/code-context/ci.json
+          if-no-files-found: error
+
+      - name: Upload agent security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-security-red-team
+          path: data/evaluations/security/ci.json
+          if-no-files-found: error
+
+      - name: Upload GenAI telemetry gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: genai-telemetry-gate
+          path: data/evaluations/telemetry/ci.json
+          if-no-files-found: error
+
+      - name: Upload agent reliability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-reliability-report
+          path: data/evaluations/reliability/ci.json
+          if-no-files-found: error
+
+      - name: Upload behavioral arena report
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-behavioral-arena
+          path: data/evaluations/arena/ci.json
+          if-no-files-found: error
+
+      - name: Upload inference gateway report
+        uses: actions/upload-artifact@v4
+        with:
+          name: inference-gateway-control-plane
+          path: data/evaluations/model-gateway/ci.json
+          if-no-files-found: error
+
+      - name: Upload online AI governance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: online-ai-canary-governance
+          path: data/evaluations/online-monitor/ci.json
+          if-no-files-found: error
+
+      - name: Upload trustworthy agent memory report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trustworthy-agent-memory
+          path: data/evaluations/memory/ci.json
+          if-no-files-found: error
+
+      - name: Upload claim-grounding report
+        uses: actions/upload-artifact@v4
+        with:
+          name: claim-grounding-verification
+          path: data/evaluations/grounding/ci.json
+          if-no-files-found: error
+
+      - name: Upload uncertainty calibration evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformal-selective-generation
+          path: data/evaluations/uncertainty/
+          if-no-files-found: error
+
+      - name: Upload adaptive compute evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: adaptive-test-time-compute
+          path: data/evaluations/adaptive-compute/
+          if-no-files-found: error
+
+      - name: Upload evidence intelligence report
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-intelligence
+          path: data/evaluations/evidence-quality/
+          if-no-files-found: error
 
   docker-build-check:
     name: Docker Build Check
@@ -70,3 +219,15 @@ jobs:
 
       - name: Build app image
         run: docker build -f docker/Dockerfile.app -t multi-agent-orchestration-app:ci .
+
+      - name: Build coding evaluation dashboard image
+        run: docker build -f docker/Dockerfile.eval-dashboard -t agentforge-code-eval-dashboard:ci .
+
+      - name: Build post-training dashboard image
+        run: docker build -f docker/Dockerfile.post-training-dashboard -t agentforge-post-training-dashboard:ci .
+
+      - name: Build agent security dashboard image
+        run: docker build -f docker/Dockerfile.security-dashboard -t agentforge-security-dashboard:ci .
+
+      - name: Build reliability command center image
+        run: docker build -f docker/Dockerfile.reliability-dashboard -t agentforge-reliability-dashboard:ci .

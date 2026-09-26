@@ -1,0 +1,31 @@
+FROM python:3.12.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    CODE_CONTEXT_EVAL_DIR=/app/data/evaluations/code-context
+
+COPY requirements-eval-dashboard.txt .
+RUN python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
+
+COPY code_agent/__init__.py ./code_agent/__init__.py
+COPY code_agent/models.py ./code_agent/models.py
+COPY code_agent/code_parsing.py ./code_agent/code_parsing.py
+COPY code_agent/repository_map.py ./code_agent/repository_map.py
+COPY code_agent/retrieval_backends.py ./code_agent/retrieval_backends.py
+COPY code_agent/intelligence.py ./code_agent/intelligence.py
+COPY code_agent/context_evaluation.py ./code_agent/context_evaluation.py
+COPY code_agent/context_dashboard.py ./code_agent/context_dashboard.py
+
+RUN addgroup --system dashboard && adduser --system --ingroup dashboard --uid 10001 dashboard \
+    && mkdir -p /app/data/evaluations/code-context \
+    && chown -R dashboard:dashboard /app
+USER dashboard
+
+EXPOSE 8504
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8504/_stcore/health', timeout=2)"
+
+CMD ["streamlit", "run", "code_agent/context_dashboard.py", "--server.address=0.0.0.0", "--server.port=8504", "--server.headless=true"]

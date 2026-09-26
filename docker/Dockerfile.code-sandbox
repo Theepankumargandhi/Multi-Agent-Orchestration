@@ -1,0 +1,14 @@
+FROM python:3.12.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+COPY requirements-code-sandbox.txt /tmp/requirements-code-sandbox.txt
+RUN python -m pip install --no-cache-dir -r /tmp/requirements-code-sandbox.txt \
+    && rm /tmp/requirements-code-sandbox.txt
+
+WORKDIR /workspace
+USER 65532:65532
+
+CMD ["python", "-c", "import time; time.sleep(10**9)"]

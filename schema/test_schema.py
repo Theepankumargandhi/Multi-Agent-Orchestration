@@ -1,5 +1,9 @@
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage, ToolCall
-from schema import ChatMessage
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage
+from pydantic import ValidationError
+
+from schema import ChatMessage, UserInput
+
 
 def test_messages_to_langchain():
     human_message = ChatMessage(type="human", content="Hello, world!")
@@ -49,3 +53,10 @@ def test_messages_tool_calls():
     assert ai_message.tool_calls[0]["name"] == "test_tool"
     assert ai_message.tool_calls[0]["args"] == {"x": 1, "y": 2}
     assert lc_ai_message == ai_message.to_langchain()
+
+
+def test_user_input_rejects_blank_message_and_unsafe_thread_id():
+    with pytest.raises(ValidationError):
+        UserInput(message="   ")
+    with pytest.raises(ValidationError):
+        UserInput(message="hello", thread_id="../../other-user")

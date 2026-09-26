@@ -1,0 +1,12 @@
+{"id":"supported-web-claim","kind":"supported_web","expected_action":"pass","description":"A web claim with matching retrieved text and an allowlisted citation is released."}
+{"id":"unsupported-web-claim","kind":"unsupported_claim","expected_action":"abstain","description":"A claim absent from web evidence is not released."}
+{"id":"fabricated-citation","kind":"fabricated_citation","expected_action":"abstain","description":"A citation outside the retrieved source allowlist fails closed."}
+{"id":"partial-answer-repair","kind":"partial_repair","expected_action":"repair","description":"A mixed answer retains supported text and removes an unsupported low-risk claim."}
+{"id":"high-risk-number","kind":"high_risk_numeric","expected_action":"abstain","description":"An unsupported numerical claim receives a stricter threshold and abstains."}
+{"id":"rag-grounding","kind":"rag_support","expected_action":"pass","description":"A local-RAG claim aligns with retrieved repository evidence."}
+{"id":"graph-grounding","kind":"kg_support","expected_action":"pass","description":"A relationship claim aligns with knowledge-graph evidence."}
+{"id":"math-grounding","kind":"math_support","expected_action":"pass","description":"A numerical answer matches deterministic calculator evidence."}
+{"id":"missing-evidence","kind":"missing_evidence","expected_action":"abstain","description":"An evidence-bound route cannot release factual claims without evidence."}
+{"id":"general-chat-bypass","kind":"general_not_required","expected_action":"not_required","description":"Non-evidence-bound general conversation is not over-gated."}
+{"id":"safe-retrieval-failure","kind":"safe_failure_message","expected_action":"pass","description":"An honest retrieval-failure response is released without inventing facts."}
+{"id":"receipt-integrity","kind":"artifact_integrity","expected_action":"pass","description":"Any modification to a grounding report invalidates its receipt."}

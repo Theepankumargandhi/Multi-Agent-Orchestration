@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "name": "AgentForge Coding Agent Workflow and Retrieval Ablation",
+  "dataset": "../datasets/code_agent_smoke.jsonl",
+  "dataset_name": "agentforge-code-smoke-v1",
+  "dataset_lock": "code_agent_smoke.lock.json",
+  "repository_root": "../../tests/fixtures/code_repositories",
+  "output_dir": "../../data/evaluations/benchmark-release",
+  "image": "agentforge-code-sandbox:local",
+  "max_cases": 5,
+  "score_source": "local_harness",
+  "variants": [
+    {
+      "name": "small-single-map",
+      "model": "gpt-4o-mini",
+      "workflow": "single_agent",
+      "context_strategy": "lexical",
+      "input_cost_per_million": 0,
+      "output_cost_per_million": 0
+    },
+    {
+      "name": "small-verified-lexical-graph",
+      "model": "gpt-4o-mini",
+      "workflow": "verified_pr",
+      "context_strategy": "lexical_graph",
+      "input_cost_per_million": 0,
+      "output_cost_per_million": 0
+    },
+    {
+      "name": "small-verified-hybrid-rerank",
+      "model": "gpt-4o-mini",
+      "workflow": "verified_pr",
+      "context_strategy": "hybrid_rerank",
+      "input_cost_per_million": 0,
+      "output_cost_per_million": 0
+    },
+    {
+      "name": "strong-verified-hybrid-rerank",
+      "model": "llama-3.3-70b-versatile",
+      "workflow": "verified_pr",
+      "context_strategy": "hybrid_rerank",
+      "input_cost_per_million": 0,
+      "output_cost_per_million": 0
+    }
+  ]
+}

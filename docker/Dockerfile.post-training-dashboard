@@ -1,0 +1,26 @@
+FROM python:3.12.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    POST_TRAINING_RESULTS_DIR=/app/data/evaluations/post-training
+
+COPY requirements-eval-dashboard.txt .
+RUN python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
+
+COPY post_training/__init__.py ./post_training/__init__.py
+COPY post_training/models.py ./post_training/models.py
+COPY post_training/dashboard.py ./post_training/dashboard.py
+
+RUN addgroup --system dashboard && adduser --system --ingroup dashboard --uid 10001 dashboard \
+    && mkdir -p /app/data/evaluations/post-training \
+    && chown -R dashboard:dashboard /app
+USER dashboard
+
+EXPOSE 8503
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8503/_stcore/health', timeout=2)"
+
+CMD ["streamlit", "run", "post_training/dashboard.py", "--server.address=0.0.0.0", "--server.port=8503", "--server.headless=true"]

@@ -1,0 +1,25 @@
+{"id":"math-01","input":"calculate (125 * 8) / 4","expected":{"route":"math","max_latency_ms":1000},"tags":["routing","math"]}
+{"id":"math-02","input":"What is 17 percent of 850?","expected":{"route":"math","max_latency_ms":1000},"tags":["routing","math"]}
+{"id":"math-03","input":"solve the equation 4x + 8 = 24","expected":{"route":"math","max_latency_ms":1000},"tags":["routing","math"]}
+{"id":"web-01","input":"latest foundation model news today","expected":{"route":"web","max_latency_ms":1000},"tags":["routing","freshness"]}
+{"id":"web-02","input":"What is the current weather in Boston?","expected":{"route":"web","max_latency_ms":1000},"tags":["routing","freshness"]}
+{"id":"web-03","input":"recent changes to the Python language","expected":{"route":"web","max_latency_ms":1000},"tags":["routing","freshness"]}
+{"id":"rag-01","input":"explain this repository FastAPI service","expected":{"route":"rag","max_latency_ms":1000},"tags":["routing","retrieval"]}
+{"id":"rag-02","input":"summarize the uploaded PDF","expected":{"route":"rag","max_latency_ms":1000},"tags":["routing","retrieval"]}
+{"id":"rag-03","input":"local: explain the checkpoint implementation","expected":{"route":"rag","max_latency_ms":1000},"tags":["routing","retrieval"]}
+{"id":"rag-04","input":"Give me an overview of the source code modules","expected":{"route":"rag","max_latency_ms":1000},"tags":["routing","retrieval","ablation"]}
+{"id":"rag-05","input":"Explain the service endpoint implementation","expected":{"route":"rag","max_latency_ms":1000},"tags":["routing","retrieval","ablation"]}
+{"id":"kg-01","input":"how does FastAPI connect to LangGraph in this project","expected":{"route":"kg","max_latency_ms":1000},"tags":["routing","graph"]}
+{"id":"kg-02","input":"trace the dependency flow through this repository","expected":{"route":"kg","max_latency_ms":1000},"tags":["routing","graph"]}
+{"id":"kg-03","input":"what relationship exists between the API and database in the codebase?","expected":{"route":"kg","max_latency_ms":1000},"tags":["routing","graph"]}
+{"id":"kg-04","input":"How is Streamlit related to FastAPI?","expected":{"route":"kg","max_latency_ms":1000},"tags":["routing","graph","ablation"]}
+{"id":"hybrid-01","input":"compare current AI agent news with this codebase","expected":{"route":"hybrid","max_latency_ms":1000},"tags":["routing","hybrid"]}
+{"id":"hybrid-02","input":"How do today's LangGraph features compare with this repository?","expected":{"route":"hybrid","max_latency_ms":1000},"tags":["routing","hybrid"]}
+{"id":"hybrid-03","input":"contrast recent RAG techniques against the implementation in this project","expected":{"route":"hybrid","max_latency_ms":1000},"tags":["routing","hybrid"]}
+{"id":"clarify-01","input":"do it","expected":{"route":"clarify","max_latency_ms":1000},"tags":["routing","ambiguity"]}
+{"id":"clarify-02","input":"What about that?","expected":{"route":"clarify","max_latency_ms":1000},"tags":["routing","ambiguity"]}
+{"id":"clarify-03","input":"help","expected":{"route":"clarify","max_latency_ms":1000},"tags":["routing","ambiguity"]}
+{"id":"general-01","input":"hello there","expected":{"route":"general","max_latency_ms":1000},"tags":["routing","general"]}
+{"id":"general-02","input":"thank you for the explanation","expected":{"route":"general","max_latency_ms":1000},"tags":["routing","general"]}
+{"id":"general-03","input":"Explain why testing is valuable in software engineering","expected":{"route":"general","max_latency_ms":1000},"tags":["routing","general"]}
+{"id":"web-04","input":"Find AI engineering headlines online","expected":{"route":"web","max_latency_ms":1000},"tags":["routing","freshness","ablation"]}

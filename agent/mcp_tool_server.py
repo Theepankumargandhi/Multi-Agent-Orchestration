@@ -1,7 +1,7 @@
+import importlib.util
 import math
 import re
 import sys
-import importlib.util
 from pathlib import Path
 
 import numexpr
@@ -19,7 +19,7 @@ if _tools_spec is None or _tools_spec.loader is None:
     raise RuntimeError(f"Failed to load tools module from {TOOLS_PATH}")
 _tools_module = importlib.util.module_from_spec(_tools_spec)
 _tools_spec.loader.exec_module(_tools_module)
-perform_web_search = getattr(_tools_module, "perform_web_search")
+perform_web_search = _tools_module.perform_web_search
 
 
 server = FastMCP(

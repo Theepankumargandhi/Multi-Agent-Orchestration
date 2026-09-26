@@ -1,0 +1,21 @@
+{
+  "run_name": "agentforge-sft-qlora-v1",
+  "stage": "sft",
+  "base_model": "replace-with-a-small-instruct-model",
+  "dataset_manifest": "../../data/evaluations/post-training/dataset/manifest.json",
+  "output_dir": "../../data/evaluations/post-training/runs/sft-v1",
+  "seed": 42,
+  "epochs": 1,
+  "learning_rate": 0.0001,
+  "per_device_batch_size": 1,
+  "gradient_accumulation_steps": 8,
+  "max_length": 2048,
+  "qlora_4bit": true,
+  "completion_only_loss": true,
+  "lora": {
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]
+  }
+}

@@ -1,5 +1,6 @@
-from agent.research_assistant import research_assistant
+from agent.research_assistant import build_research_assistant, research_assistant
 
 __all__ = [
-    "research_assistant"
+    "build_research_assistant",
+    "research_assistant",
 ]

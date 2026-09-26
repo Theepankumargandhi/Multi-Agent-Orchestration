@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,12 @@ class StoreOpenResult:
 class BaseConversationStore:
     def setup(self) -> None:
         raise NotImplementedError
+
+    def ping(self) -> bool:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        return None
 
     def save_message(
         self,
@@ -72,6 +79,11 @@ class SQLiteConversationStore(BaseConversationStore):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def ping(self) -> bool:
+        with self._connect() as conn:
+            row = conn.execute("SELECT 1").fetchone()
+        return bool(row)
 
     def _ensure_column(
         self,
@@ -410,11 +422,32 @@ class PostgresConversationStore(BaseConversationStore):
     def __init__(self, conn_string: str, namespace: str = "default") -> None:
         self.conn_string = conn_string
         self.namespace = namespace
+        self._pool = None
 
     def _connect(self):
-        import psycopg
+        if self._pool is None:
+            from psycopg_pool import ConnectionPool
 
-        return psycopg.connect(self.conn_string, autocommit=True)
+            self._pool = ConnectionPool(
+                conninfo=self.conn_string,
+                min_size=1,
+                max_size=max(2, int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10"))),
+                timeout=float(os.getenv("POSTGRES_POOL_TIMEOUT_SECONDS", "10")),
+                open=True,
+            )
+        return self._pool.connection()
+
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.close()
+            self._pool = None
+
+    def ping(self) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                row = cur.fetchone()
+        return bool(row)
 
     def setup(self) -> None:
         with self._connect() as conn:

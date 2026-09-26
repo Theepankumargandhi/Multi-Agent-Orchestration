@@ -5,6 +5,7 @@ resources:
   - namespace.yaml
   - agent-configmap.yaml
   - streamlit-configmap.yaml
+  - agent-pvc.yaml
   - agent-deployment.yaml
   - agent-service.yaml
   - streamlit-deployment.yaml
@@ -15,3 +16,4 @@ resources:
   - grafana-datasource-configmap.yaml
   - grafana-deployment.yaml
   - grafana-service.yaml
+  - network-policy.yaml

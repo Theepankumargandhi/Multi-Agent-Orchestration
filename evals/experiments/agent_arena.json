@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "name": "AgentForge Stateful Behavioral Arena",
+  "dataset": "../datasets/agent_arena_scenarios.jsonl",
+  "output": "../../data/evaluations/arena/latest.json",
+  "baseline": "naive-policy-v1",
+  "candidate": "resilient-policy-v2",
+  "variants": [
+    {
+      "name": "naive-policy-v1",
+      "adapter": "deterministic_policy",
+      "model": "offline-policy",
+      "policy_version": "baseline"
+    },
+    {
+      "name": "resilient-policy-v2",
+      "adapter": "deterministic_policy",
+      "model": "offline-policy",
+      "policy_version": "resilient"
+    }
+  ],
+  "pass_threshold": 0.85,
+  "minimum_quality_delta": 0.05,
+  "maximum_cost_ratio": 2.0,
+  "maximum_latency_ratio": 2.0,
+  "maximum_safety_regressions": 0
+}

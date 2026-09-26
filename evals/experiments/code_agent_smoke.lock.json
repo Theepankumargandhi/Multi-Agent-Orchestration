@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "dataset_name": "agentforge-code-smoke-v1",
+  "dataset_path": "evals/datasets/code_agent_smoke.jsonl",
+  "dataset_fingerprint": "6b4906d1a9c21ae6415c946c2bbcc74b88abcb1dae993347140cc280a36a2691",
+  "case_ids": [
+    "smoke-math-clamp",
+    "smoke-parser-empty-value",
+    "smoke-cache-expiry-boundary",
+    "smoke-dedupe-order",
+    "smoke-slug-repeated-separators"
+  ],
+  "total": 5,
+  "split_counts": {
+    "validation": 2,
+    "test": 3
+  },
+  "source_counts": {
+    "local": 5
+  },
+  "frozen_at": "2026-09-12T00:00:00+00:00"
+}

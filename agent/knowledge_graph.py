@@ -1,15 +1,20 @@
 import re
-from itertools import combinations
 from typing import Any
 
 import networkx as nx
 
 from agent.graph_rag import search_graph_knowledge
 
-
 _ENTITY_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{1,}")
 _SOURCE_EQ_RE = re.compile(r"source=([^,\)\s]+)")
 _SOURCE_PAREN_RE = re.compile(r"\(.*?source=([^\)\s]+).*?\)")
+_RELATION_RE = re.compile(
+    r"(?P<subject>[A-Za-z][A-Za-z0-9_.-]*(?:\s+[A-Z][A-Za-z0-9_.-]*)?)\s+"
+    r"(?P<predicate>depends on|works with|consumes context from|routes|calls|uses|reads|writes|"
+    r"exposes|integrates|links|notifies|combines|includes|runs)\s+"
+    r"(?P<object>[^.;]+)",
+    flags=re.IGNORECASE,
+)
 _STOPWORDS = {
     "the",
     "and",
@@ -79,55 +84,87 @@ def _extract_entities(text: str) -> list[str]:
     return entities
 
 
-def _build_graph(records: list[dict[str, str]]) -> nx.Graph:
-    graph = nx.Graph()
+def _normalize_entity(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip(" ,:-")).lower()
+
+
+def _extract_triples(text: str) -> list[tuple[str, str, str]]:
+    triples: list[tuple[str, str, str]] = []
+    for match in _RELATION_RE.finditer(text or ""):
+        subject = _normalize_entity(match.group("subject"))
+        predicate = re.sub(r"\s+", "_", match.group("predicate").strip().lower())
+        raw_objects = re.sub(r"\b(?:the|a|an)\b", "", match.group("object"), flags=re.IGNORECASE)
+        for raw_object in re.split(r"\s*(?:,|\band\b)\s*", raw_objects):
+            obj = _normalize_entity(raw_object)
+            if subject and obj and subject != obj and len(obj) <= 80:
+                triples.append((subject, predicate, obj))
+    return triples
+
+
+def _build_graph(records: list[dict[str, str]]) -> nx.MultiDiGraph:
+    graph = nx.MultiDiGraph()
     for record in records:
         source = record.get("source", "unknown")
-        entities = _extract_entities(record.get("snippet", ""))
-        if len(entities) < 2:
-            continue
-
-        # Cap per-record entities to keep graph sparse and predictable.
-        entities = entities[:8]
-        for entity in entities:
-            if not graph.has_node(entity):
-                graph.add_node(entity, frequency=0)
-            graph.nodes[entity]["frequency"] = int(graph.nodes[entity].get("frequency", 0)) + 1
-
-        for left, right in combinations(entities, 2):
-            if graph.has_edge(left, right):
-                graph[left][right]["weight"] = int(graph[left][right].get("weight", 0)) + 1
-                graph[left][right]["sources"].add(source)
+        triples = _extract_triples(record.get("snippet", ""))
+        for subject, predicate, obj in triples:
+            for entity in (subject, obj):
+                if not graph.has_node(entity):
+                    graph.add_node(entity, frequency=0)
+                graph.nodes[entity]["frequency"] = int(graph.nodes[entity].get("frequency", 0)) + 1
+            existing = graph.get_edge_data(subject, obj, key=predicate)
+            if existing:
+                existing["weight"] = int(existing.get("weight", 0)) + 1
+                existing["sources"].add(source)
             else:
-                graph.add_edge(left, right, weight=1, sources={source})
+                graph.add_edge(subject, obj, key=predicate, predicate=predicate, weight=1, sources={source})
     return graph
 
 
-def _select_relationships(graph: nx.Graph, query: str, limit: int) -> list[tuple[str, str, int, list[str]]]:
+def _select_relationships(
+    graph: nx.MultiDiGraph,
+    query: str,
+    limit: int,
+) -> list[tuple[str, str, str, int, list[str]]]:
     if graph.number_of_edges() == 0:
         return []
 
-    query_entities = [e for e in _extract_entities(query) if graph.has_node(e)]
-    ranked: list[tuple[str, str, int, list[str]]] = []
+    query_text = (query or "").lower()
+    query_entities = [node for node in graph.nodes if node in query_text]
+    ranked: list[tuple[str, str, str, int, list[str]]] = []
 
-    for left, right, data in graph.edges(data=True):
+    if len(query_entities) >= 2:
+        undirected = graph.to_undirected()
+        try:
+            path = nx.shortest_path(undirected, query_entities[0], query_entities[1])
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            path = []
+        for left, right in zip(path, path[1:], strict=False):
+            edge_map = graph.get_edge_data(left, right) or graph.get_edge_data(right, left) or {}
+            for predicate, data in edge_map.items():
+                ranked.append(
+                    (left, right, str(data.get("predicate") or predicate), int(data.get("weight", 1)), sorted(data.get("sources", set())))
+                )
+
+    for left, right, predicate, data in graph.edges(keys=True, data=True):
         weight = int(data.get("weight", 0))
         if weight <= 0:
             continue
         sources = sorted(list(data.get("sources", set())))
         if query_entities and left not in query_entities and right not in query_entities:
             continue
-        ranked.append((left, right, weight, sources))
+        candidate = (left, right, str(data.get("predicate") or predicate), weight, sources)
+        if candidate not in ranked:
+            ranked.append(candidate)
 
     if not ranked:
-        for left, right, data in graph.edges(data=True):
+        for left, right, predicate, data in graph.edges(keys=True, data=True):
             weight = int(data.get("weight", 0))
             if weight <= 0:
                 continue
             sources = sorted(list(data.get("sources", set())))
-            ranked.append((left, right, weight, sources))
+            ranked.append((left, right, str(data.get("predicate") or predicate), weight, sources))
 
-    ranked.sort(key=lambda item: item[2], reverse=True)
+    ranked.sort(key=lambda item: item[3], reverse=True)
     return ranked[: max(1, limit)]
 
 
@@ -178,9 +215,9 @@ def query_knowledge_graph(
         f"Detected graph entities: {entity_line}.",
         "Relationship candidates from local evidence:",
     ]
-    for left, right, weight, sources in relations:
+    for left, right, predicate, weight, sources in relations:
         source_text = ", ".join(sources[:2]) if sources else "unknown"
-        lines.append(f"- {left} <-> {right} (co-occurrence={weight}, source={source_text})")
+        lines.append(f"- {left} --{predicate}--> {right} (evidence_count={weight}, source={source_text})")
 
     text = "\n".join(lines).strip()
     meta = {

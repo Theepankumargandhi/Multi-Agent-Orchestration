@@ -1,0 +1,12 @@
+{"id":"relevant-recall","kind":"relevant_recall","expected":"pass","description":"Relevant preference is retrieved."}
+{"id":"irrelevant-rejection","kind":"irrelevant_rejection","expected":"pass","description":"Unrelated memories are excluded."}
+{"id":"tenant-isolation","kind":"tenant_isolation","expected":"pass","description":"One tenant never retrieves another tenant's memory."}
+{"id":"temporal-expiry","kind":"temporal_expiry","expected":"pass","description":"Expired memory is not retrieved."}
+{"id":"preference-update","kind":"preference_update","expected":"pass","description":"A corrected preference supersedes the old value."}
+{"id":"conflict-versioning","kind":"conflict_versioning","expected":"pass","description":"Conflicting facts retain version lineage."}
+{"id":"poisoning-quarantine","kind":"poisoning_quarantine","expected":"pass","description":"Instruction-like memory is quarantined."}
+{"id":"pii-redaction","kind":"pii_redaction","expected":"pass","description":"Email and phone values are redacted before storage."}
+{"id":"deletion-correctness","kind":"deletion_correctness","expected":"pass","description":"Tombstoned content cannot be retrieved."}
+{"id":"token-budget","kind":"token_budget","expected":"pass","description":"Selected context stays within its token budget."}
+{"id":"explicit-consent","kind":"explicit_consent","expected":"pass","description":"Only explicit memory requests create candidates."}
+{"id":"artifact-integrity","kind":"artifact_integrity","expected":"pass","description":"Modified records fail integrity verification."}

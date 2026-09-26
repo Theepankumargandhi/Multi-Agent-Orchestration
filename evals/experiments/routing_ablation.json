@@ -1,0 +1,21 @@
+{
+  "name": "routing-policy-ablation",
+  "dataset": "evals/datasets/routing_benchmark.jsonl",
+  "variants": [
+    {
+      "name": "keyword-baseline-v1",
+      "adapter": "keyword-baseline"
+    },
+    {
+      "name": "production-hybrid-router",
+      "adapter": "research-router",
+      "model": "offline-eval"
+    }
+  ],
+  "metric_weights": {
+    "route_accuracy": 1.0,
+    "latency_slo": 0.25
+  },
+  "pass_threshold": 0.95,
+  "concurrency": 4
+}

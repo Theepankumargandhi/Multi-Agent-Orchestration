@@ -47,7 +47,7 @@ This folder deploys your project to local Kubernetes (Docker Desktop Kubernetes)
   - Auto-configures Grafana to use Prometheus as default data source.
 
 - `grafana-deployment.yaml`
-  - Runs Grafana pod.
+  - Runs Grafana with persistent storage and secret-backed admin credentials.
 
 - `grafana-service.yaml`
   - Exposes Grafana UI via NodePort `30300`.
@@ -86,7 +86,16 @@ kubectl -n agent-platform create secret generic agent-secrets \
   --from-literal=USER_AUTH_SECRET=replace-with-long-random-secret \
   --from-literal=OPENAI_API_KEY=replace-if-used \
   --from-literal=GROQ_API_KEY=replace-if-used \
-  --from-literal=LANGSMITH_API_KEY=replace-if-used
+  --from-literal=MODEL_GATEWAY_FINGERPRINT_KEY=replace-with-a-dedicated-random-secret \
+  --from-literal=ONLINE_EVAL_INTEGRITY_KEY=replace-with-a-separate-random-secret \
+  --from-literal=AGENT_MEMORY_INTEGRITY_KEY=replace-with-a-dedicated-random-secret \
+  --from-literal=GROUNDING_INTEGRITY_KEY=replace-with-a-separate-random-secret \
+  --from-literal=UNCERTAINTY_INTEGRITY_KEY=replace-with-another-random-secret \
+  --from-literal=ADAPTIVE_COMPUTE_INTEGRITY_KEY=replace-with-an-independent-random-secret \
+  --from-literal=EVIDENCE_QUALITY_INTEGRITY_KEY=replace-with-another-independent-random-secret \
+  --from-literal=LANGSMITH_API_KEY=replace-if-used \
+  --from-literal=GRAFANA_ADMIN_USER=admin \
+  --from-literal=GRAFANA_ADMIN_PASSWORD=replace-with-a-strong-password
 ```
 
 If the namespace already exists, ignore that message.
@@ -109,7 +118,7 @@ kubectl -n agent-platform get svc
 - Streamlit: `http://localhost:30501`
 - Prometheus: `http://localhost:30900`
 - Grafana: `http://localhost:30300`
-  - default login: `admin` / `admin`
+  - use the credentials stored in `agent-secrets`
 
 ## 6) Useful Commands
 
@@ -130,6 +139,5 @@ kubectl delete namespace agent-platform
 
 ## Notes
 
-- This setup is for learning and local testing.
-- `emptyDir` storage means pod restart can clear local runtime data.
-- For production, use persistent volumes, real secret management, and ingress/TLS.
+- Agent and Grafana data use persistent volume claims; the default storage class must support dynamic provisioning.
+- For a public deployment, use an external PostgreSQL/Redis service, managed secrets, ingress/TLS, distributed rate limiting, backups, and signed/scanned images.

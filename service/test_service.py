@@ -1,10 +1,12 @@
-from langchain_core.messages import AIMessage
-from fastapi.testclient import TestClient
-from unittest.mock import patch, AsyncMock
+import importlib
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from service import app
+from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage
+
 from schema import ChatMessage, model_validate_compat
+from service import app
 
 client = TestClient(app)
 
@@ -174,12 +176,99 @@ def test_monitoring_endpoints_are_public():
 
         ready = c.get("/readyz")
         assert ready.status_code == 200
-        assert ready.json() == {"status": "ready"}
+        assert ready.json()["status"] == "ready"
+        assert ready.json()["checkpoint_backend"]
+        assert ready.json()["store_backend"]
+
+        capabilities = c.get("/capabilities")
+        assert capabilities.status_code == 200
+        assert capabilities.json()["features"]["graph_code_context"] is True
+        assert capabilities.json()["features"]["hybrid_code_context"] is True
+        assert capabilities.json()["features"]["stateful_agent_arena"] is True
+        assert capabilities.json()["features"]["llm_inference_control_plane"] is True
+        assert capabilities.json()["features"]["online_ai_governance"] is True
+        assert capabilities.json()["features"]["trustworthy_long_term_memory"] is True
+        assert capabilities.json()["features"]["claim_level_grounding_verification"] is True
+        assert capabilities.json()["features"]["conformal_uncertainty_control"] is True
+        assert capabilities.json()["features"]["adaptive_test_time_compute"] is True
+        assert capabilities.json()["features"]["evidence_intelligence"] is True
+        assert "poisoning_quarantine" in capabilities.json()["agent_memory"]["controls"]
+        assert "fail_closed_abstention" in capabilities.json()["grounding_verification"]["controls"]
+        assert "selective_answering" in capabilities.json()["uncertainty_control"]["controls"]
+        assert (
+            "bounded_candidate_generation"
+            in capabilities.json()["adaptive_compute"]["controls"]
+        )
+        assert (
+            "numeric_and_negation_conflict_graph"
+            in capabilities.json()["evidence_quality"]["controls"]
+        )
+        assert "circuit_breaker" in capabilities.json()["inference_gateway"]["controls"]
+        assert (
+            "statistical_canary_promotion_rollback"
+            in capabilities.json()["online_evaluation"]["controls"]
+        )
+        assert len(capabilities.json()["code_context"]["languages"]) == 6
 
         metrics = c.get("/metrics")
         assert metrics.status_code == 200
         assert "http_requests_total" in metrics.text
 
+
+def test_memory_lifecycle_is_authenticated_tenant_isolated_and_auditable(tmp_path, monkeypatch):
+    memory_module = importlib.import_module("agent.memory")
+    service_module = importlib.import_module("service.service")
+    monkeypatch.setenv("AGENT_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("AGENT_MEMORY_DB_PATH", str(tmp_path / "service-memory.db"))
+    monkeypatch.setenv("AGENT_MEMORY_INTEGRITY_KEY", "service-memory-integrity-key")
+    monkeypatch.setattr(service_module, "AGENT_MEMORY_ENABLED", True)
+    monkeypatch.setattr(memory_module, "_STORE", None)
+    monkeypatch.setattr(memory_module, "_STORE_CONFIG", None)
+
+    with client as c:
+        alice = _auth_headers(c, user_id=f"memory-alice-{uuid4().hex[:6]}")
+        bob = _auth_headers(c, user_id=f"memory-bob-{uuid4().hex[:6]}")
+        created = c.post(
+            "/memories",
+            headers=alice,
+            json={
+                "memory_type": "preference",
+                "subject": "answer_style",
+                "content": "Use concise bullets",
+                "confidence": 0.95,
+                "importance": 0.8,
+                "trust_score": 0.9,
+                "provenance": "explicit_api_test",
+            },
+        )
+        assert created.status_code == 200
+        memory_id = created.json()["memory_id"]
+        assert c.get("/memories", headers=bob).json()["count"] == 0
+
+        search = c.get(
+            "/memories/search",
+            headers=alice,
+            params={"q": "preferred answer style", "token_budget": 80},
+        )
+        assert search.status_code == 200
+        assert search.json()["records"][0]["memory_id"] == memory_id
+        outcome = c.post(
+            f"/memories/{memory_id}/outcome",
+            headers=alice,
+            json={"helpful": True, "reason": "answer_accepted"},
+        )
+        assert outcome.status_code == 200
+        assert outcome.json()["use_count"] == 1
+        assert c.get("/memories/export", headers=alice).json()["export_fingerprint"]
+        audit = c.get("/memories/audit", headers=alice).json()
+        assert audit["count"] >= 2
+        assert all(item["integrity_verified"] for item in audit["events"])
+        assert c.get("/memories/audit", headers=bob).json()["count"] == 0
+        assert c.delete(f"/memories/{memory_id}", headers=bob).status_code == 404
+        assert c.delete(f"/memories/{memory_id}", headers=alice).status_code == 200
+        assert c.get("/memories/search", headers=alice, params={"q": "answer style"}).json()[
+            "records"
+        ] == []
 
 def test_hitl_web_decision_is_recorded_and_listed():
     with client as c:

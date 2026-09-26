@@ -1,20 +1,22 @@
+import hashlib
+import json
 import math
-import numexpr
+import os
 import re
 import time
-import os
-import json
-import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
+from urllib.parse import urlparse
+
+import numexpr
 from langchain_core.tools import tool
-from langchain_community.tools import DuckDuckGoSearchResults, ArxivQueryRun
-from duckduckgo_search import DDGS
 
-web_search = DuckDuckGoSearchResults()
+try:
+    from ddgs import DDGS
+except ImportError:  # Backward-compatible local environments.
+    from duckduckgo_search import DDGS  # type: ignore[no-redef]
 
-# Kinda busted since it doesn't return links
-arxiv_search = ArxivQueryRun()
+_web_search_wrapper: Any | None | bool = None
 
 _QUERY_STOPWORDS = {
     "a", "an", "the", "and", "or", "to", "for", "of", "in", "on", "at", "by", "with",
@@ -24,11 +26,28 @@ _QUERY_STOPWORDS = {
     "only", "include", "including", "sources", "source", "days", "day",
 }
 WEB_CACHE_TTL_SECONDS = int(os.getenv("WEB_CACHE_TTL_SECONDS", "300"))
+WEB_CACHE_MAX_ENTRIES = max(10, int(os.getenv("WEB_CACHE_MAX_ENTRIES", "1000")))
 CACHE_USE_REDIS = os.getenv("CACHE_USE_REDIS", "true").strip().lower() in {"1", "true", "yes", "on"}
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
 _WEB_SEARCH_CACHE: dict[tuple[Any, ...], tuple[float, str]] = {}
 _redis_client = None
 _redis_disabled = False
+
+
+def _get_web_search_wrapper():
+    global _web_search_wrapper
+    if _web_search_wrapper is False:
+        return None
+    if _web_search_wrapper is not None:
+        return _web_search_wrapper
+    try:
+        from langchain_community.tools import DuckDuckGoSearchResults
+
+        _web_search_wrapper = DuckDuckGoSearchResults()
+        return _web_search_wrapper
+    except Exception:
+        _web_search_wrapper = False
+        return None
 
 
 def _get_redis_client():
@@ -80,6 +99,9 @@ def _cache_set_web(cache_key: tuple[Any, ...], value: str) -> None:
     ttl = max(0, WEB_CACHE_TTL_SECONDS)
     if ttl <= 0:
         return
+    if len(_WEB_SEARCH_CACHE) >= WEB_CACHE_MAX_ENTRIES:
+        oldest_key = min(_WEB_SEARCH_CACHE, key=lambda key: _WEB_SEARCH_CACHE[key][0])
+        _WEB_SEARCH_CACHE.pop(oldest_key, None)
     _WEB_SEARCH_CACHE[cache_key] = (time.time(), value)
 
     client = _get_redis_client()
@@ -275,9 +297,14 @@ def _normalize_results(items: Iterable[dict[str, Any]], max_results: int = 5) ->
     for i, item in enumerate(items):
         if i >= max_results:
             break
-        title = (item.get("title") or "").strip()
+        title = re.sub(r"[\r\n]+", " ", (item.get("title") or "").strip())[:240]
         href = (item.get("href") or item.get("url") or "").strip()
-        snippet = (item.get("body") or item.get("snippet") or "").strip()
+        parsed_url = urlparse(href)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            href = ""
+        snippet = re.sub(
+            r"[\r\n]+", " ", (item.get("body") or item.get("snippet") or "").strip()
+        )[:1200]
         published_at = _result_datetime(item)
         if not (title or href or snippet):
             continue
@@ -415,21 +442,24 @@ def perform_web_search(
 
     # Attempt 3: original wrapper fallback.
     try:
-        raw = web_search.invoke(q)
-        raw_text = str(raw).strip() if raw else ""
-        if raw_text:
-            # Only trust this fallback if it contains at least one URL.
-            if re.search(r"https?://", raw_text):
-                _cache_set_web(cache_key, raw_text)
-                meta = {"cache_hit": False, "cache_backend": "none", "source": "web_wrapper_fallback"}
-                return (raw_text, meta) if return_meta else raw_text
-            errors.append("langchain.ddg: returned content without URLs")
+        web_search = _get_web_search_wrapper()
+        if web_search is None:
+            errors.append("langchain.ddg: wrapper unavailable in current environment")
+        else:
+            raw = web_search.invoke(q)
+            raw_text = str(raw).strip() if raw else ""
+            if raw_text:
+                # Only trust this fallback if it contains at least one URL.
+                if re.search(r"https?://", raw_text):
+                    _cache_set_web(cache_key, raw_text)
+                    meta = {"cache_hit": False, "cache_backend": "none", "source": "web_wrapper_fallback"}
+                    return (raw_text, meta) if return_meta else raw_text
+                errors.append("langchain.ddg: returned content without URLs")
     except Exception as e:
         errors.append(f"langchain.ddg: {e}")
 
     failure = "Web retrieval failed: " + " | ".join(errors[:3])
-    # Short-cache failures to avoid hammering providers during repeated retries.
-    _cache_set_web(cache_key, failure)
+    # Do not poison the normal cache with transient provider failures.
     meta = {"cache_hit": False, "cache_backend": "none", "source": "web_failure"}
     return (failure, meta) if return_meta else failure
 

@@ -1,9 +1,9 @@
+import os
 from enum import Enum
 from typing import List
 
-from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
-from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +19,7 @@ class LlamaGuardOutput(BaseModel):
         description="If content is unsafe, the list of unsafe categories.",
         default_factory=list,
     )
+    error_message: str = Field(default="", description="Moderation provider error, when present.")
 
 
 unsafe_content_categories = {
@@ -64,16 +65,35 @@ _model = None
 def _get_guard_model():
     global _model
     if _model is None:
-        _model = ChatGroq(model="llama-guard-3-8b", temperature=0.0)
+        if os.getenv("GROQ_API_KEY"):
+            from langchain_groq import ChatGroq
+
+            _model = ChatGroq(
+                model=os.getenv("GROQ_GUARD_MODEL", "llama-guard-3-8b"),
+                temperature=0.0,
+            )
+        elif os.getenv("OPENAI_API_KEY"):
+            from langchain_openai import ChatOpenAI
+
+            _model = ChatOpenAI(
+                model=os.getenv("OPENAI_GUARD_MODEL", "gpt-4o-mini"),
+                temperature=0.0,
+            )
+        else:
+            raise RuntimeError("No moderation provider is configured.")
     return _model
 
 
 def parse_llama_guard_output(output: str) -> LlamaGuardOutput:
-    if output == "safe":
+    clean_output = (output or "").strip()
+    parsed_output = [line.strip() for line in clean_output.splitlines() if line.strip()]
+    if parsed_output and parsed_output[0].lower() == "safe":
         return LlamaGuardOutput(safety_assessment=SafetyAssessment.SAFE)
-    parsed_output = output.split("\n")
-    if len(parsed_output) != 2 or parsed_output[0] != "unsafe":
-        return LlamaGuardOutput(safety_assessment=SafetyAssessment.ERROR)
+    if len(parsed_output) < 2 or parsed_output[0].lower() != "unsafe":
+        return LlamaGuardOutput(
+            safety_assessment=SafetyAssessment.ERROR,
+            error_message="Moderation response could not be parsed.",
+        )
     try:
         categories = parsed_output[1].split(",")
         readable_categories = [
@@ -84,13 +104,19 @@ def parse_llama_guard_output(output: str) -> LlamaGuardOutput:
             unsafe_categories=readable_categories,
         )
     except KeyError:
-        return LlamaGuardOutput(safety_assessment=SafetyAssessment.ERROR)
+        return LlamaGuardOutput(
+            safety_assessment=SafetyAssessment.ERROR,
+            error_message="Moderation response contained an unknown category.",
+        )
 
 
 async def llama_guard(role: str, messages: List[AnyMessage]) -> LlamaGuardOutput:
     role_mapping = {"ai": "Agent", "human": "User"}
+    # Bound moderation context so a long-lived thread cannot cause unbounded spend.
     messages_str = [
-        f"{role_mapping[m.type]}: {m.content}" for m in messages if m.type in ["ai", "human"]
+        f"{role_mapping[m.type]}: {str(m.content)[:4000]}"
+        for m in messages[-12:]
+        if m.type in ["ai", "human"]
     ]
     conversation_history = "\n\n".join(messages_str)
     compiled_prompt = llama_guard_prompt.format(
@@ -100,8 +126,11 @@ async def llama_guard(role: str, messages: List[AnyMessage]) -> LlamaGuardOutput
     )
     try:
         result = await _get_guard_model().ainvoke([SystemMessage(content=compiled_prompt)])
-    except Exception:
-        return LlamaGuardOutput(safety_assessment=SafetyAssessment.ERROR)
+    except Exception as exc:
+        return LlamaGuardOutput(
+            safety_assessment=SafetyAssessment.ERROR,
+            error_message=str(exc)[:300],
+        )
     return parse_llama_guard_output(result.content)
 
 

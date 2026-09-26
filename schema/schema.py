@@ -1,10 +1,16 @@
+import re
 from typing import Any, Dict, List, Literal, TypeVar
+
 from langchain_core.messages import (
-    BaseMessage, HumanMessage, AIMessage,
-    ToolMessage, ToolCall,
-    message_to_dict, messages_from_dict,
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolCall,
+    ToolMessage,
+    message_to_dict,
+    messages_from_dict,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -27,18 +33,48 @@ class UserInput(BaseModel):
     """Basic user input for the agent."""
     message: str = Field(
         description="User input to the agent.",
+        min_length=1,
+        max_length=20000,
         examples=["What is the weather in Tokyo?"],
     )
     model: str = Field(
         description="LLM Model to use for the agent.",
         default="gpt-4o-mini",
         examples=["gpt-4o-mini", "llama-3.1-70b"],
+        max_length=100,
     )
     thread_id: str | None = Field(
         description="Thread ID to persist and continue a multi-turn conversation.",
         default=None,
         examples=["847c6285-8fc9-4560-a83f-4e6285809254"],
+        max_length=128,
     )
+
+    @field_validator("message")
+    @classmethod
+    def message_must_contain_text(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("message must contain non-whitespace text")
+        return clean
+
+    @field_validator("model")
+    @classmethod
+    def normalize_model(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("model is required")
+        return clean
+
+    @field_validator("thread_id")
+    @classmethod
+    def validate_thread_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", clean):
+            raise ValueError("thread_id contains unsupported characters")
+        return clean
 
 
 class AuthRegisterInput(BaseModel):
@@ -46,10 +82,14 @@ class AuthRegisterInput(BaseModel):
     user_id: str = Field(
         description="Unique user identifier used for login.",
         examples=["theepan"],
+        min_length=3,
+        max_length=64,
     )
     password: str = Field(
         description="User password. Stored as a secure hash on the server.",
         examples=["StrongPassword123!"],
+        min_length=8,
+        max_length=256,
     )
 
 
@@ -58,10 +98,14 @@ class AuthLoginInput(BaseModel):
     user_id: str = Field(
         description="User identifier.",
         examples=["theepan"],
+        min_length=3,
+        max_length=64,
     )
     password: str = Field(
         description="User password.",
         examples=["StrongPassword123!"],
+        min_length=8,
+        max_length=256,
     )
 
 
@@ -187,6 +231,8 @@ class Feedback(BaseModel):
     score: float = Field(
         description="Feedback score.",
         examples=[0.8],
+        ge=0.0,
+        le=1.0,
     )
     kwargs: Dict[str, Any] = Field(
         description="Additional feedback kwargs, passed to LangSmith.",

@@ -1,12 +1,11 @@
+import hashlib
+import json
 import os
+import re
 import shutil
 import time
-import json
-import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-from uuid import uuid4
-
 
 GRAPH_RAG_ENABLED = os.getenv("GRAPH_RAG_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 GRAPH_RAG_PDF_DIR = os.getenv("GRAPH_RAG_PDF_DIR", "graph_rag_docs")
@@ -16,6 +15,7 @@ GRAPH_OPENAI_EMBEDDING_MODEL = os.getenv("GRAPH_OPENAI_EMBEDDING_MODEL", os.gete
 GRAPH_RAG_CHUNK_SIZE = int(os.getenv("GRAPH_RAG_CHUNK_SIZE", "1000"))
 GRAPH_RAG_CHUNK_OVERLAP = int(os.getenv("GRAPH_RAG_CHUNK_OVERLAP", "150"))
 GRAPH_RAG_CACHE_TTL_SECONDS = int(os.getenv("GRAPH_RAG_CACHE_TTL_SECONDS", "600"))
+GRAPH_RAG_CACHE_MAX_ENTRIES = max(10, int(os.getenv("GRAPH_RAG_CACHE_MAX_ENTRIES", "1000")))
 
 _graph_chroma_store_cache = None
 _graph_rag_cache: Dict[Tuple[str, int], Tuple[float, str]] = {}
@@ -36,7 +36,10 @@ def _get_chroma_store():
     if _graph_chroma_store_cache is not None:
         return _graph_chroma_store_cache
 
-    from langchain_community.vectorstores import Chroma
+    try:
+        from langchain_chroma import Chroma
+    except ImportError:
+        from langchain_community.vectorstores import Chroma
 
     os.makedirs(GRAPH_CHROMA_PERSIST_DIR, exist_ok=True)
     _graph_chroma_store_cache = Chroma(
@@ -105,6 +108,9 @@ def _cache_set_graph(cache_key: Tuple[str, int], value: str) -> None:
     if ttl <= 0:
         return
 
+    if len(_graph_rag_cache) >= GRAPH_RAG_CACHE_MAX_ENTRIES:
+        oldest_key = min(_graph_rag_cache, key=lambda key: _graph_rag_cache[key][0])
+        _graph_rag_cache.pop(oldest_key, None)
     _graph_rag_cache[cache_key] = (time.time(), value)
     client = _get_redis_client()
     if client is not None:
@@ -134,16 +140,40 @@ def _chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
     if chunk_overlap >= chunk_size:
         chunk_overlap = chunk_size // 5
 
+    units = [u.strip() for u in re.split(r"(?<=\.)\s+|\n{2,}", content) if u.strip()]
     chunks: List[str] = []
-    step = max(1, chunk_size - chunk_overlap)
-    start = 0
-    while start < len(content):
-        end = start + chunk_size
-        chunk = content[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        start += step
+    current = ""
+    for unit in units:
+        if len(unit) > chunk_size:
+            if current:
+                chunks.append(current.strip())
+                current = ""
+            step = max(1, chunk_size - chunk_overlap)
+            chunks.extend(unit[start:start + chunk_size].strip() for start in range(0, len(unit), step))
+            continue
+        candidate = f"{current} {unit}".strip()
+        if current and len(candidate) > chunk_size:
+            chunks.append(current.strip())
+            overlap = current[-chunk_overlap:].strip() if chunk_overlap else ""
+            current = f"{overlap} {unit}".strip()
+        else:
+            current = candidate
+    if current:
+        chunks.append(current.strip())
     return chunks
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _chunk_id(source: str, file_hash: str, page: int, chunk_index: int, text: str) -> str:
+    payload = f"{source}|{file_hash}|{page}|{chunk_index}|{text}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _chroma_has_documents(store) -> bool:
@@ -198,6 +228,7 @@ def ingest_pdfs_to_graph_chroma(
     page_count = 0
 
     for pdf_file in pdf_files:
+        file_hash = _file_sha256(pdf_file)
         try:
             loader = PyPDFLoader(str(pdf_file))
             pages = loader.load()
@@ -225,9 +256,11 @@ def ingest_pdfs_to_graph_chroma(
                         "file_name": pdf_file.name,
                         "page": page_no,
                         "chunk_index": chunk_index,
+                        "file_sha256": file_hash,
+                        "document_id": file_hash,
                     }
                 )
-                ids.append(str(uuid4()))
+                ids.append(_chunk_id(str(pdf_file), file_hash, page_no, chunk_index, chunk))
 
     if not texts:
         return {
@@ -240,7 +273,16 @@ def ingest_pdfs_to_graph_chroma(
 
     try:
         store = _get_chroma_store()
+        previous_ids: set[str] = set()
+        for source in {str(path) for path in pdf_files}:
+            try:
+                previous_ids.update(store.get(where={"source": source}).get("ids") or [])
+            except Exception:
+                continue
         store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+        stale_ids = list(previous_ids.difference(ids))
+        if stale_ids:
+            store.delete(ids=stale_ids)
         persist = getattr(store, "persist", None)
         if callable(persist):
             persist()
@@ -254,6 +296,7 @@ def ingest_pdfs_to_graph_chroma(
         "pdf_count": len(pdf_files),
         "page_count": page_count,
         "chunk_count": len(texts),
+        "stale_chunks_removed": len(stale_ids),
         "persist_dir": GRAPH_CHROMA_PERSIST_DIR,
         "collection": GRAPH_CHROMA_COLLECTION_NAME,
     }
