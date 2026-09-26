@@ -309,13 +309,6 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 - Kubernetes manifests are a secure starting point, not a complete managed-cloud architecture.
 - Post-training plumbing is implemented, but no fine-tuned-model quality claim should be made without reviewed data, accelerator training, and a frozen holdout evaluation.
 
-These boundaries are intentional. Good AI engineering includes knowing what the evidence supports—and what it does not.
-
-## Resume summary
-
-> Built AgentForge, an 18-node LangGraph agent platform combining hybrid and graph RAG, durable human approval, evidence-conflict detection, claim-level grounding, conformal selective answering, adaptive test-time compute, tenant-isolated memory, and a policy-gated coding agent with six-language Tree-sitter retrieval and hardened Docker execution. Added FastAPI/SSE serving, an inference gateway, privacy-safe telemetry, adversarial and reliability evaluation, 212 automated tests, and Docker/Kubernetes deployment assets.
-
-When using this project in a resume or interview, lead with one measurable workflow rather than listing every subsystem. A strong walkthrough is: retrieve evidence, detect a conflict, withhold an unsupported answer, show the trace and evaluation result, then explain the trade-off between answer coverage, accuracy, latency, and cost.
 
 ## Documentation
 
