@@ -59,6 +59,10 @@ jobs:
           USER_AUTH_SECRET: ci-user-auth-secret
         run: python -m pytest -q --cov --cov-report=term-missing --cov-report=xml --junitxml=test-results.xml
 
+      - name: Annotate pytest failures
+        if: failure() && hashFiles('test-results.xml') != ''
+        run: python scripts/ci/report_junit_failures.py test-results.xml
+
       - name: Run offline AI evaluation gates
         env:
           CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
@@ -90,7 +94,7 @@ jobs:
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
 
       - name: Lint
-        run: python -m ruff check agent client code_agent evals post_training schema service tests
+        run: python -m ruff check agent client code_agent evals post_training schema scripts service tests
 
       - name: Dependency audit
         run: |
