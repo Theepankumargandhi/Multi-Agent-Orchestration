@@ -78,7 +78,10 @@ flowchart TD
     API <--> Cache[(Redis or local cache)]
     API --> Telemetry[Prometheus, OpenTelemetry, and LangSmith]
     API --> Gateway[Inference gateway]
-    Gateway --> Models[Primary, fallback, canary, and shadow models]
+    Gateway --> Bandit{Constrained contextual bandit}
+    Bandit --> Models[Economy, balanced, and quality models]
+    Bandit --> Feedback[Propensity-scored feedback]
+    Feedback --> Offline[IPS, SNIPS, and doubly robust gate]
     Gateway --> Online[Online SLO and rollback controller]
 ```
 
@@ -91,12 +94,12 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Area | What the implementation demonstrates |
 |---|---|
 | Agent orchestration | Typed LangGraph state, structured routing, clarification, bounded repair, native interrupts, and route-scoped evidence |
-| Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, caching, and retrieval ablations |
+| Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, hard-negative learning-to-rank, caching, and retrieval ablations |
 | Evidence intelligence | Prompt-injection quarantine, source-independence checks, cross-domain duplicate detection, freshness policy, and numeric/negation conflict graphs |
 | Trustworthy generation | Claim-to-evidence alignment, citation allowlisting, high-risk thresholds, conformal selective answering, and fail-closed abstention |
 | Test-time compute | Confidence-aware early exit, bounded candidate generation, grounded candidate filtering, consensus, and token/call/latency budgets |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
-| Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, canaries, shadow evaluation, and online rollback decisions |
+| Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
 | Observability | Content-free OpenTelemetry GenAI spans, Prometheus metrics, LangSmith hooks, request/node latency, privacy checks, and reliability fault injection |
 | Deployment | FastAPI + SSE, PostgreSQL/SQLite, Redis, Docker Compose, non-root containers, health checks, Kubernetes manifests, and network policy |
@@ -127,7 +130,7 @@ flowchart LR
     Owner -->|approved| Patch[Release unified diff]
 ```
 
-Code intelligence uses Tree-sitter for Python, TypeScript, JavaScript, Java, Go, and Rust. A decomposed query searches symbols, files, tests, and dependencies using BM25, semantic embeddings, graph propagation, and reranking. The resulting context is deduplicated, compressed to a token budget, and accompanied by provenance receipts.
+Code intelligence uses Tree-sitter for Python, TypeScript, JavaScript, Java, Go, and Rust. A decomposed query searches symbols, files, tests, and dependencies using BM25, semantic embeddings, graph propagation, and reranking. Hard-negative mining trains an integrity-sealed pairwise fusion model, with optional bi-encoder and cross-encoder fine-tuning. The resulting context is deduplicated, compressed to a token budget, and accompanied by provenance receipts.
 
 The worker never edits the original repository. It operates on a filtered temporary copy and executes tests inside a non-root container with no network, a read-only root filesystem, dropped capabilities, and CPU, memory, PID, and time limits. Jobs are transactional and recoverable: submissions are deduplicated, workers hold expiring leases, abandoned jobs can be reclaimed, and completed artifacts are checked by digest.
 
@@ -135,7 +138,7 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **212 automated tests** with **60.60% branch-aware coverage**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; the newest trust modules have focused coverage between 94% and 98%.
+The repository currently contains **226 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
 
 | Module | Focused coverage |
 |---|---:|
@@ -147,13 +150,14 @@ The repository currently contains **212 automated tests** with **60.60% branch-a
 | Agent memory | 92% |
 | Online quality controller | 89% |
 
-The deterministic evaluation suites cover more than happy-path output. They exercise evidence injection, copied-source laundering, stale and contradictory evidence, fabricated citations, unsafe high-risk claims, calibration drift, compute-budget violations, cross-tenant memory access, poisoning, provider failures, cache isolation, canary rollback, unsafe tool calls, worker-lease recovery, artifact tampering, and retrieval regressions.
+The deterministic evaluation suites cover more than happy-path output. They exercise evidence injection, copied-source laundering, stale and contradictory evidence, fabricated citations, unsafe high-risk claims, calibration drift, compute-budget violations, cross-tenant memory access, poisoning, provider failures, cache isolation, canary rollback, contextual-policy support and propensity errors, unsafe tool calls, worker-lease recovery, artifact tampering, and retrieval regressions.
 
 Run the same core checks used in CI:
 
 ```bash
 python -m pytest -q --cov --cov-report=term-missing --cov-report=xml
 python -m evals.run_offline_evals --min-score 0.95
+python -m evals.contextual_bandit evals/datasets/contextual_bandit_feedback.jsonl --require-promotion
 ruff check agent client code_agent evals post_training schema service tests
 python -m pip check
 ```
@@ -313,7 +317,7 @@ These boundaries are intentional. Good AI engineering includes knowing what the 
 
 ## Resume summary
 
-> Built AgentForge, an 18-node LangGraph agent platform combining hybrid and graph RAG, durable human approval, evidence-conflict detection, claim-level grounding, conformal selective answering, adaptive test-time compute, tenant-isolated memory, and a policy-gated coding agent with six-language Tree-sitter retrieval and hardened Docker execution. Added FastAPI/SSE serving, an inference gateway, privacy-safe telemetry, adversarial and reliability evaluation, 212 automated tests, and Docker/Kubernetes deployment assets.
+> Built AgentForge, an 18-node LangGraph agent platform combining hybrid and graph RAG, durable human approval, evidence-conflict detection, claim-level grounding, conformal selective answering, adaptive test-time compute, tenant-isolated memory, and a policy-gated coding agent with six-language Tree-sitter retrieval, hard-negative learning-to-rank, and hardened Docker execution. Added FastAPI/SSE serving, an inference gateway, privacy-safe telemetry, adversarial and reliability evaluation, automated tests, and Docker/Kubernetes deployment assets.
 
 When using this project in a resume or interview, lead with one measurable workflow rather than listing every subsystem. A strong walkthrough is: retrieve evidence, detect a conflict, withhold an unsupported answer, show the trace and evaluation result, then explain the trade-off between answer coverage, accuracy, latency, and cost.
 

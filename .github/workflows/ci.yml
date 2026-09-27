@@ -77,6 +77,8 @@ jobs:
           python -m code_agent.evaluation evals/datasets/code_agent_smoke.jsonl --validate-only
           python -m code_agent.context_evaluation --repository-root . --top-k 8 --min-recall 0.90
           python -m code_agent.context_evaluation --repository-root . --top-k 8 --ablation --token-budgets 256,512,1024,2048 --output data/evaluations/code-context/ci.json
+          python -m code_agent.retrieval_learning train-fusion evals/datasets/code_context_learning.jsonl --repository-root . --negatives-per-positive 4 --epochs 400 --check evals/experiments/code_context_fusion.json
+          python -m code_agent.retrieval_learning validate-fusion evals/datasets/code_context_smoke.jsonl --repository-root . --artifact evals/experiments/code_context_fusion.json --top-k 8 --max-tokens 4096 --require-promotion --output data/evaluations/code-context/fusion-ci.json
           python -m code_agent.security_evaluation --max-asr 0.05 --min-benign-pass-rate 0.95 --output data/evaluations/security/ci.json
           python -m code_agent.benchmark_release validate evals/experiments/code_agent_release_matrix.json
           python -m code_agent.observability evals/datasets/genai_telemetry_smoke.jsonl --output data/evaluations/telemetry/ci.json
@@ -89,6 +91,7 @@ jobs:
           python -m evals.uncertainty_evaluation --output data/evaluations/uncertainty/ci.json --artifact data/evaluations/uncertainty/calibrator.json --target-error-rate 0.2 --min-selective-accuracy 1 --max-empirical-error 0 --min-incorrect-abstention 1 --require-drift-detection
           python -m evals.adaptive_compute_evaluation --output data/evaluations/adaptive-compute/ci.json --min-pass-rate 1 --min-recovery-rate 1 --max-unsafe-release-rate 0 --max-budget-violation-rate 0
           python -m evals.evidence_quality_evaluation --output data/evaluations/evidence-quality/ci.json --min-pass-rate 1 --min-benign-utility 1 --max-unsafe-release-rate 0
+          python -m evals.contextual_bandit evals/datasets/contextual_bandit_feedback.jsonl --artifact data/evaluations/bandit/policy.json --report data/evaluations/bandit/report.json --check evals/experiments/contextual_bandit_policy.json --require-promotion
           python -m evals.flywheel --help
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
@@ -203,6 +206,13 @@ jobs:
         with:
           name: evidence-intelligence
           path: data/evaluations/evidence-quality/
+          if-no-files-found: error
+
+      - name: Upload contextual-bandit policy evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: contextual-bandit-policy-evidence
+          path: data/evaluations/bandit/
           if-no-files-found: error
 
   docker-build-check:

@@ -50,6 +50,39 @@ The repository now includes:
 - validation-set threshold tuning under a minimum-quality constraint and separate held-out reporting.
 - an opt-in production `adaptive` model that loads the trained artifact, routes high-risk requests to the strong tier, records probability/threshold/fingerprint metadata, and preserves explicit model choices.
 
+## Contextual policy learning
+
+The next-generation adaptive router goes beyond the original binary classifier. It learns a
+separate linear reward model for economy, balanced, and quality profiles from logged feedback.
+The reward combines quality, cost, latency, and a large unsafe-outcome penalty. At inference
+time, LinUCB uncertainty supports bounded exploration, while hard feasibility rules remove
+actions that exceed the request's cost or latency ceiling. Economy models are never eligible
+for high-risk prompts.
+
+Every exploratory decision reports the probability with which its action was selected. That
+propensity makes the feedback useful for counterfactual evaluation instead of turning it into
+biased click data. Before a policy can be promoted, the offline gate reports:
+
+- inverse propensity scoring (IPS) and self-normalized IPS (SNIPS);
+- a doubly robust estimate with a context-clustered confidence interval;
+- effective sample size and unsupported-context counts;
+- target-policy safety violations and an explicit promotion decision.
+
+The checked-in seed demonstrates the machinery rather than claiming general model quality. On
+its 12 held-out action observations, the learned policy has a doubly robust utility of 0.8361
+versus 0.5375 for the logging policy, with zero matched unsafe outcomes. Replace this synthetic
+seed with randomized production or shadow traffic before making a real routing claim.
+
+Reproduce the integrity-sealed artifact and gate locally:
+
+```bash
+python -m evals.contextual_bandit evals/datasets/contextual_bandit_feedback.jsonl \
+  --artifact data/evaluations/bandit/policy.json \
+  --report data/evaluations/bandit/report.json \
+  --check evals/experiments/contextual_bandit_policy.json \
+  --require-promotion
+```
+
 The tooling is implemented, but the included 120 cases remain clearly marked as synthetic candidates. A project owner must review them and run credentialed model experiments before publishing end-to-end quality or cost claims.
 
 ## Failure-to-improvement flywheel

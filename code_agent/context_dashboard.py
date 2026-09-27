@@ -8,8 +8,10 @@ from pathlib import Path
 import streamlit as st
 
 from code_agent.context_evaluation import ContextAblationReport
+from code_agent.retrieval_learning import FusionValidationReport
 
 RESULTS_DIR = Path(os.getenv("CODE_CONTEXT_EVAL_DIR", "data/evaluations/code-context"))
+LEARNING_RESULTS_DIR = Path(os.getenv("CODE_CONTEXT_LEARNING_DIR", "evals/experiments"))
 
 
 def load_ablation_reports(root: Path) -> list[tuple[Path, ContextAblationReport]]:
@@ -40,6 +42,19 @@ def curve_rows(report: ContextAblationReport) -> list[dict[str, object]]:
         }
         for point in report.points
     ]
+
+
+def load_fusion_reports(root: Path) -> list[tuple[Path, FusionValidationReport]]:
+    reports = []
+    if not root.exists():
+        return reports
+    for path in root.rglob("*.json"):
+        try:
+            report = FusionValidationReport.model_validate_json(path.read_text(encoding="utf-8"))
+            reports.append((path, report))
+        except (OSError, ValueError):
+            continue
+    return sorted(reports, key=lambda item: item[0].stat().st_mtime, reverse=True)
 
 
 def main() -> None:
@@ -92,11 +107,44 @@ def main() -> None:
         {
             "embedding_backend": report.embedding_backend,
             "reranker_backend": report.reranker_backend,
+            "fusion_backend": report.fusion_backend,
             "parser_backends": report.parser_backends,
             "strategies": report.strategies,
             "token_budgets": report.token_budgets,
         }
     )
+    learning_reports = load_fusion_reports(LEARNING_RESULTS_DIR)
+    if learning_reports:
+        learning_path, learning = learning_reports[0]
+        st.subheader("Learned fusion promotion gate")
+        st.caption(
+            f"Report `{learning_path}` | artifact `{learning.artifact_fingerprint[:16]}` | "
+            f"promotion `{'approved' if learning.promotion_approved else 'blocked'}`"
+        )
+        metrics = st.columns(4)
+        metrics[0].metric("Recall delta", f"{learning.recall_delta:+.3f}")
+        metrics[1].metric("MRR delta", f"{learning.mrr_delta:+.3f}")
+        metrics[2].metric("NDCG delta", f"{learning.ndcg_delta:+.3f}")
+        metrics[3].metric("Holdout cases", learning.learned.total)
+        st.dataframe(
+            [
+                {
+                    "ranker": "fixed",
+                    "Recall@K": learning.base.recall_at_k,
+                    "MRR": learning.base.mrr,
+                    "NDCG@K": learning.base.ndcg_at_k,
+                },
+                {
+                    "ranker": "learned",
+                    "Recall@K": learning.learned.recall_at_k,
+                    "MRR": learning.learned.mrr,
+                    "NDCG@K": learning.learned.ndcg_at_k,
+                },
+            ],
+            use_container_width=True,
+        )
+        if learning.promotion_reasons:
+            st.warning("; ".join(learning.promotion_reasons))
 
 
 if __name__ == "__main__":

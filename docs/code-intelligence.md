@@ -18,7 +18,8 @@ flowchart LR
     E --> F
     G --> F
     F --> X[Cross-encoder or facet reranker]
-    X --> C[Syntax-aware compression and deduplication]
+    X --> L[Fixed or learned fusion ranker]
+    L --> C[Syntax-aware compression and deduplication]
     C --> O[Bounded context pack and provenance receipt]
 ```
 
@@ -68,6 +69,49 @@ CODE_CONTEXT_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 ```
 
 The adapters use Sentence Transformers' asymmetric query/document APIs and a cross-encoder over only the fused candidate pool. Model loading is explicit; missing packages or model failures produce a recorded fallback rather than silently breaking the coding workflow.
+
+## Hard-negative learning and neural fine-tuning
+
+The retrieval signals can now be trained instead of relying only on hand-selected weights. The learning workflow retrieves a bounded candidate pool for each labelled query, keeps relevant paths as positives, and selects the highest-ranked irrelevant paths as hard negatives. Persisted mining reports contain paths, hashes, ranks, and numeric features—never repository source.
+
+Train the deterministic pairwise logistic fusion model:
+
+```bash
+python -m code_agent.retrieval_learning train-fusion \
+  evals/datasets/code_context_learning.jsonl \
+  --repository-root . \
+  --negatives-per-positive 4 \
+  --epochs 400 \
+  --output evals/experiments/code_context_fusion.json
+```
+
+Validate it on the separate regression holdout and reject metric regressions:
+
+```bash
+python -m code_agent.retrieval_learning validate-fusion \
+  evals/datasets/code_context_smoke.jsonl \
+  --repository-root . \
+  --artifact evals/experiments/code_context_fusion.json \
+  --require-promotion \
+  --output data/evaluations/code-context/fusion.json
+```
+
+Activate an approved artifact with `CODE_CONTEXT_FUSION_ARTIFACT`. The runtime verifies its SHA-256 fingerprint and exact feature schema before use; a malformed or tampered artifact falls back to the fixed-weight ranker and records the reason in the context receipt.
+
+With `requirements-code-intelligence-ml.txt` installed, the same hard negatives can fine-tune a bi-encoder using triplet loss or a cross-encoder using positive/negative relevance pairs:
+
+```bash
+python -m code_agent.retrieval_learning fine-tune \
+  --kind bi-encoder \
+  --model sentence-transformers/all-MiniLM-L6-v2 \
+  --output-dir data/models/code-bi-encoder
+```
+
+Every neural run writes an `agentforge_training_manifest.json` tying the output to its base model, dataset fingerprint, index fingerprint, pair count, epochs, and batch size.
+
+The checked-in deterministic fusion artifact was trained from 44 hard-negative pairs and reached 93.18% pairwise training accuracy. On the separate five-query holdout it preserved Recall@8 `1.00`, MRR `1.00`, and NDCG@8 `0.9433`. It did not improve that already-saturated small holdout, so the evidence is reported as a non-regression result rather than a quality-gain claim.
+
+CI retrains the fusion model and checks byte-for-byte reproducibility with `--check`, then runs the holdout promotion gate. A dataset, source-index, feature, hyperparameter, or weight change therefore requires an explicit artifact review.
 
 ## Compression, budgets, and provenance
 

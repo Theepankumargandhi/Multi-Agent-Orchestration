@@ -15,10 +15,12 @@ from code_agent.models import CodeContextFile, CodeContextReceipt
 from code_agent.repository_map import ReadableWorkspace
 from code_agent.retrieval_backends import (
     Embedder,
+    LearnedFusionScorer,
     QueryPlan,
     Reranker,
     RetrievalConfig,
     build_embedder,
+    build_fusion_scorer,
     build_reranker,
     cosine,
     decompose_query,
@@ -79,6 +81,7 @@ class CodeIntelligenceIndex:
         config: RetrievalConfig | None = None,
         embedder: Embedder | None = None,
         reranker: Reranker | None = None,
+        fusion_scorer: LearnedFusionScorer | None = None,
         parser: CodeParser | None = None,
     ):
         self.files = files
@@ -87,6 +90,7 @@ class CodeIntelligenceIndex:
         self.config = config or RetrievalConfig()
         self.embedder = embedder
         self.reranker = reranker
+        self.fusion_scorer = fusion_scorer
         self.parser = parser
 
     @classmethod
@@ -101,6 +105,7 @@ class CodeIntelligenceIndex:
         parser: CodeParser | None = None,
         embedder: Embedder | None = None,
         reranker: Reranker | None = None,
+        fusion_scorer: LearnedFusionScorer | None = None,
     ) -> CodeIntelligenceIndex:
         config = config or (previous.config if previous else RetrievalConfig.from_environment())
         parser = parser or (
@@ -111,6 +116,11 @@ class CodeIntelligenceIndex:
         )
         reranker = reranker if reranker is not None else (
             previous.reranker if previous and previous.config == config else build_reranker(config)
+        )
+        fusion_scorer = fusion_scorer if fusion_scorer is not None else (
+            previous.fusion_scorer
+            if previous and previous.config == config
+            else build_fusion_scorer(config)
         )
         files: dict[str, IndexedFile] = {}
         stats = IndexStats()
@@ -161,6 +171,7 @@ class CodeIntelligenceIndex:
             config=config,
             embedder=embedder,
             reranker=reranker,
+            fusion_scorer=fusion_scorer,
             parser=parser,
         )
 
@@ -221,10 +232,23 @@ class CodeIntelligenceIndex:
                 rerank_scores = dict(zip(candidates, values))
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 self.config.fallbacks.append(f"reranker failure: {type(exc).__name__}: {exc}")
-        final_scores = {
-            path: hybrid[path] + self.config.rerank_weight * rerank_scores.get(path, 0.0)
-            for path in candidates
-        }
+        if self.fusion_scorer:
+            final_scores = {
+                path: self.fusion_scorer.score(
+                    {
+                        "lexical": lexical_normalized.get(path, 0.0),
+                        "semantic": semantic.get(path, 0.0),
+                        "graph": graph.get(path, 0.0),
+                        "rerank": rerank_scores.get(path, 0.0),
+                    }
+                )
+                for path in candidates
+            }
+        else:
+            final_scores = {
+                path: hybrid[path] + self.config.rerank_weight * rerank_scores.get(path, 0.0)
+                for path in candidates
+            }
         ranked = sorted(
             candidates,
             key=lambda path: (final_scores[path], hybrid[path], path),
@@ -401,6 +425,9 @@ class CodeIntelligenceIndex:
             strategy=strategy,
             embedding_backend=self.embedder.name if self.embedder else "none",
             reranker_backend=self.reranker.name if self.reranker else "none",
+            fusion_backend=(
+                self.fusion_scorer.name if self.fusion_scorer else "fixed-weight-v1"
+            ),
             parser_backends=dict(self.stats.parser_backends),
             fallbacks=list(dict.fromkeys(self.config.fallbacks))[:20],
             index_reused_files=self.stats.reused_files,
@@ -421,6 +448,9 @@ class CodeIntelligenceIndex:
                 strategy=strategy,
                 embedding_backend=self.embedder.name if self.embedder else "none",
                 reranker_backend=self.reranker.name if self.reranker else "none",
+                fusion_backend=(
+                    self.fusion_scorer.name if self.fusion_scorer else "fixed-weight-v1"
+                ),
                 parser_backends=dict(self.stats.parser_backends),
                 fallbacks=list(dict.fromkeys(self.config.fallbacks))[:20],
                 index_reused_files=self.stats.reused_files,

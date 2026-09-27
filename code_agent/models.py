@@ -231,6 +231,7 @@ class CodeContextReceipt(BaseModel):
     strategy: str = "lexical_graph"
     embedding_backend: str = "none"
     reranker_backend: str = "none"
+    fusion_backend: str = "fixed-weight-v1"
     parser_backends: dict[str, int] = Field(default_factory=dict)
     fallbacks: list[str] = Field(default_factory=list, max_length=20)
     index_reused_files: int = Field(default=0, ge=0)

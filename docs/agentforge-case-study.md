@@ -48,6 +48,7 @@ flowchart LR
 - Judge accuracy is calculated only on human-reviewed preferences.
 - Private holdout labels remain outside the repository.
 - Adaptive-router thresholds are fitted on validation data and reported separately on the held-out test split.
+- The successor router logs action propensities and is promoted only after IPS, SNIPS, doubly robust, effective-sample-size, confidence, and safety gates pass on held-out feedback.
 
 ## Coding-agent reliability controls
 

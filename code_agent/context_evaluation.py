@@ -41,6 +41,7 @@ class ContextEvalReport(BaseModel):
     strategy: str = "hybrid_rerank"
     embedding_backend: str = "none"
     reranker_backend: str = "none"
+    fusion_backend: str = "fixed-weight-v1"
     parser_backends: dict[str, int] = Field(default_factory=dict)
     top_k: int
     max_tokens: int | None = None
@@ -77,6 +78,7 @@ class ContextAblationReport(BaseModel):
     token_budgets: list[int]
     embedding_backend: str
     reranker_backend: str
+    fusion_backend: str = "fixed-weight-v1"
     parser_backends: dict[str, int]
     points: list[AblationPoint]
 
@@ -216,6 +218,7 @@ def evaluate_context(
         strategy=strategy,
         embedding_backend=index.embedder.name if index.embedder else "none",
         reranker_backend=index.reranker.name if index.reranker else "none",
+        fusion_backend=(index.fusion_scorer.name if index.fusion_scorer else "fixed-weight-v1"),
         parser_backends=dict(index.stats.parser_backends),
         top_k=top_k,
         max_tokens=max_tokens,
@@ -277,6 +280,7 @@ def run_ablation(
         token_budgets=token_budgets,
         embedding_backend=index.embedder.name if index.embedder else "none",
         reranker_backend=index.reranker.name if index.reranker else "none",
+        fusion_backend=(index.fusion_scorer.name if index.fusion_scorer else "fixed-weight-v1"),
         parser_backends=dict(index.stats.parser_backends),
         points=points,
     )
@@ -305,6 +309,7 @@ def main() -> None:
     parser.add_argument("--strategy", choices=STRATEGIES, default="hybrid_rerank")
     parser.add_argument("--embedding-backend", default="hashing")
     parser.add_argument("--reranker-backend", default="feature")
+    parser.add_argument("--fusion-artifact", default="")
     parser.add_argument("--no-tree-sitter", action="store_true")
     parser.add_argument("--ablation", action="store_true")
     parser.add_argument("--strategies", default=",".join(STRATEGIES))
@@ -325,6 +330,7 @@ def main() -> None:
     config = RetrievalConfig(
         embedding_backend=args.embedding_backend,
         reranker_backend=args.reranker_backend,
+        fusion_artifact=args.fusion_artifact,
         prefer_tree_sitter=not args.no_tree_sitter,
     )
     workspace = DirectoryWorkspace(args.repository_root, source_only=True)
