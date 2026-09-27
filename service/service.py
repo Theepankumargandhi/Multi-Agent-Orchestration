@@ -1118,6 +1118,10 @@ async def capabilities():
             "mcp": bool(os.getenv("MCP_TOOLS_ENABLED", "false").lower() not in {"0", "false", "off"}),
             "evaluation_api": ENABLE_EVAL_API,
             "contextual_bandit_router": CONTEXTUAL_BANDIT_ROUTER_ENABLED,
+            "process_reward_model": bool(
+                os.getenv("PROCESS_REWARD_MODEL_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
             "sandboxed_code_agent": CODE_AGENT_ENABLED,
             "durable_code_jobs": True,
             "verified_pr_workflow": True,

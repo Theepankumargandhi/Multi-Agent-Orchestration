@@ -8,19 +8,19 @@
     "rerank"
   ],
   "weights": {
-    "lexical": 2.3415755066644963,
-    "semantic": 0.5378638914911659,
-    "graph": 0.10791894630492076,
-    "rerank": 1.3846561874047756
+    "lexical": 2.360570884584573,
+    "semantic": 0.5594538602215362,
+    "graph": 0.13352249643882177,
+    "rerank": 1.3677547617677912
   },
   "dataset_fingerprint": "ffa2d8f29ab72f45d1f8b2ca315bba2f4a422d723d538b27bada721a235d45e3",
-  "index_fingerprint": "e4c12e766f15b77987a5010464fb9ae1156a4740be293e2b756c51c0eb8556af",
+  "index_fingerprint": "e5bc7613df9903455f20120ec91f241e81c7a1953c3c379dbe3db0e6eca8845d",
   "training_pairs": 44,
   "hard_negatives_per_positive": 4,
   "epochs": 400,
   "learning_rate": 0.15,
   "l2": 0.01,
   "pairwise_accuracy": 0.9318181818181818,
-  "mean_pairwise_margin": 1.496669532311759,
-  "artifact_fingerprint": "664dcf0a4472ab53d9a6bb7d75821f24a3febb7ae7b85f842ade9984e0e15960"
+  "mean_pairwise_margin": 1.4524519591324299,
+  "artifact_fingerprint": "77f7fd888eaddeeb365a90992f18cac704db1ccb0f65b53f8fd86c3c5d198aca"
 }

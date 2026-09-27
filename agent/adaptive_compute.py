@@ -66,6 +66,7 @@ class CandidateAssessment(BaseModel):
     token_count: int = Field(ge=0)
     latency_ms: float = Field(ge=0)
     answer_fingerprint: str
+    process_reward: float | None = Field(default=None, ge=0, le=1)
 
 
 class CandidateSummary(BaseModel):
@@ -78,6 +79,7 @@ class CandidateSummary(BaseModel):
     consensus: float
     eligible: bool
     answer_fingerprint: str
+    process_reward: float | None = None
 
 
 class DeliberationReceipt(BaseModel):
@@ -156,6 +158,7 @@ def candidate_assessment(
     claim_keys: list[str],
     token_count: int,
     latency_ms: float,
+    process_reward: float | None = None,
 ) -> CandidateAssessment:
     return CandidateAssessment(
         candidate_id=candidate_id,
@@ -166,6 +169,7 @@ def candidate_assessment(
         token_count=token_count,
         latency_ms=round(latency_ms, 3),
         answer_fingerprint=_fingerprint(answer),
+        process_reward=process_reward,
     )
 
 
@@ -230,6 +234,7 @@ def select_candidate(
     selected = max(
         releasable,
         key=lambda item: (
+            item.process_reward if item.process_reward is not None else item.confidence,
             item.confidence,
             consensus[item.candidate_id],
             -item.token_count,
@@ -255,6 +260,7 @@ def select_candidate(
             consensus=round(consensus[item.candidate_id], 6),
             eligible=item in eligible,
             answer_fingerprint=item.answer_fingerprint,
+            process_reward=item.process_reward,
         )
         for item in evaluated
     ]

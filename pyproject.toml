@@ -67,6 +67,7 @@ agentforge-grounding-eval = "evals.grounding_evaluation:main"
 agentforge-uncertainty-eval = "evals.uncertainty_evaluation:main"
 agentforge-adaptive-compute-eval = "evals.adaptive_compute_evaluation:main"
 agentforge-evidence-quality-eval = "evals.evidence_quality_evaluation:main"
+agentforge-process-reward-eval = "evals.process_reward_evaluation:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*", "client*", "code_agent*", "evals*", "post_training*", "schema*", "service*"]

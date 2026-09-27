@@ -52,6 +52,7 @@ from agent.model_gateway import (
     ProviderSpec,
 )
 from agent.online_evaluation import append_online_event, event_from_gateway_receipt
+from agent.process_reward import ProcessRewardScorer, ProcessStep
 from agent.tools import perform_web_search
 from agent.uncertainty import assess_grounding_report, load_calibrator
 
@@ -251,6 +252,14 @@ ADAPTIVE_COMPUTE_MAX_LATENCY_MS = max(
 ADAPTIVE_COMPUTE_INTEGRITY_KEY = (
     os.getenv("ADAPTIVE_COMPUTE_INTEGRITY_KEY", "").encode() or None
 )
+PROCESS_REWARD_MODEL_ENABLED = os.getenv(
+    "PROCESS_REWARD_MODEL_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+PROCESS_REWARD_MODEL_PATH = Path(
+    os.getenv("PROCESS_REWARD_MODEL_PATH", "data/evaluations/process-reward/model.json")
+)
+_process_reward_scorer = None
+_process_reward_mtime_ns = -1
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1961,6 +1970,54 @@ def _load_uncertainty_calibrator():
     return _uncertainty_calibrator
 
 
+def _load_process_reward_scorer() -> ProcessRewardScorer:
+    global _process_reward_scorer, _process_reward_mtime_ns
+    stat = PROCESS_REWARD_MODEL_PATH.stat()
+    if _process_reward_scorer is None or _process_reward_mtime_ns != stat.st_mtime_ns:
+        _process_reward_scorer = ProcessRewardScorer.load(PROCESS_REWARD_MODEL_PATH)
+        _process_reward_mtime_ns = stat.st_mtime_ns
+    return _process_reward_scorer
+
+
+def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float | None:
+    if not PROCESS_REWARD_MODEL_ENABLED:
+        return None
+    has_evidence = report.evidence_count > 0
+    citations_valid = report.citation_precision >= 0.999 and not any(
+        claim.invalid_citation_urls for claim in report.claims
+    )
+    steps = [
+        ProcessStep(
+            step_id="retrieve",
+            kind="retrieve",
+            has_evidence=has_evidence,
+            confidence=min(1.0, report.evidence_count / 3),
+        ),
+        ProcessStep(
+            step_id="reason",
+            kind="reason",
+            has_evidence=has_evidence,
+            confidence=report.confidence,
+        ),
+        ProcessStep(
+            step_id="verify",
+            kind="verify",
+            has_evidence=has_evidence,
+            citation_valid=citations_valid,
+            error=report.action == "abstain",
+            confidence=report.claim_coverage,
+        ),
+        ProcessStep(
+            step_id="answer",
+            kind="answer",
+            has_evidence=has_evidence,
+            citation_valid=citations_valid,
+            confidence=report.confidence,
+        ),
+    ]
+    return _load_process_reward_scorer().score_steps(steps, high_risk)
+
+
 def _next_node_after_response(state: AgentState) -> str:
     return (
         "grounding_verifier_agent"
@@ -2128,6 +2185,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
                 ],
                 token_count=token_count,
                 latency_ms=latency_ms,
+                process_reward=_candidate_process_reward(report, plan.high_risk),
             )
             candidates.append(assessment)
             candidate_outputs[candidate_id] = (answer, report, uncertainty)

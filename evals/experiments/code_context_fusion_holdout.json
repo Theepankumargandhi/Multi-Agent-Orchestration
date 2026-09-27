@@ -1,19 +1,19 @@
 {
   "schema_version": "1.0",
-  "artifact_fingerprint": "664dcf0a4472ab53d9a6bb7d75821f24a3febb7ae7b85f842ade9984e0e15960",
+  "artifact_fingerprint": "77f7fd888eaddeeb365a90992f18cac704db1ccb0f65b53f8fd86c3c5d198aca",
   "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-  "index_fingerprint": "e4c12e766f15b77987a5010464fb9ae1156a4740be293e2b756c51c0eb8556af",
+  "index_fingerprint": "e5bc7613df9903455f20120ec91f241e81c7a1953c3c379dbe3db0e6eca8845d",
   "base": {
     "schema_version": "2.0",
     "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-    "index_fingerprint": "e4c12e766f15b77987a5010464fb9ae1156a4740be293e2b756c51c0eb8556af",
+    "index_fingerprint": "e5bc7613df9903455f20120ec91f241e81c7a1953c3c379dbe3db0e6eca8845d",
     "strategy": "hybrid_rerank",
     "embedding_backend": "hashing-semantic-384",
     "reranker_backend": "query-facet-reranker-v1",
     "fusion_backend": "fixed-weight-v1",
     "parser_backends": {
       "lexical-only": 11,
-      "tree-sitter": 64
+      "tree-sitter": 65
     },
     "top_k": 8,
     "max_tokens": 4096,
@@ -150,14 +150,14 @@
   "learned": {
     "schema_version": "2.0",
     "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-    "index_fingerprint": "e4c12e766f15b77987a5010464fb9ae1156a4740be293e2b756c51c0eb8556af",
+    "index_fingerprint": "e5bc7613df9903455f20120ec91f241e81c7a1953c3c379dbe3db0e6eca8845d",
     "strategy": "hybrid_rerank",
     "embedding_backend": "hashing-semantic-384",
     "reranker_backend": "query-facet-reranker-v1",
-    "fusion_backend": "pairwise-logistic:664dcf0a4472",
+    "fusion_backend": "pairwise-logistic:77f7fd888ead",
     "parser_backends": {
       "lexical-only": 11,
-      "tree-sitter": 64
+      "tree-sitter": 65
     },
     "top_k": 8,
     "max_tokens": 4096,

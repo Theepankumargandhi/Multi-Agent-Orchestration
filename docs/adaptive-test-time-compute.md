@@ -12,7 +12,7 @@ This is test-time scaling with an explicit stopping policy, not an unrestricted 
 
 The initial private draft passes through claim grounding and, when enabled, route-aware conformal calibration. An uncertain but potentially recoverable result enters `adaptive_deliberation_agent`.
 
-Each candidate is generated without streaming, checked against the same retrieved evidence, filtered by conformal correctness when the calibrator is active, and represented by a content-free assessment. Consensus is computed over independently selected evidence IDs rather than answer wording. The agent releases the highest-confidence candidate only when two or more eligible candidates agree above the policy threshold.
+Each candidate is generated without streaming, checked against the same retrieved evidence, filtered by conformal correctness when the calibrator is active, and represented by a content-free assessment. Consensus is computed over independently selected evidence IDs rather than answer wording. When the optional process reward model is enabled, a learned verifier scores the retrieve-reason-verify-answer trajectory and reranks otherwise eligible candidates; confidence remains the fallback when no PRM score is present.
 
 High-risk unsupported claims, missing evidence, unavailable required calibration, candidate disagreement, exhausted budgets, and invalid plan integrity all fail closed.
 
@@ -57,6 +57,10 @@ ADAPTIVE_COMPUTE_MAX_CANDIDATES=3
 ADAPTIVE_COMPUTE_MAX_EXTRA_TOKENS=1800
 ADAPTIVE_COMPUTE_MAX_LATENCY_MS=15000
 ADAPTIVE_COMPUTE_INTEGRITY_KEY=replace-with-an-independent-secret
+PROCESS_REWARD_MODEL_ENABLED=true
+PROCESS_REWARD_MODEL_PATH=data/evaluations/process-reward/model.json
 ```
 
 Use independent integrity keys for grounding, uncertainty, and adaptive-compute artifacts. Enabling adaptive compute increases latency and provider cost only for requests selected for deliberation.
+
+See [process reward modeling](process-reward-modeling.md) for temporal credit assignment, early pruning, artifact integrity, and the held-out promotion protocol.

@@ -49,6 +49,7 @@ flowchart LR
 - Private holdout labels remain outside the repository.
 - Adaptive-router thresholds are fitted on validation data and reported separately on the held-out test split.
 - The successor router logs action propensities and is promoted only after IPS, SNIPS, doubly robust, effective-sample-size, confidence, and safety gates pass on held-out feedback.
+- Adaptive best-of-N generation can use a learned process verifier rather than trusting self-reported confidence; step rewards, early pruning, counterfactual credit, receipt integrity, success lift, and unsafe-selection rate are gated separately.
 
 ## Coding-agent reliability controls
 
