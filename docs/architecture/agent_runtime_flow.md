@@ -64,7 +64,9 @@ flowchart TD
     RESP --> GV[grounding_verifier_agent]
     GV -->|supported| UC[conformal uncertainty gate]
     UC -->|singleton correct| EVA
-    UC -->|ambiguous or OOD| AD[adaptive_deliberation_agent]
+    UC -->|ambiguous or OOD| MCTS[verifier-guided bounded MCTS]
+    MCTS -->|safe plan| AD[adaptive_deliberation_agent]
+    MCTS -->|no safe path| EVA
     AD -->|grounded consensus| EVA
     AD -->|abstain or budget exhausted| EVA
     GV -->|not required| EVA

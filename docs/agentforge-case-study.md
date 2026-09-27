@@ -177,6 +177,19 @@ gates and integrity checks pass. These figures validate allocation, stopping, an
 mechanics over simulated candidate outcomes; they do not establish live-model quality, cost savings,
 or latency improvements.
 
+The next layer turns the learned process verifier into a reasoning-time search value function. A
+bounded MCTS controller explores typed retrieve, reason, verify, answer, and abstain actions while
+enforcing evidence, risk, token, depth, node, and iteration constraints. Runtime plans operate over
+the evidence already in the research graph; each selected path is attached to adaptive compute with
+policy, request, model, and plan fingerprints.
+
+On a separate checked-in ten-scenario synthetic holdout, a fixed confidence policy succeeds on 30%
+of scenarios and releases unsafe answers on 30%. Verifier-guided search succeeds on all scenarios,
+recovers all authored recoverable cases, records zero unsafe releases and budget violations, and
+verifies every plan receipt. CI reproduces the exact report. This demonstrates deterministic search
+and safety mechanics, not general reasoning improvement; live-model transitions and human-reviewed
+private traces remain necessary before making that claim.
+
 ## Evidence-intelligence and conflict-control evidence
 
 An optional 18th graph node now evaluates retrieved material before answer generation. It quarantines

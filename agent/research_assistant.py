@@ -24,8 +24,10 @@ from agent.adaptive_compute import (
     ComputePlan,
     ComputePolicy,
     ComputeSignals,
+    attach_search_plan,
     candidate_assessment,
     plan_compute,
+    seal_plan,
     select_candidate,
     verify_plan,
 )
@@ -53,6 +55,7 @@ from agent.model_gateway import (
 )
 from agent.online_evaluation import append_online_event, event_from_gateway_receipt
 from agent.process_reward import ProcessRewardScorer, ProcessStep
+from agent.search_planner import SearchPolicy, SearchRequest, VerifierGuidedMCTS
 from agent.tools import perform_web_search
 from agent.uncertainty import assess_grounding_report, load_calibrator
 
@@ -257,6 +260,15 @@ PROCESS_REWARD_MODEL_ENABLED = os.getenv(
 ).strip().lower() in {"1", "true", "yes", "on"}
 PROCESS_REWARD_MODEL_PATH = Path(
     os.getenv("PROCESS_REWARD_MODEL_PATH", "data/evaluations/process-reward/model.json")
+)
+VERIFIER_MCTS_ENABLED = os.getenv(
+    "VERIFIER_MCTS_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+VERIFIER_MCTS_ITERATIONS = max(
+    8, min(int(os.getenv("VERIFIER_MCTS_ITERATIONS", "96")), 2048)
+)
+VERIFIER_MCTS_MAX_NODES = max(
+    8, min(int(os.getenv("VERIFIER_MCTS_MAX_NODES", "128")), 4096)
 )
 _process_reward_scorer = None
 _process_reward_mtime_ns = -1
@@ -1941,19 +1953,55 @@ def _adaptive_compute_plan(
     uncertainty_decision = str(uncertainty.get("decision") or "not_evaluated")
     if uncertainty.get("status") == "calibrator_unavailable":
         uncertainty_decision = "unavailable"
-    return plan_compute(
+    high_risk = any(item.high_risk for item in report.claims)
+    plan = plan_compute(
         ComputeSignals(
             route=report.route,
             grounding_action=report.action,
             grounding_confidence=report.confidence,
             uncertainty_decision=uncertainty_decision,
             out_of_distribution=bool(uncertainty.get("out_of_distribution")),
-            high_risk=any(item.high_risk for item in report.claims),
+            high_risk=high_risk,
             evidence_count=report.evidence_count,
         ),
         _adaptive_compute_policy(),
         ADAPTIVE_COMPUTE_INTEGRITY_KEY,
     )
+    if not VERIFIER_MCTS_ENABLED or plan.action != "deliberate":
+        return plan
+
+    try:
+        search_plan = VerifierGuidedMCTS(
+            _load_process_reward_scorer(),
+            SearchPolicy(
+                iterations=VERIFIER_MCTS_ITERATIONS,
+                max_nodes=VERIFIER_MCTS_MAX_NODES,
+            ),
+        ).plan(
+            SearchRequest(
+                request_id=report.report_fingerprint[:16] or "grounding-report",
+                route=report.route,
+                evidence_count=report.evidence_count,
+                confidence=report.confidence,
+                high_risk=high_risk,
+                retrieval_available=False,
+                verification_available=True,
+                max_additional_evidence=0,
+                token_budget=plan.token_budget,
+            )
+        )
+        return attach_search_plan(
+            plan, search_plan, ADAPTIVE_COMPUTE_INTEGRITY_KEY
+        )
+    except (OSError, ValueError):
+        logger.exception("Verifier-guided reasoning search failed; abstaining")
+        failed = plan.model_copy(deep=True)
+        failed.action = "abstain"
+        failed.candidate_budget = 0
+        failed.token_budget = 0
+        failed.latency_budget_ms = 0
+        failed.reason = "verifier_guided_search_unavailable"
+        return seal_plan(failed, ADAPTIVE_COMPUTE_INTEGRITY_KEY)
 
 
 def _load_uncertainty_calibrator():

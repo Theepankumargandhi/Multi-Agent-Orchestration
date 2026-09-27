@@ -9,6 +9,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agent.search_planner import SearchPlan
+
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
@@ -54,6 +56,10 @@ class ComputePlan(BaseModel):
     initial_confidence: float
     high_risk: bool
     reason: str
+    reasoning_strategy: Literal["policy", "verifier_mcts"] = "policy"
+    planned_actions: list[str] = Field(default_factory=list, max_length=12)
+    search_plan_fingerprint: str = ""
+    search_plan: SearchPlan | None = None
     plan_fingerprint: str = ""
 
 
@@ -145,7 +151,55 @@ def verify_plan(plan: ComputePlan, integrity_key: bytes | None = None) -> bool:
     expected = _fingerprint(
         plan.model_dump(mode="json", exclude={"plan_fingerprint"}), integrity_key
     )
-    return hmac.compare_digest(plan.plan_fingerprint, expected)
+    if not hmac.compare_digest(plan.plan_fingerprint, expected):
+        return False
+    if plan.reasoning_strategy == "verifier_mcts":
+        return bool(
+            plan.search_plan
+            and plan.search_plan.verify()
+            and plan.search_plan_fingerprint == plan.search_plan.plan_fingerprint
+            and plan.planned_actions == plan.search_plan.planned_actions
+        )
+    return (
+        plan.search_plan is None
+        and not plan.search_plan_fingerprint
+        and not plan.planned_actions
+    )
+
+
+def seal_plan(plan: ComputePlan, integrity_key: bytes | None = None) -> ComputePlan:
+    """Return a copy with an integrity fingerprint covering every planning field."""
+    sealed = plan.model_copy(deep=True)
+    sealed.plan_fingerprint = _fingerprint(
+        sealed.model_dump(mode="json", exclude={"plan_fingerprint"}), integrity_key
+    )
+    return sealed
+
+
+def attach_search_plan(
+    plan: ComputePlan,
+    search_plan: SearchPlan,
+    integrity_key: bytes | None = None,
+) -> ComputePlan:
+    """Attach a verified search receipt and fail closed when search chooses abstention."""
+    if not verify_plan(plan, integrity_key):
+        raise ValueError("adaptive compute plan integrity verification failed")
+    if not search_plan.verify():
+        raise ValueError("reasoning search plan integrity verification failed")
+    updated = plan.model_copy(deep=True)
+    updated.reasoning_strategy = "verifier_mcts"
+    updated.planned_actions = list(search_plan.planned_actions)
+    updated.search_plan_fingerprint = search_plan.plan_fingerprint
+    updated.search_plan = search_plan.model_copy(deep=True)
+    if search_plan.terminal_action == "abstain":
+        updated.action = "abstain"
+        updated.candidate_budget = 0
+        updated.token_budget = 0
+        updated.latency_budget_ms = 0
+        updated.reason = "verifier_guided_search_abstained"
+    else:
+        updated.reason = "verifier_guided_search_selected_deliberation"
+    return seal_plan(updated, integrity_key)
 
 
 def candidate_assessment(

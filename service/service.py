@@ -1122,6 +1122,10 @@ async def capabilities():
                 os.getenv("PROCESS_REWARD_MODEL_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}
             ),
+            "verifier_guided_mcts": bool(
+                os.getenv("VERIFIER_MCTS_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
             "sandboxed_code_agent": CODE_AGENT_ENABLED,
             "durable_code_jobs": True,
             "verified_pr_workflow": True,
