@@ -78,3 +78,8 @@ PROCESS_REWARD_MODEL_PATH=data/evaluations/process-reward/model.json
 
 Artifact loading is integrity checked and hot-reloaded after a validated file replacement. If
 the PRM is enabled but unavailable or modified, adaptive candidate scoring fails closed.
+
+For higher-assurance deployments, the same scorer interface can load a calibrated bootstrapped
+ensemble. MCTS and candidate selection then use a risk-adjusted lower confidence bound, abstain on
+excessive member disagreement, and send uncertain metadata-only receipts to a human review queue.
+See [uncertainty-aware verifier ensemble](verifier-uncertainty.md).

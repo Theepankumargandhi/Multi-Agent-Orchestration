@@ -69,6 +69,8 @@ agentforge-adaptive-compute-eval = "evals.adaptive_compute_evaluation:main"
 agentforge-evidence-quality-eval = "evals.evidence_quality_evaluation:main"
 agentforge-process-reward-eval = "evals.process_reward_evaluation:main"
 agentforge-search-planning-eval = "evals.search_planning_evaluation:main"
+agentforge-verifier-uncertainty-eval = "evals.verifier_uncertainty_evaluation:main"
+agentforge-verifier-review = "agent.verifier_active_learning:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*", "client*", "code_agent*", "evals*", "post_training*", "schema*", "service*"]

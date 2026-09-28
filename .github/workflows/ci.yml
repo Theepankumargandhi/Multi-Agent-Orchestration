@@ -94,6 +94,7 @@ jobs:
           python -m evals.contextual_bandit evals/datasets/contextual_bandit_feedback.jsonl --artifact data/evaluations/bandit/policy.json --report data/evaluations/bandit/report.json --check evals/experiments/contextual_bandit_policy.json --require-promotion
           python -m evals.process_reward_evaluation evals/datasets/process_reward_trajectories.jsonl --artifact data/evaluations/process-reward/model.json --output data/evaluations/process-reward/report.json --check evals/experiments/process_reward_model.json --require-promotion
           python -m evals.search_planning_evaluation --process-reward-artifact evals/experiments/process_reward_model.json --output data/evaluations/search-planning/ci.json --check evals/experiments/search_planning.report.json --require-promotion
+          python -m evals.verifier_uncertainty_evaluation --artifact data/evaluations/verifier-uncertainty/ensemble.json --output data/evaluations/verifier-uncertainty/report.json --check-artifact evals/experiments/process_reward_ensemble.json --check-report evals/experiments/verifier_uncertainty.report.json --require-promotion
           python -m evals.flywheel --help
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
@@ -215,6 +216,13 @@ jobs:
         with:
           name: verifier-guided-search-ablation
           path: data/evaluations/search-planning/ci.json
+          if-no-files-found: error
+
+      - name: Upload verifier uncertainty ablation
+        uses: actions/upload-artifact@v4
+        with:
+          name: verifier-uncertainty-ablation
+          path: data/evaluations/verifier-uncertainty/
           if-no-files-found: error
 
       - name: Upload contextual-bandit policy evidence

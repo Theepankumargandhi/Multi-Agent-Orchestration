@@ -1126,6 +1126,14 @@ async def capabilities():
                 os.getenv("VERIFIER_MCTS_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}
             ),
+            "uncertainty_aware_verifier_ensemble": bool(
+                os.getenv("VERIFIER_ENSEMBLE_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
+            "verifier_active_learning": bool(
+                os.getenv("VERIFIER_ACTIVE_LEARNING_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
             "sandboxed_code_agent": CODE_AGENT_ENABLED,
             "durable_code_jobs": True,
             "verified_pr_workflow": True,

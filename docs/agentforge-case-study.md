@@ -190,6 +190,17 @@ verifies every plan receipt. CI reproduces the exact report. This demonstrates d
 and safety mechanics, not general reasoning improvement; live-model transitions and human-reviewed
 private traces remain necessary before making that claim.
 
+The planner can also run against a five-member bootstrapped process-reward ensemble. Validation
+temperature-scales its mean score, while member disagreement estimates epistemic uncertainty. MCTS
+optimizes a risk-adjusted lower confidence bound and abstains when the verifier itself is out of
+distribution. Uncertain plans enter a deduplicated SQLite review queue containing fingerprints and
+typed metadata, never prompts, answers, retrieved content, or hidden reasoning.
+
+In a ten-scenario synthetic corruption drill, a behaviorally inverted single verifier selects an
+unsafe trajectory in every shifted case. The ensemble preserves all five clean selections, detects
+and contains all five shifts with zero unsafe selections, and queues every shifted case for review.
+This is a narrow control-plane test, not evidence that five small models cover real production drift.
+
 ## Evidence-intelligence and conflict-control evidence
 
 An optional 18th graph node now evaluates retrieved material before answer generation. It quarantines

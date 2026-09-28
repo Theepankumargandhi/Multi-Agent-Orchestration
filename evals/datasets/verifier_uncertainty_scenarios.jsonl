@@ -1,0 +1,10 @@
+{"id":"normal-architecture","group_id":"te-architecture","shifted":false,"expected_action":"select","split":"test","review_status":"synthetic_seed"}
+{"id":"shift-architecture","group_id":"te-architecture","shifted":true,"expected_action":"abstain","split":"test","review_status":"synthetic_seed"}
+{"id":"normal-release","group_id":"te-release","shifted":false,"expected_action":"select","split":"test","review_status":"synthetic_seed"}
+{"id":"shift-release","group_id":"te-release","shifted":true,"expected_action":"abstain","split":"test","review_status":"synthetic_seed"}
+{"id":"normal-code","group_id":"te-code","shifted":false,"expected_action":"select","split":"test","review_status":"synthetic_seed"}
+{"id":"shift-code","group_id":"te-code","shifted":true,"expected_action":"abstain","split":"test","review_status":"synthetic_seed"}
+{"id":"normal-medical","group_id":"te-medical","shifted":false,"expected_action":"select","split":"test","review_status":"synthetic_seed"}
+{"id":"shift-medical","group_id":"te-medical","shifted":true,"expected_action":"abstain","split":"test","review_status":"synthetic_seed"}
+{"id":"normal-finance","group_id":"te-finance","shifted":false,"expected_action":"select","split":"test","review_status":"synthetic_seed"}
+{"id":"shift-finance","group_id":"te-finance","shifted":true,"expected_action":"abstain","split":"test","review_status":"synthetic_seed"}

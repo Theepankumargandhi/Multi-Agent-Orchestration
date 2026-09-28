@@ -90,3 +90,6 @@ VERIFIER_MCTS_MAX_NODES=128
 
 The search flag is independent so teams can compare policy-only and search-guided deliberation under
 the same runtime and evaluation harness.
+
+The optional [uncertainty-aware verifier ensemble](verifier-uncertainty.md) replaces the point
+reward with a calibrated lower confidence bound and makes OOD answer branches fail closed.

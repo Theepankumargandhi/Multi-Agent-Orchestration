@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import re
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -55,9 +56,11 @@ from agent.model_gateway import (
 )
 from agent.online_evaluation import append_online_event, event_from_gateway_receipt
 from agent.process_reward import ProcessRewardScorer, ProcessStep
-from agent.search_planner import SearchPolicy, SearchRequest, VerifierGuidedMCTS
+from agent.search_planner import SearchPlan, SearchPolicy, SearchRequest, VerifierGuidedMCTS
 from agent.tools import perform_web_search
 from agent.uncertainty import assess_grounding_report, load_calibrator
+from agent.verifier_active_learning import VerifierActiveLearningQueue
+from agent.verifier_ensemble import EnsembleProcessRewardScorer
 
 logger = logging.getLogger("agentforge.research")
 
@@ -270,8 +273,31 @@ VERIFIER_MCTS_ITERATIONS = max(
 VERIFIER_MCTS_MAX_NODES = max(
     8, min(int(os.getenv("VERIFIER_MCTS_MAX_NODES", "128")), 4096)
 )
+VERIFIER_ENSEMBLE_ENABLED = os.getenv(
+    "VERIFIER_ENSEMBLE_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+VERIFIER_ENSEMBLE_PATH = Path(
+    os.getenv(
+        "VERIFIER_ENSEMBLE_PATH",
+        "data/evaluations/verifier-uncertainty/ensemble.json",
+    )
+)
+VERIFIER_ACTIVE_LEARNING_ENABLED = os.getenv(
+    "VERIFIER_ACTIVE_LEARNING_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+VERIFIER_ACTIVE_LEARNING_PATH = Path(
+    os.getenv(
+        "VERIFIER_ACTIVE_LEARNING_PATH",
+        "data/verifier-review/verifier-review.sqlite3",
+    )
+)
+VERIFIER_REVIEW_UNCERTAINTY_THRESHOLD = max(
+    0.001,
+    min(float(os.getenv("VERIFIER_REVIEW_UNCERTAINTY_THRESHOLD", "0.08")), 0.5),
+)
 _process_reward_scorer = None
 _process_reward_mtime_ns = -1
+_verifier_review_queue = None
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1971,25 +1997,25 @@ def _adaptive_compute_plan(
         return plan
 
     try:
+        search_request = SearchRequest(
+            request_id=report.report_fingerprint[:16] or "grounding-report",
+            route=report.route,
+            evidence_count=report.evidence_count,
+            confidence=report.confidence,
+            high_risk=high_risk,
+            retrieval_available=False,
+            verification_available=True,
+            max_additional_evidence=0,
+            token_budget=plan.token_budget,
+        )
         search_plan = VerifierGuidedMCTS(
             _load_process_reward_scorer(),
             SearchPolicy(
                 iterations=VERIFIER_MCTS_ITERATIONS,
                 max_nodes=VERIFIER_MCTS_MAX_NODES,
             ),
-        ).plan(
-            SearchRequest(
-                request_id=report.report_fingerprint[:16] or "grounding-report",
-                route=report.route,
-                evidence_count=report.evidence_count,
-                confidence=report.confidence,
-                high_risk=high_risk,
-                retrieval_available=False,
-                verification_available=True,
-                max_additional_evidence=0,
-                token_budget=plan.token_budget,
-            )
-        )
+        ).plan(search_request)
+        _queue_verifier_review(search_plan, search_request)
         return attach_search_plan(
             plan, search_plan, ADAPTIVE_COMPUTE_INTEGRITY_KEY
         )
@@ -2018,13 +2044,38 @@ def _load_uncertainty_calibrator():
     return _uncertainty_calibrator
 
 
-def _load_process_reward_scorer() -> ProcessRewardScorer:
+def _load_process_reward_scorer() -> ProcessRewardScorer | EnsembleProcessRewardScorer:
     global _process_reward_scorer, _process_reward_mtime_ns
-    stat = PROCESS_REWARD_MODEL_PATH.stat()
+    path = VERIFIER_ENSEMBLE_PATH if VERIFIER_ENSEMBLE_ENABLED else PROCESS_REWARD_MODEL_PATH
+    stat = path.stat()
     if _process_reward_scorer is None or _process_reward_mtime_ns != stat.st_mtime_ns:
-        _process_reward_scorer = ProcessRewardScorer.load(PROCESS_REWARD_MODEL_PATH)
+        _process_reward_scorer = (
+            EnsembleProcessRewardScorer.load(path)
+            if VERIFIER_ENSEMBLE_ENABLED
+            else ProcessRewardScorer.load(path)
+        )
         _process_reward_mtime_ns = stat.st_mtime_ns
     return _process_reward_scorer
+
+
+def _queue_verifier_review(
+    search_plan: SearchPlan, search_request: SearchRequest
+) -> None:
+    global _verifier_review_queue
+    if not VERIFIER_ACTIVE_LEARNING_ENABLED:
+        return
+    try:
+        if _verifier_review_queue is None:
+            _verifier_review_queue = VerifierActiveLearningQueue(
+                VERIFIER_ACTIVE_LEARNING_PATH
+            )
+        _verifier_review_queue.enqueue(
+            search_plan,
+            search_request,
+            uncertainty_threshold=VERIFIER_REVIEW_UNCERTAINTY_THRESHOLD,
+        )
+    except (OSError, sqlite3.Error, ValueError):
+        logger.exception("Unable to persist verifier review candidate")
 
 
 def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float | None:

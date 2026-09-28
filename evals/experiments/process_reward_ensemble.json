@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "model_type": "bootstrapped-process-reward-ensemble",
+  "members": [
+    {
+      "schema_version": "1.0",
+      "model_type": "process-logistic-regression",
+      "feature_names": ["bias", "progress", "retrieve", "tool", "verify", "answer", "has_evidence", "citation_valid", "policy_allowed", "error", "confidence", "high_risk"],
+      "weights": [-0.5476602182030181, -0.6936600565331212, 0.3204645892991939, -0.5339347756266356, -0.014525201447385472, -0.6906570773539803, 2.520920453571378, 1.4228874719419644, 0.677448962289108, -0.5308184444222693, -0.6846792139474127, -0.25457951582589755],
+      "stopping_threshold": 0.75,
+      "temporal_discount": 0.9,
+      "training_examples": 36,
+      "human_labeled_steps": 0,
+      "dataset_fingerprint": "32a27d71c419ecc8752a9845aaeb1557202cc3383e0a8ab49e3de47d34ecb2d5",
+      "artifact_fingerprint": "c51e40ce910e8e30a31bc5487ac94094feaaf45e7e3e04590f0bbf23399b0d53"
+    },
+    {
+      "schema_version": "1.0",
+      "model_type": "process-logistic-regression",
+      "feature_names": ["bias", "progress", "retrieve", "tool", "verify", "answer", "has_evidence", "citation_valid", "policy_allowed", "error", "confidence", "high_risk"],
+      "weights": [-0.22896961079087771, -0.720200267798673, 0.3300855542971718, -0.6986626632212118, -0.2966680459649054, -0.7836658738705767, 2.021726171061067, 1.2487830063284338, 0.5607300355730866, -0.8007989186293573, -0.4586867802410677, -0.8820902744705098],
+      "stopping_threshold": 0.75,
+      "temporal_discount": 0.9,
+      "training_examples": 35,
+      "human_labeled_steps": 0,
+      "dataset_fingerprint": "55aa73cde1882d6983609fc690a147e76641e397e0e421aa36ab855820d4db59",
+      "artifact_fingerprint": "d5730020b1d58380262b9ae47ff2704ebfbdc99c83c4689d56f812a68d8ce395"
+    },
+    {
+      "schema_version": "1.0",
+      "model_type": "process-logistic-regression",
+      "feature_names": ["bias", "progress", "retrieve", "tool", "verify", "answer", "has_evidence", "citation_valid", "policy_allowed", "error", "confidence", "high_risk"],
+      "weights": [-0.31718947341632986, -0.8191147613108601, 0.3113470937568736, -0.930371086456709, -0.13918301257699067, -0.8391407051857271, 1.9638233374097094, 1.2198864823596407, 0.5963287900034024, -0.7336920622943549, -0.5207691259249034, -0.11656758923815821],
+      "stopping_threshold": 0.75,
+      "temporal_discount": 0.9,
+      "training_examples": 34,
+      "human_labeled_steps": 0,
+      "dataset_fingerprint": "1cd4040d53c8679441db2ef6226450c95a608d5f645a4c0a57138126d514efc1",
+      "artifact_fingerprint": "78c6828cb39563a1777e967aeeb8afcb7c38aa940bdcab450fc7cb5fab7e352d"
+    },
+    {
+      "schema_version": "1.0",
+      "model_type": "process-logistic-regression",
+      "feature_names": ["bias", "progress", "retrieve", "tool", "verify", "answer", "has_evidence", "citation_valid", "policy_allowed", "error", "confidence", "high_risk"],
+      "weights": [-0.42480217861554126, -0.6943950080841831, 0.3275766190237838, -0.5647263961973478, -0.13077208443240917, -0.6961752622591092, 2.369810991505573, 1.3755673400098398, 0.6247146005456226, -0.6591607202039568, -0.6090027950295638, -0.4180756235354668],
+      "stopping_threshold": 0.75,
+      "temporal_discount": 0.9,
+      "training_examples": 37,
+      "human_labeled_steps": 0,
+      "dataset_fingerprint": "8b7ce19296c6f5c48f44a5901a8cfbb1ebc640175c60992c32d2469273df6a9a",
+      "artifact_fingerprint": "5e347488c0b60a3aa07301e8a319d17cc7c0a8dff25c273e21361462ac45c11e"
+    },
+    {
+      "schema_version": "1.0",
+      "model_type": "process-logistic-regression",
+      "feature_names": ["bias", "progress", "retrieve", "tool", "verify", "answer", "has_evidence", "citation_valid", "policy_allowed", "error", "confidence", "high_risk"],
+      "weights": [-0.08440887264052908, -0.656185636557674, 0.28816646845957533, -0.37395867532137855, -0.33715938625734054, -0.8116403123565724, 1.9671964291912643, 1.2271719479494414, 0.3052919266576913, -1.0520305064177342, -0.3593358142688759, 0.0],
+      "stopping_threshold": 0.75,
+      "temporal_discount": 0.9,
+      "training_examples": 38,
+      "human_labeled_steps": 0,
+      "dataset_fingerprint": "a54394c28d66abd4d957d35f2447c6eedd186527e18e53d2289c131448bd301b",
+      "artifact_fingerprint": "d3ea247321a266647a2bcc44ae61d8a8ddf88b8a3d450bc051ed464fe91c707a"
+    }
+  ],
+  "calibration_temperature": 0.25,
+  "risk_multiplier": 1.5,
+  "disagreement_threshold": 0.08256332366696309,
+  "calibration_examples": 3,
+  "dataset_fingerprint": "e6969788b338207a3c99092d3a9cf1d26c1c9fc73d88818850de9ebf8295c578",
+  "artifact_fingerprint": "a9e96712bc98c40f6184e6dd58710182229372859378b43e5b31b3d84a9ff7c7"
+}

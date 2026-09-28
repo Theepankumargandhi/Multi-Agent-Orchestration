@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from agent.process_reward import ProcessRewardScorer, ProcessStep
+from agent.verifier_ensemble import EnsembleProcessRewardScorer, RewardEstimate
 
 SearchAction = Literal["retrieve", "reason", "verify", "answer", "abstain"]
 
@@ -83,6 +84,10 @@ class SearchPlan(BaseModel):
     terminal_action: Literal["answer", "abstain"]
     predicted_value: float
     process_reward: float = Field(ge=0, le=1)
+    verifier_mean: float = Field(default=0, ge=0, le=1)
+    verifier_uncertainty: float = Field(default=0, ge=0, le=1)
+    risk_adjusted_reward: float = Field(default=0, ge=0, le=1)
+    verifier_ood: bool = False
     tokens_planned: int = Field(ge=0)
     iterations: int = Field(ge=0)
     nodes_expanded: int = Field(ge=0)
@@ -114,6 +119,10 @@ class _Node:
     value_sum: float = 0.0
     terminal_value: float | None = None
     process_reward: float = 0.0
+    verifier_mean: float = 0.0
+    verifier_uncertainty: float = 0.0
+    risk_adjusted_reward: float = 0.0
+    verifier_ood: bool = False
 
     @property
     def mean_value(self) -> float:
@@ -125,13 +134,14 @@ class VerifierGuidedMCTS:
 
     def __init__(
         self,
-        scorer: ProcessRewardScorer,
+        scorer: ProcessRewardScorer | EnsembleProcessRewardScorer,
         policy: SearchPolicy | None = None,
     ) -> None:
         self.scorer = scorer
         self.policy = policy or SearchPolicy()
         self._unsafe_pruned = 0
         self._budget_pruned = 0
+        self._reward_cache: dict[str, RewardEstimate] = {}
 
     def _answer_safe(self, state: SearchState) -> bool:
         required_evidence = 2 if state.high_risk else 1
@@ -279,16 +289,47 @@ class VerifierGuidedMCTS:
                 simulated = self._transition(simulated, "abstain")
         return simulated
 
-    def _terminal_value(self, state: SearchState, request: SearchRequest) -> tuple[float, float]:
-        process_reward = self.scorer.score_steps(state.steps, state.high_risk)
+    def _reward_estimate(self, state: SearchState) -> RewardEstimate:
+        cache_key = _hash(
+            {
+                "steps": [step.model_dump(mode="json") for step in state.steps],
+                "high_risk": state.high_risk,
+            }
+        )
+        if cache_key in self._reward_cache:
+            return self._reward_cache[cache_key]
+        if isinstance(self.scorer, EnsembleProcessRewardScorer):
+            estimate = self.scorer.score_steps_with_uncertainty(
+                state.steps, state.high_risk
+            )
+        else:
+            score = self.scorer.score_steps(state.steps, state.high_risk)
+            estimate = RewardEstimate(
+                mean=score,
+                standard_deviation=0,
+                lower_confidence_bound=score,
+                out_of_distribution=False,
+                member_scores=[score],
+            )
+        self._reward_cache[cache_key] = estimate
+        return estimate
+
+    def _terminal_value(
+        self, state: SearchState, request: SearchRequest
+    ) -> tuple[float, RewardEstimate]:
+        estimate = self._reward_estimate(state)
         cost = self.policy.cost_penalty * state.tokens_used / request.token_budget
         if state.terminal_action == "answer":
-            if not self._answer_safe(state):
-                return -1.0, process_reward
-            value = 0.65 * process_reward + 0.35 * state.confidence - cost
-            return value, process_reward
+            if not self._answer_safe(state) or estimate.out_of_distribution:
+                return -1.0, estimate
+            value = (
+                0.65 * estimate.lower_confidence_bound
+                + 0.35 * state.confidence
+                - cost
+            )
+            return value, estimate
         # Abstention is preferable to an unsafe answer, but worse than a supported answer.
-        return 0.12 - cost, process_reward
+        return 0.12 - cost, estimate
 
     def _select_child(self, node: _Node) -> _Node:
         log_parent = math.log(max(1, node.visits))
@@ -305,6 +346,7 @@ class VerifierGuidedMCTS:
     def plan(self, request: SearchRequest) -> SearchPlan:
         self._unsafe_pruned = 0
         self._budget_pruned = 0
+        self._reward_cache = {}
         root_state = SearchState(
             evidence_count=request.evidence_count,
             confidence=request.confidence,
@@ -334,7 +376,7 @@ class VerifierGuidedMCTS:
                 unique_states.add(_hash(child_state.model_dump(mode="json")))
                 node = child
             rollout = self._rollout(node.state, request)
-            value, process_reward = self._terminal_value(rollout, request)
+            value, estimate = self._terminal_value(rollout, request)
             if rollout.terminal:
                 terminal = _Node(
                     state=rollout,
@@ -343,7 +385,11 @@ class VerifierGuidedMCTS:
                     visits=1,
                     value_sum=value,
                     terminal_value=value,
-                    process_reward=process_reward,
+                    process_reward=estimate.mean,
+                    verifier_mean=estimate.mean,
+                    verifier_uncertainty=estimate.standard_deviation,
+                    risk_adjusted_reward=estimate.lower_confidence_bound,
+                    verifier_ood=estimate.out_of_distribution,
                 )
                 terminal_nodes.append(terminal)
                 unique_states.add(_hash(rollout.model_dump(mode="json")))
@@ -355,14 +401,18 @@ class VerifierGuidedMCTS:
             completed_iterations += 1
         if not terminal_nodes:
             fallback = self._transition(root_state, "abstain")
-            value, process_reward = self._terminal_value(fallback, request)
+            value, estimate = self._terminal_value(fallback, request)
             terminal_nodes.append(
                 _Node(
                     state=fallback,
                     visits=1,
                     value_sum=value,
                     terminal_value=value,
-                    process_reward=process_reward,
+                    process_reward=estimate.mean,
+                    verifier_mean=estimate.mean,
+                    verifier_uncertainty=estimate.standard_deviation,
+                    risk_adjusted_reward=estimate.lower_confidence_bound,
+                    verifier_ood=estimate.out_of_distribution,
                 )
             )
         best = max(
@@ -383,6 +433,10 @@ class VerifierGuidedMCTS:
             terminal_action=best.state.terminal_action or "abstain",
             predicted_value=best.terminal_value or 0.0,
             process_reward=best.process_reward,
+            verifier_mean=best.verifier_mean,
+            verifier_uncertainty=best.verifier_uncertainty,
+            risk_adjusted_reward=best.risk_adjusted_reward,
+            verifier_ood=best.verifier_ood,
             tokens_planned=best.state.tokens_used,
             iterations=completed_iterations,
             nodes_expanded=len(nodes),
