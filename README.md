@@ -73,13 +73,19 @@ flowchart TD
     Search --> PRM[Calibrated process-reward ensemble]
     PRM -->|verified plan| Candidates[Generate and verify real answer candidates]
     Candidates --> Consensus[Bounded consensus selection]
-    Consensus --> Final
-    Consensus -->|consented candidate metadata| Replay[(Private execution replay)]
+    Consensus --> Preferences[Optional reviewed preference reranking]
+    Preferences -->|supported margin or baseline fallback| Final
+    Preferences -->|consented candidate metadata| Replay[(Private execution replay)]
     Replay --> Outcome[Delayed correctness and safety review]
     Outcome --> Calibrate[Request-group held-out calibration gate]
+    Outcome --> PreferenceTrain[Family-grouped Bradley-Terry training]
+    PreferenceTrain --> PreferenceGate[Future holdout risk and utility gate]
+    PreferenceGate --> PreferenceCandidate[Owner-reviewed tenant-bound ranker]
+    PreferenceCandidate --> Preferences
     Outcome -->|optional stronger evaluation| Cohort[Frozen forward-time task-family cohort]
     Cohort --> Prospective[Drift and paired incumbent checks]
     HoldoutLedger[(One-use holdout ledger)] --> Prospective
+    HoldoutLedger --> PreferenceGate
     Prospective --> CandidateArtifact
     Calibrate --> CandidateArtifact[Candidate calibrator for owner review]
     PRM -->|bad reasoning step or no consensus| Abstain
@@ -119,6 +125,7 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Test-time compute | Confidence-aware early exit, offline-RL or search-distilled PUCT priors, learned action-conditioned world-model rollouts, calibrated PRM ensembles, uncertainty penalties, OOD fallback/abstention, active learning, and measured quality/compute curves |
 | Execution-to-learning loop | Consented content-free candidate observations, keyed tenant isolation, immutable delayed labels, request-grouped calibration/test splits, coverage/risk gates, and candidate-only recalibration |
 | Prospective AI validation | Pre-execution task-family IDs, frozen chronological cohorts, embargo and label-availability cutoffs, one-use family exposure tracking, live-lineage checks, distribution-shift holds, and paired bootstrap comparisons |
+| Preference learning | Human-reviewed candidate pairs, family-bootstrap Bradley–Terry metadata reward models, training-only feature scaling, conservative margin/OOD fallback, tenant-bound artifacts, safety-gated runtime reranking, and future-family evaluation |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
 | Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
@@ -159,7 +166,7 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **302 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
+The repository currently contains **330 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
 
 | Module | Focused coverage |
 |---|---:|
@@ -348,6 +355,7 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 - Verifier-ensemble shift results use one controlled behaviorally inverted member and only three calibration traces. They validate disagreement detection, conservative scoring, and active-learning plumbing—not production OOD coverage.
 - Learned world-model results use a small, mostly authored transition dataset. They validate action-conditioned prediction, conservative rollouts, artifact integrity, and OOD abstention—not general real-world environment modeling.
 - Conservative offline-RL results use eight authored test episodes with synthetic propensities. They validate CQL, sequential off-policy estimators, PUCT priors, safety masking, and promotion plumbing—not real-traffic policy lift.
+- Reviewed preference reranking learns metadata correlations, not answer semantics. Its synthetic 40-family test demonstrates selection and OOD fallback; offline pools do not reconstruct every live eligibility/PRM decision, so the result is not an end-to-end factuality or live-selector improvement claim.
 
 These boundaries are intentional. Good AI engineering includes knowing what the evidence supports—and what it does not.
 
@@ -375,6 +383,7 @@ When using this project in a resume or interview, lead with one measurable workf
 - [Search policy distillation and compute curves](docs/search-policy-distillation.md)
 - [Execution feedback and gated recalibration](docs/execution-feedback-calibration.md)
 - [Forward-time AI validation and holdout governance](docs/prospective-ai-validation.md)
+- [Reviewed preference learning and conservative reranking](docs/reviewed-preference-reranking.md)
 - [Agent memory](docs/agent-memory.md)
 - [Inference gateway](docs/inference-gateway.md)
 - [Online AI governance](docs/online-ai-governance.md)

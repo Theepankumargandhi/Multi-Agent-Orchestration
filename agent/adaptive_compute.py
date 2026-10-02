@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
 from agent.search_planner import SearchPlan
+
+if TYPE_CHECKING:
+    from agent.preference_ranking import PreferenceRanker
 
 
 def _canonical(value: object) -> bytes:
@@ -103,7 +106,16 @@ class DeliberationReceipt(BaseModel):
     selected_consensus: float = 0
     reason: str
     candidate_summaries: list[CandidateSummary]
+    preference_ranking: dict | None = None
     receipt_fingerprint: str = ""
+
+
+def _receipt_payload(receipt: DeliberationReceipt) -> dict:
+    # Preserve verification of pre-upgrade receipts with no ranking extension.
+    excluded = {"receipt_fingerprint"}
+    if receipt.preference_ranking is None:
+        excluded.add("preference_ranking")
+    return receipt.model_dump(mode="json", exclude=excluded)
 
 
 def plan_compute(
@@ -240,12 +252,16 @@ def select_candidate(
     policy: ComputePolicy | None = None,
     integrity_key: bytes | None = None,
     attempted_candidates: int | None = None,
+    preference_ranker: PreferenceRanker | None = None,
+    preference_unavailable: bool = False,
 ) -> DeliberationReceipt:
     policy = policy or ComputePolicy()
     if not verify_plan(plan, integrity_key):
         raise ValueError("adaptive compute plan integrity verification failed")
     if plan.action != "deliberate":
         raise ValueError("candidate selection requires a deliberation plan")
+    if len({item.candidate_id for item in candidates}) != len(candidates):
+        raise ValueError("duplicate candidate IDs")
 
     evaluated: list[CandidateAssessment] = []
     extra_tokens = 0
@@ -296,6 +312,37 @@ def select_candidate(
         ),
         default=None,
     )
+    ranking = None
+    if selected is not None and preference_ranker is not None:
+        from agent.preference_ranking import RankingCandidate
+
+        try:
+            decision = preference_ranker.rank(
+                [
+                    RankingCandidate(
+                        candidate_id=item.candidate_id,
+                        confidence=item.confidence,
+                        token_count=item.token_count,
+                        latency_ms=item.latency_ms,
+                    )
+                    for item in releasable
+                ],
+                selected.candidate_id,
+                route=plan.route,
+                high_risk=plan.high_risk,
+            )
+            # Recheck membership: a ranker can never add an ineligible candidate.
+            selected = next(item for item in releasable if item.candidate_id == decision.selected_candidate_id)
+            ranking = decision.model_dump(mode="json")
+        except (ValueError, StopIteration):
+            preference_unavailable = True
+    if selected is not None and preference_unavailable:
+        ranking = {
+            "status": "fallback",
+            "reason": "preference_ranker_unavailable",
+            "baseline_candidate_id": selected.candidate_id,
+            "selected_candidate_id": selected.candidate_id,
+        }
     if selected is not None:
         status, reason = "released", "grounded_conformal_consensus_reached"
     elif exhausted:
@@ -332,15 +379,16 @@ def select_candidate(
         selected_consensus=round(consensus[selected.candidate_id], 6) if selected else 0,
         reason=reason,
         candidate_summaries=summaries,
+        preference_ranking=ranking,
     )
     receipt.receipt_fingerprint = _fingerprint(
-        receipt.model_dump(mode="json", exclude={"receipt_fingerprint"}), integrity_key
+        _receipt_payload(receipt), integrity_key
     )
     return receipt
 
 
 def verify_receipt(receipt: DeliberationReceipt, integrity_key: bytes | None = None) -> bool:
     expected = _fingerprint(
-        receipt.model_dump(mode="json", exclude={"receipt_fingerprint"}), integrity_key
+        _receipt_payload(receipt), integrity_key
     )
     return hmac.compare_digest(receipt.receipt_fingerprint, expected)

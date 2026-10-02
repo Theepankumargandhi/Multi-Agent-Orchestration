@@ -307,6 +307,13 @@ class HoldoutLedger:
     def reserve(self, study_id: str, cohort: FrozenCohort) -> dict | None:
         cohort.verify(self.key)
         families = sorted(member.task_family for member in cohort.members if member.example.split == "test")
+        return self.reserve_families(study_id, cohort.fingerprint, families)
+
+    def reserve_families(self, study_id: str, cohort_fingerprint: str, families: list[str]) -> dict | None:
+        """Shared exposure ledger for independently verified evaluation cohorts."""
+        families = sorted(families)
+        if len(set(families)) != len(families):
+            raise ValueError("duplicate held-out families")
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             # Missing exposure rows must not silently permit reuse in a new study.
@@ -315,7 +322,7 @@ class HoldoutLedger:
             existing = db.execute("SELECT 1 FROM studies WHERE study_id=?", (study_id,)).fetchone()
             if existing:
                 ticket = self._ticket(db, study_id)
-                if ticket.cohort_fingerprint != cohort.fingerprint or ticket.test_families != families:
+                if ticket.cohort_fingerprint != cohort_fingerprint or ticket.test_families != families:
                     raise ValueError("conflicting holdout study retry")
                 if ticket.status == "pending":
                     raise ValueError("holdout study pending; operator audit required")
@@ -326,7 +333,7 @@ class HoldoutLedger:
                     self._ticket(db, exposed[0])
                     raise ValueError("held-out task family already exposed; collect fresh families")
             ticket = StudyTicket(
-                study_id=study_id, cohort_fingerprint=cohort.fingerprint, test_families=families
+                study_id=study_id, cohort_fingerprint=cohort_fingerprint, test_families=families
             ).seal(self.key)
             db.execute("INSERT INTO studies VALUES (?, ?)", (study_id, ticket.model_dump_json()))
             db.executemany("INSERT INTO exposures VALUES (?, ?)", [(family, study_id) for family in families])

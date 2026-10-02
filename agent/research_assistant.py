@@ -58,6 +58,7 @@ from agent.model_gateway import (
 )
 from agent.offline_rl import ConservativePlanningPolicy
 from agent.online_evaluation import append_online_event, event_from_gateway_receipt
+from agent.preference_ranking import PreferenceRanker
 from agent.process_reward import ProcessRewardScorer, ProcessStep
 from agent.search_planner import SearchPlan, SearchPolicy, SearchRequest, VerifierGuidedMCTS
 from agent.tools import perform_web_search
@@ -338,6 +339,11 @@ EXECUTION_REPLAY_ENABLED = os.getenv("EXECUTION_REPLAY_ENABLED", "false").strip(
 }
 EXECUTION_REPLAY_PATH = Path(os.getenv("EXECUTION_REPLAY_PATH", "data/execution-replay/replay.sqlite3"))
 EXECUTION_REPLAY_KEY = os.getenv("EXECUTION_REPLAY_KEY", "").encode()
+PREFERENCE_RANKING_ENABLED = os.getenv("PREFERENCE_RANKING_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+PREFERENCE_RANKING_PATH = Path(os.getenv("PREFERENCE_RANKING_PATH", "data/evaluations/preferences/active.json"))
+PREFERENCE_RANKING_KEY = os.getenv("PREFERENCE_RANKING_KEY", "").encode()
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -2372,12 +2378,26 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
                 type(exc).__name__,
             )
 
+    ranker, ranker_unavailable = None, False
+    if PREFERENCE_RANKING_ENABLED:
+        tenant = str((config.get("configurable") or {}).get("user_id") or "").strip()
+        try:
+            if not tenant:
+                raise ValueError("preference ranking requires tenant identity")
+            ranker = await asyncio.to_thread(
+                PreferenceRanker.load, PREFERENCE_RANKING_PATH, PREFERENCE_RANKING_KEY, tenant,
+            )
+        except (OSError, ValueError):
+            logger.warning("preference_ranker_unavailable; preserving existing release policy")
+            ranker_unavailable = True
     receipt = select_candidate(
         plan,
         candidates,
         policy,
         ADAPTIVE_COMPUTE_INTEGRITY_KEY,
         attempted_calls,
+        preference_ranker=ranker,
+        preference_unavailable=ranker_unavailable,
     )
     replay_event_ids = await _capture_execution_replay(plan, receipt, config)
     selected = candidate_outputs.get(receipt.selected_candidate_id)
