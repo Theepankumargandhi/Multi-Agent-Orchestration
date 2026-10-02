@@ -101,3 +101,7 @@ and a separate dynamics OOD gate.
 The optional [conservative offline-RL policy](conservative-offline-rl-planning.md) replaces uniform
 tree priors with safety-masked Q-value lower bounds and PUCT, while retaining uniform priors as the
 OOD fallback.
+
+The [distilled search policy](search-policy-distillation.md) is another PUCT prior option. A small
+softmax head learns the teacher's root visit distribution and is evaluated against uniform search
+across four compute budgets, with independent safety replay and teacher/model lineage checks.

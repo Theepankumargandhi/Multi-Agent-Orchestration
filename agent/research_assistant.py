@@ -32,6 +32,7 @@ from agent.adaptive_compute import (
     select_candidate,
     verify_plan,
 )
+from agent.distilled_policy import DistilledPlanningPolicy
 from agent.evidence_quality import EvidenceQualityPolicy, adjudicate_evidence
 from agent.grounding import (
     GroundingPolicy,
@@ -322,6 +323,14 @@ _world_model = None
 _world_model_mtime_ns = -1
 _offline_rl_policy = None
 _offline_rl_policy_mtime_ns = -1
+SEARCH_DISTILLATION_ENABLED = os.getenv(
+    "SEARCH_DISTILLATION_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+SEARCH_DISTILLATION_PATH = Path(os.getenv(
+    "SEARCH_DISTILLATION_PATH", "data/evaluations/distillation/policy.json"
+))
+_distilled_policy = None
+_distilled_policy_mtime_ns = -1
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -2042,6 +2051,7 @@ def _adaptive_compute_plan(
             planning_policy=(
                 _load_offline_rl_policy() if OFFLINE_RL_POLICY_ENABLED else None
             ),
+            distilled_policy=_load_distilled_policy() if SEARCH_DISTILLATION_ENABLED else None,
         ).plan(search_request)
         _queue_verifier_review(search_plan, search_request)
         return attach_search_plan(
@@ -2125,6 +2135,15 @@ def _load_offline_rl_policy() -> ConservativePlanningPolicy:
         _offline_rl_policy = ConservativePlanningPolicy.load(OFFLINE_RL_POLICY_PATH)
         _offline_rl_policy_mtime_ns = stat.st_mtime_ns
     return _offline_rl_policy
+
+
+def _load_distilled_policy() -> DistilledPlanningPolicy:
+    global _distilled_policy, _distilled_policy_mtime_ns
+    stat = SEARCH_DISTILLATION_PATH.stat()
+    if _distilled_policy is None or _distilled_policy_mtime_ns != stat.st_mtime_ns:
+        _distilled_policy = DistilledPlanningPolicy.load(SEARCH_DISTILLATION_PATH)
+        _distilled_policy_mtime_ns = stat.st_mtime_ns
+    return _distilled_policy
 
 
 def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float | None:

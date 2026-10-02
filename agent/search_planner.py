@@ -10,6 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agent.distilled_policy import DistillationContext, DistilledPlanningPolicy
 from agent.offline_rl import ConservativePlanningPolicy, PlanningState
 from agent.process_reward import ProcessRewardScorer, ProcessStep
 from agent.verifier_ensemble import EnsembleProcessRewardScorer, RewardEstimate
@@ -99,7 +100,11 @@ class SearchPlan(BaseModel):
     world_model_max_uncertainty: float = Field(default=0, ge=0)
     world_model_ood: bool = False
     transition_success_lcb: float = Field(default=1, ge=0, le=1)
-    tree_policy_strategy: Literal["uct", "offline_rl_puct"] = "uct"
+    tree_policy_strategy: Literal["uct", "offline_rl_puct", "distilled_puct"] = "uct"
+    distilled_policy_fingerprint: str = ""
+    distilled_policy_fallbacks: int = Field(default=0, ge=0)
+    distilled_policy_max_entropy: float = Field(default=0, ge=0, le=1)
+    reward_evaluations: int = Field(default=0, ge=0)
     offline_rl_policy_fingerprint: str = ""
     offline_rl_max_uncertainty: float = Field(default=0, ge=0)
     offline_rl_ood: bool = False
@@ -154,16 +159,28 @@ class VerifierGuidedMCTS:
         policy: SearchPolicy | None = None,
         world_model: AgentWorldModel | None = None,
         planning_policy: ConservativePlanningPolicy | None = None,
+        distilled_policy: DistilledPlanningPolicy | None = None,
     ) -> None:
+        if planning_policy is not None and distilled_policy is not None:
+            raise ValueError("choose either offline-RL or distilled planning priors")
+        if (
+            distilled_policy is not None
+            and scorer.artifact.artifact_fingerprint
+            not in distilled_policy.artifact.teacher_model_fingerprints
+        ):
+            raise ValueError("distilled-policy teacher scorer mismatch")
         self.scorer = scorer
         self.policy = policy or SearchPolicy()
         self.world_model = world_model
         self.planning_policy = planning_policy
+        self.distilled_policy = distilled_policy
         self._unsafe_pruned = 0
         self._budget_pruned = 0
         self._reward_cache: dict[str, RewardEstimate] = {}
         self._offline_rl_max_uncertainty = 0.0
         self._offline_rl_ood = False
+        self._distilled_fallbacks = 0
+        self._distilled_max_entropy = 0.0
 
     def _action_priors(
         self,
@@ -173,6 +190,25 @@ class VerifierGuidedMCTS:
     ) -> dict[SearchAction, float]:
         if not actions:
             return {}
+        if self.distilled_policy is not None:
+            estimate = self.distilled_policy.priors(
+                DistillationContext(
+                    route=request.route,
+                    confidence=state.confidence,
+                    evidence_count=state.evidence_count,
+                    reasoned=state.reasoned,
+                    verified=state.verified,
+                    high_risk=state.high_risk,
+                    retrieval_available=request.retrieval_available,
+                    verification_available=request.verification_available,
+                    remaining_tokens=max(0, request.token_budget - state.tokens_used),
+                    remaining_retrievals=max(0, request.max_additional_evidence - state.retrieved),
+                    legal_actions=actions,
+                )
+            )
+            self._distilled_fallbacks += int(estimate.fallback)
+            self._distilled_max_entropy = max(self._distilled_max_entropy, estimate.normalized_entropy)
+            return estimate.probabilities
         if self.planning_policy is None:
             return {action: 1 / len(actions) for action in actions}
         estimate = self.planning_policy.priors(
@@ -427,7 +463,7 @@ class VerifierGuidedMCTS:
         return 0.12 - cost, estimate
 
     def _select_child(self, node: _Node) -> _Node:
-        if self.planning_policy is not None:
+        if self.planning_policy is not None or self.distilled_policy is not None:
             return max(
                 node.children.values(),
                 key=lambda child: (
@@ -456,6 +492,8 @@ class VerifierGuidedMCTS:
         self._reward_cache = {}
         self._offline_rl_max_uncertainty = 0.0
         self._offline_rl_ood = False
+        self._distilled_fallbacks = 0
+        self._distilled_max_entropy = 0.0
         root_state = SearchState(
             evidence_count=request.evidence_count,
             confidence=request.confidence,
@@ -562,8 +600,16 @@ class VerifierGuidedMCTS:
             world_model_ood=best.state.world_model_ood,
             transition_success_lcb=best.state.transition_success_lcb,
             tree_policy_strategy=(
-                "offline_rl_puct" if self.planning_policy is not None else "uct"
+                "distilled_puct" if self.distilled_policy is not None
+                else "offline_rl_puct" if self.planning_policy is not None else "uct"
             ),
+            distilled_policy_fingerprint=(
+                self.distilled_policy.artifact.artifact_fingerprint
+                if self.distilled_policy is not None else ""
+            ),
+            distilled_policy_fallbacks=self._distilled_fallbacks,
+            distilled_policy_max_entropy=self._distilled_max_entropy,
+            reward_evaluations=len(self._reward_cache),
             offline_rl_policy_fingerprint=(
                 self.planning_policy.artifact.artifact_fingerprint
                 if self.planning_policy is not None

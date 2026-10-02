@@ -97,6 +97,7 @@ jobs:
           python -m evals.verifier_uncertainty_evaluation --artifact data/evaluations/verifier-uncertainty/ensemble.json --output data/evaluations/verifier-uncertainty/report.json --check-artifact evals/experiments/process_reward_ensemble.json --check-report evals/experiments/verifier_uncertainty.report.json --require-promotion
           python -m evals.world_model_evaluation --artifact data/evaluations/world-model/world-model.json --output data/evaluations/world-model/report.json --require-promotion
           python -m evals.offline_rl_evaluation --artifact data/evaluations/offline-rl/offline-rl-policy.json --output data/evaluations/offline-rl/report.json --require-promotion
+          python -m evals.distillation_evaluation --require-promotion
           python -m evals.flywheel --help
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
@@ -225,6 +226,13 @@ jobs:
         with:
           name: conservative-offline-rl-evaluation
           path: data/evaluations/offline-rl/report.json
+          if-no-files-found: error
+
+      - name: Upload distilled planning compute curves
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-policy-distillation
+          path: data/evaluations/distillation/
           if-no-files-found: error
 
       - name: Upload verifier-guided search ablation

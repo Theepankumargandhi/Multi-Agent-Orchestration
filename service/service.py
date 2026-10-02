@@ -1134,6 +1134,9 @@ async def capabilities():
                 os.getenv("OFFLINE_RL_POLICY_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}
             ),
+            "search_policy_distillation": os.getenv(
+                "SEARCH_DISTILLATION_ENABLED", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"},
             "uncertainty_aware_verifier_ensemble": bool(
                 os.getenv("VERIFIER_ENSEMBLE_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}

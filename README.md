@@ -67,6 +67,7 @@ flowchart TD
     Uncertainty -->|recoverable uncertainty| Compute[Adaptive compute controller]
     Compute --> Search[Verifier-guided bounded MCTS]
     OfflineRL[Conservative offline-RL action prior] --> Search
+    Student[Distilled search policy alternative] --> Search
     Search -->|simulate typed action| World[Learned transition world model]
     World -->|next-state LCB, success, or OOD| Search
     Search --> PRM[Calibrated process-reward ensemble]
@@ -105,7 +106,7 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, hard-negative learning-to-rank, caching, and retrieval ablations |
 | Evidence intelligence | Prompt-injection quarantine, source-independence checks, cross-domain duplicate detection, freshness policy, and numeric/negation conflict graphs |
 | Trustworthy generation | Claim-to-evidence alignment, citation allowlisting, high-risk thresholds, conformal selective answering, and fail-closed abstention |
-| Test-time compute | Confidence-aware early exit, offline-RL-guided PUCT, learned action-conditioned world-model rollouts, calibrated PRM ensembles, epistemic-uncertainty penalties, OOD fallback/abstention, active learning, unsafe-branch pruning, and token/node/call/latency budgets |
+| Test-time compute | Confidence-aware early exit, offline-RL or search-distilled PUCT priors, learned action-conditioned world-model rollouts, calibrated PRM ensembles, uncertainty penalties, OOD fallback/abstention, active learning, and measured quality/compute curves |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
 | Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
@@ -146,7 +147,7 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **255 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
+The repository currently contains **263 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
 
 | Module | Focused coverage |
 |---|---:|
@@ -173,6 +174,7 @@ python -m evals.search_planning_evaluation --check evals/experiments/search_plan
 python -m evals.verifier_uncertainty_evaluation --check-artifact evals/experiments/process_reward_ensemble.json --check-report evals/experiments/verifier_uncertainty.report.json --require-promotion
 python -m evals.world_model_evaluation --require-promotion
 python -m evals.offline_rl_evaluation --require-promotion
+python -m evals.distillation_evaluation --require-promotion
 ruff check agent client code_agent evals post_training schema service tests
 python -m pip check
 ```
@@ -356,6 +358,7 @@ When using this project in a resume or interview, lead with one measurable workf
 - [Uncertainty-aware verifier ensemble](docs/verifier-uncertainty.md)
 - [Learned world-model planning](docs/learned-world-model-planning.md)
 - [Conservative offline-RL planning](docs/conservative-offline-rl-planning.md)
+- [Search policy distillation and compute curves](docs/search-policy-distillation.md)
 - [Agent memory](docs/agent-memory.md)
 - [Inference gateway](docs/inference-gateway.md)
 - [Online AI governance](docs/online-ai-governance.md)

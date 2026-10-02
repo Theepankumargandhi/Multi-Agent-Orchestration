@@ -229,6 +229,15 @@ eight-episode holdout, mean behavior return is `0.2825`; estimated target return
 zero behavior-support violations, and zero actions outside the safety mask. These are deterministic integration results with synthetic
 propensities, not evidence of real-traffic policy improvement.
 
+Search policy distillation adds a smaller prior model trained from the planner's own visit counts.
+Training and validation states are generated independently of the frozen ten-case test suite.
+Validation KL drops from `0.1809` for uniform priors to `0.0142`. Both uniform and distilled search
+solve every scenario at 8, 16, 32 and 96 iterations. At 32 iterations the distilled policy reduces
+distinct reward evaluations from 4.2 to 3.6 per case and expanded nodes from 7.0 to 6.2, with no
+safety or token-budget failures. At eight iterations the baseline already matches teacher quality,
+so this study records no iteration-budget advantage. The compute curve makes this limitation
+visible instead of turning a narrow score-evaluation reduction into a latency or live-model claim.
+
 ## Evidence-intelligence and conflict-control evidence
 
 An optional 18th graph node now evaluates retrieved material before answer generation. It quarantines
