@@ -2427,6 +2427,8 @@ async def _capture_execution_replay(plan, receipt, config: RunnableConfig) -> li
         return store.capture(
             plan, receipt, tenant=tenant, request_id=request_id, consent=consent,
             compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY,
+            task_family=configurable.get("execution_replay_task_family"),
+            task_family_fingerprint=configurable.get("execution_replay_task_family_fingerprint"),
         )
 
     try:

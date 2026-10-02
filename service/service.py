@@ -27,6 +27,7 @@ from langsmith import Client as LangsmithClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from agent import build_research_assistant
+from agent.execution_replay import digest
 from agent.mcp_client import close_mcp_client
 from agent.memory import (
     MemoryCandidate,
@@ -1418,6 +1419,14 @@ def _parse_input(
     config["configurable"]["model_selection"] = model_selection
     config["configurable"]["execution_replay_consent"] = user_input.execution_replay_consent
     config["configurable"]["execution_replay_request_id"] = str(run_id)
+    replay_key = os.getenv("EXECUTION_REPLAY_KEY", "").encode()
+    family = user_input.execution_replay_task_family
+    # Do not put a raw family ID into graph/checkpoint/tracing configuration.
+    config["configurable"]["execution_replay_task_family_fingerprint"] = (
+        digest(replay_key, "task-family", [config["configurable"]["user_id"], family])
+        if family and user_input.execution_replay_consent and len(replay_key) >= 32
+        else None
+    )
     config["run_id"] = run_id
     kwargs = dict(
         input=(Command(resume=resume_value) if resume_value is not None else {"messages": [input_message.to_langchain()]}),

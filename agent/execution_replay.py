@@ -15,7 +15,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,22 +59,32 @@ class ReviewLabel(BaseModel):
     fingerprint: str = ""
 
 
-def _seal(item: Observation | ReviewLabel, key: bytes):
+class RequestFamily(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    request_group: str = Field(pattern=r"^[a-f0-9]{64}$")
+    tenant: str = Field(pattern=r"^[a-f0-9]{64}$")
+    task_family: str = Field(default="", pattern=r"^(|[a-f0-9]{64})$")
+    captured_at: float = Field(ge=0)
+    fingerprint: str = ""
+
+
+def _seal(item: Observation | ReviewLabel | RequestFamily, key: bytes):
     item.fingerprint = digest(key, type(item).__name__, item.model_dump(exclude={"fingerprint"}))
     return item
 
 
-def _verify(item: Observation | ReviewLabel, key: bytes) -> None:
+def _verify(item: Observation | ReviewLabel | RequestFamily, key: bytes) -> None:
     expected = digest(key, type(item).__name__, item.model_dump(exclude={"fingerprint"}))
     if not hmac.compare_digest(expected, item.fingerprint):
         raise ValueError("replay integrity verification failed")
 
 
 class ExecutionReplayStore:
-    def __init__(self, path: str | Path, key: bytes):
+    def __init__(self, path: str | Path, key: bytes, *, clock: Callable[[], float] | None = None):
         if len(key) < 32:
             raise ValueError("replay requires an independent key of at least 32 bytes")
         self.path, self.key = Path(path), key
+        self.clock = clock or time.time
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.execute("PRAGMA journal_mode=WAL")
@@ -84,6 +94,9 @@ class ExecutionReplayStore:
             db.execute("CREATE INDEX IF NOT EXISTS replay_tenant ON observations(tenant)")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS labels (event_id TEXT PRIMARY KEY REFERENCES observations(event_id) ON DELETE CASCADE, payload TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS request_families (request_group TEXT PRIMARY KEY, tenant TEXT NOT NULL, payload TEXT NOT NULL)"
             )
 
     @contextmanager
@@ -106,6 +119,8 @@ class ExecutionReplayStore:
         consent: bool,
         compute_key: bytes | None = None,
         origin: Literal["runtime", "synthetic"] = "runtime",
+        task_family: str | None = None,
+        task_family_fingerprint: str | None = None,
     ) -> list[str]:
         if consent is not True or not tenant.strip() or not request_id.strip():
             return []
@@ -113,6 +128,10 @@ class ExecutionReplayStore:
             raise ValueError("compute integrity verification failed")
         if receipt.plan_fingerprint != plan.plan_fingerprint:
             raise ValueError("receipt does not belong to plan")
+        if task_family is not None and (not task_family.strip() or len(task_family) > 128):
+            raise ValueError("task family must contain 1 to 128 characters")
+        if task_family is not None and task_family_fingerprint is not None:
+            raise ValueError("provide a raw family ID or a prehashed family, not both")
         group = digest(self.key, "request", [tenant, request_id])
         tenant_hash = digest(self.key, "tenant", tenant)
         rows = []
@@ -133,7 +152,7 @@ class ExecutionReplayStore:
                     selected=summary.candidate_id == receipt.selected_candidate_id,
                     estimated_output_tokens=summary.token_count,
                     latency_ms=summary.latency_ms,
-                    observed_at=time.time(),
+                    observed_at=self.clock(),
                 ),
                 self.key,
             )
@@ -141,6 +160,49 @@ class ExecutionReplayStore:
         if len({row.event_id for row in rows}) != len(rows):
             raise ValueError("duplicate candidate identities")
         with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if rows:
+                family_hash = (
+                    task_family_fingerprint
+                    if task_family_fingerprint is not None
+                    else digest(self.key, "task-family", [tenant, task_family.strip()])
+                    if task_family
+                    else ""
+                )
+                existing_family = db.execute(
+                    "SELECT payload FROM request_families WHERE request_group=?", (group,)
+                ).fetchone()
+                if existing_family:
+                    previous_family = RequestFamily.model_validate_json(existing_family[0])
+                    _verify(previous_family, self.key)
+                    if previous_family.request_group != group or previous_family.tenant != tenant_hash:
+                        raise ValueError("family index integrity verification failed")
+                    if (
+                        task_family is not None or task_family_fingerprint is not None
+                    ) and previous_family.task_family != family_hash:
+                        raise ValueError("task family is immutable after first capture")
+                else:
+                    # Legacy observations remain valid but cannot acquire a family
+                    # after their outcomes have already been observed/reviewed.
+                    legacy = db.execute(
+                        "SELECT 1 FROM observations WHERE tenant=? AND json_extract(payload, '$.request_group')=? LIMIT 1",
+                        (tenant_hash, group),
+                    ).fetchone()
+                    if legacy and family_hash:
+                        raise ValueError("task family must be assigned at first capture")
+                    family = _seal(
+                        RequestFamily(
+                            request_group=group,
+                            tenant=tenant_hash,
+                            task_family=family_hash,
+                            captured_at=min(row.observed_at for row in rows),
+                        ),
+                        self.key,
+                    )
+                    db.execute(
+                        "INSERT INTO request_families VALUES (?, ?, ?)",
+                        (group, tenant_hash, family.model_dump_json()),
+                    )
             for event in rows:
                 existing = db.execute(
                     "SELECT payload FROM observations WHERE event_id=?", (event.event_id,)
@@ -159,12 +221,29 @@ class ExecutionReplayStore:
         return [row.event_id for row in rows]
 
     def records(self, tenant: str) -> list[tuple[Observation, ReviewLabel | None]]:
+        return self.snapshot(tenant)[0]
+
+    def snapshot(
+        self, tenant: str
+    ) -> tuple[list[tuple[Observation, ReviewLabel | None]], dict[str, RequestFamily]]:
+        """Observations, labels and family assignments from one read transaction."""
         tenant_hash = digest(self.key, "tenant", tenant)
         with self._db() as db:
+            db.execute("BEGIN")
             rows = db.execute(
                 "SELECT o.event_id, o.payload, l.payload FROM observations o LEFT JOIN labels l ON o.event_id=l.event_id WHERE o.tenant=? ORDER BY o.event_id",
                 (tenant_hash,),
             ).fetchall()
+            family_rows = db.execute(
+                "SELECT request_group, payload FROM request_families WHERE tenant=?", (tenant_hash,)
+            ).fetchall()
+        families = {}
+        for group, payload in family_rows:
+            family = RequestFamily.model_validate_json(payload)
+            _verify(family, self.key)
+            if group != family.request_group or family.tenant != tenant_hash:
+                raise ValueError("family index integrity verification failed")
+            families[group] = family
         result = []
         for event_id, payload, label_payload in rows:
             event = Observation.model_validate_json(payload)
@@ -177,7 +256,7 @@ class ExecutionReplayStore:
                 if label.event_id != event_id or label.observation_fingerprint != event.fingerprint:
                     raise ValueError("label observation binding failed")
             result.append((event, label))
-        return result
+        return result, families
 
     def review(self, tenant: str, event_id: str, *, verdict: str, unsafe: bool, reviewer: str) -> ReviewLabel:
         if not reviewer.strip():
@@ -202,7 +281,7 @@ class ExecutionReplayStore:
                     verdict=verdict,
                     unsafe=unsafe,
                     reviewer=digest(self.key, "reviewer", reviewer),
-                    reviewed_at=time.time(),
+                    reviewed_at=self.clock(),
                 ),
                 self.key,
             )
@@ -219,6 +298,7 @@ class ExecutionReplayStore:
 
     def delete_tenant(self, tenant: str) -> int:
         with self._db() as db:
+            db.execute("DELETE FROM request_families WHERE tenant=?", (digest(self.key, "tenant", tenant),))
             return db.execute(
                 "DELETE FROM observations WHERE tenant=?", (digest(self.key, "tenant", tenant),)
             ).rowcount

@@ -77,6 +77,10 @@ flowchart TD
     Consensus -->|consented candidate metadata| Replay[(Private execution replay)]
     Replay --> Outcome[Delayed correctness and safety review]
     Outcome --> Calibrate[Request-group held-out calibration gate]
+    Outcome -->|optional stronger evaluation| Cohort[Frozen forward-time task-family cohort]
+    Cohort --> Prospective[Drift and paired incumbent checks]
+    HoldoutLedger[(One-use holdout ledger)] --> Prospective
+    Prospective --> CandidateArtifact
     Calibrate --> CandidateArtifact[Candidate calibrator for owner review]
     PRM -->|bad reasoning step or no consensus| Abstain
     PRM -->|ensemble disagreement or OOD| ReviewQueue[(Private verifier review queue)]
@@ -114,6 +118,7 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Trustworthy generation | Claim-to-evidence alignment, citation allowlisting, high-risk thresholds, conformal selective answering, and fail-closed abstention |
 | Test-time compute | Confidence-aware early exit, offline-RL or search-distilled PUCT priors, learned action-conditioned world-model rollouts, calibrated PRM ensembles, uncertainty penalties, OOD fallback/abstention, active learning, and measured quality/compute curves |
 | Execution-to-learning loop | Consented content-free candidate observations, keyed tenant isolation, immutable delayed labels, request-grouped calibration/test splits, coverage/risk gates, and candidate-only recalibration |
+| Prospective AI validation | Pre-execution task-family IDs, frozen chronological cohorts, embargo and label-availability cutoffs, one-use family exposure tracking, live-lineage checks, distribution-shift holds, and paired bootstrap comparisons |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
 | Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
@@ -154,7 +159,7 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **284 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
+The repository currently contains **302 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
 
 | Module | Focused coverage |
 |---|---:|
@@ -183,6 +188,7 @@ python -m evals.world_model_evaluation --require-promotion
 python -m evals.offline_rl_evaluation --require-promotion
 python -m evals.distillation_evaluation --require-promotion
 python -m evals.replay_calibration --drill --require-gate
+python -m evals.prospective_evaluation drill --require-gate
 ruff check agent client code_agent evals post_training schema service tests
 python -m pip check
 ```
@@ -368,6 +374,7 @@ When using this project in a resume or interview, lead with one measurable workf
 - [Conservative offline-RL planning](docs/conservative-offline-rl-planning.md)
 - [Search policy distillation and compute curves](docs/search-policy-distillation.md)
 - [Execution feedback and gated recalibration](docs/execution-feedback-calibration.md)
+- [Forward-time AI validation and holdout governance](docs/prospective-ai-validation.md)
 - [Agent memory](docs/agent-memory.md)
 - [Inference gateway](docs/inference-gateway.md)
 - [Online AI governance](docs/online-ai-governance.md)

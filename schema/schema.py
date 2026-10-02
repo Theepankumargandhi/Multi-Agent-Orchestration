@@ -53,6 +53,17 @@ class UserInput(BaseModel):
         default=False, strict=True,
         description="Opt in this request to private, content-free candidate feedback capture.",
     )
+    execution_replay_task_family: str | None = Field(
+        default=None, min_length=1, max_length=128,
+        description="Optional task-family ID, assigned before execution to group related tasks for prospective evaluation.",
+    )
+
+    @field_validator("execution_replay_task_family")
+    @classmethod
+    def validate_replay_task_family(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("task family must contain non-whitespace text")
+        return value.strip() if value is not None else None
 
     @field_validator("message")
     @classmethod

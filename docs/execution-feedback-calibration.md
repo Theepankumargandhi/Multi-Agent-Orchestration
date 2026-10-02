@@ -103,6 +103,11 @@ assumptions that live traffic may violate. Freeze review cohorts, audit reviewer
 representative route coverage, and use a fresh time/task-family-separated evaluation before a
 production rollout. A passing report does not establish quality on unsupported routes.
 
+For that stronger check, use the [forward-time validation workflow](prospective-ai-validation.md).
+It adds pre-execution task-family assignments, chronological label cutoffs, an embargo, frozen
+membership, one-use holdout tracking, distribution-shift checks and paired incumbent comparisons.
+The original HMAC request split remains available as a lighter exploratory calibration workflow.
+
 ## Reproduce the controls without credentials
 
 ```bash

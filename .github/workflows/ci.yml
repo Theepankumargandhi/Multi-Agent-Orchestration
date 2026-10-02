@@ -99,6 +99,7 @@ jobs:
           python -m evals.offline_rl_evaluation --artifact data/evaluations/offline-rl/offline-rl-policy.json --output data/evaluations/offline-rl/report.json --require-promotion
           python -m evals.distillation_evaluation --require-promotion
           python -m evals.replay_calibration --drill --require-gate
+          python -m evals.prospective_evaluation drill --require-gate
           python -m evals.flywheel --help
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
@@ -241,6 +242,13 @@ jobs:
         with:
           name: execution-feedback-calibration
           path: data/evaluations/execution-replay/report.json
+          if-no-files-found: error
+
+      - name: Upload forward-time AI-validation control drill
+        uses: actions/upload-artifact@v4
+        with:
+          name: prospective-ai-validation
+          path: data/evaluations/prospective/drill.json
           if-no-files-found: error
 
       - name: Upload verifier-guided search ablation
