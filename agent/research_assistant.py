@@ -58,6 +58,7 @@ from agent.model_gateway import (
 )
 from agent.offline_rl import ConservativePlanningPolicy
 from agent.online_evaluation import append_online_event, event_from_gateway_receipt
+from agent.preference_deployment import PreferenceDeploymentStore
 from agent.preference_ranking import PreferenceRanker
 from agent.preference_shadow import PreferenceShadowStore, validate_approval
 from agent.process_reward import ProcessRewardScorer, ProcessStep
@@ -123,6 +124,7 @@ class AgentState(MessagesState):
     adaptive_compute_receipt: dict
     execution_replay_event_ids: list[str]
     preference_shadow_receipt: dict
+    preference_deployment_receipt: dict
     evidence_quality_report: dict
     adjudicated_evidence: list[dict]
 
@@ -350,6 +352,7 @@ PREFERENCE_SHADOW_ENABLED = os.getenv("PREFERENCE_SHADOW_ENABLED", "false").stri
 PREFERENCE_SHADOW_STUDY_ID = os.getenv("PREFERENCE_SHADOW_STUDY_ID", "").strip()
 PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL = os.getenv("PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL", "false").strip().lower() in {"1", "true", "yes", "on"}
 PREFERENCE_SHADOW_APPROVAL_PATH = Path(os.getenv("PREFERENCE_SHADOW_APPROVAL_PATH", "data/evaluations/preference-shadow/approval.json"))
+PREFERENCE_DEPLOYMENT_ENABLED = os.getenv("PREFERENCE_DEPLOYMENT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1274,6 +1277,8 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "adaptive_compute_plan": {},
         "adaptive_compute_receipt": {},
         "execution_replay_event_ids": [],
+        "preference_shadow_receipt": {},
+        "preference_deployment_receipt": {},
         "evidence_quality_report": {},
         "adjudicated_evidence": [],
     }
@@ -2385,6 +2390,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             )
 
     ranker, ranker_unavailable = None, False
+    deployment_state, deployment_receipt = None, {}
     configurable = config.get("configurable") or {}
     tenant = str(configurable.get("user_id") or "").strip()
     shadow_enabled = (
@@ -2399,18 +2405,37 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         try:
             if not tenant:
                 raise ValueError("preference ranking requires tenant identity")
-            ranker = await asyncio.to_thread(
-                PreferenceRanker.load, PREFERENCE_RANKING_PATH, PREFERENCE_RANKING_KEY, tenant,
-            )
-            if PREFERENCE_RANKING_ENABLED and PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL:
+            if PREFERENCE_RANKING_ENABLED and PREFERENCE_DEPLOYMENT_ENABLED:
+                if (not EXECUTION_REPLAY_ENABLED or configurable.get("execution_replay_consent") is not True
+                        or not (configurable.get("execution_replay_request_id") or config.get("run_id"))
+                        or not (configurable.get("execution_replay_task_family") or configurable.get("execution_replay_task_family_fingerprint"))):
+                    raise ValueError("deployment requires consented replay with preassigned task family")
+
+                def admit_deployment():
+                    replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
+                    return PreferenceDeploymentStore(replay, PREFERENCE_RANKING_KEY).admit(
+                        tenant, policy, route=plan.route, high_risk=plan.high_risk,
+                    )
+
+                ranker, deployment_state, monitor_report = await asyncio.to_thread(admit_deployment)
+                deployment_receipt = {"status": "admitted", "deployment_id": deployment_state.deployment_id,
+                                      "revision": deployment_state.revision,
+                                      "monitor_fingerprint": monitor_report["fingerprint"]}
+            else:
+                ranker = await asyncio.to_thread(
+                    PreferenceRanker.load, PREFERENCE_RANKING_PATH, PREFERENCE_RANKING_KEY, tenant,
+                )
+            if PREFERENCE_RANKING_ENABLED and not PREFERENCE_DEPLOYMENT_ENABLED and PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL:
                 await asyncio.to_thread(
                     validate_approval, PREFERENCE_SHADOW_APPROVAL_PATH, ranker,
                     PREFERENCE_RANKING_KEY, policy, route=plan.route, high_risk=plan.high_risk,
                 )
-        except (OSError, ValueError):
+        except (OSError, ValueError, sqlite3.Error):
             logger.warning("preference_ranker_unavailable; preserving existing release policy")
             ranker_unavailable = True
             ranker = None
+            if PREFERENCE_RANKING_ENABLED and PREFERENCE_DEPLOYMENT_ENABLED:
+                deployment_receipt = {"status": "baseline_fallback"}
     receipt = select_candidate(
         plan,
         candidates,
@@ -2420,7 +2445,30 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         preference_ranker=ranker if PREFERENCE_RANKING_ENABLED else None,
         preference_unavailable=ranker_unavailable if PREFERENCE_RANKING_ENABLED else False,
     )
-    replay_event_ids = await _capture_execution_replay(plan, receipt, config)
+    if deployment_state is not None:
+        try:
+            def capture_deployed():
+                replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
+                return PreferenceDeploymentStore(replay, PREFERENCE_RANKING_KEY).capture(
+                    deployment_state, plan, receipt, tenant=tenant,
+                    request_id=str(configurable.get("execution_replay_request_id") or config.get("run_id")),
+                    consent=configurable.get("execution_replay_consent") is True,
+                    task_family=configurable.get("execution_replay_task_family"),
+                    task_family_fingerprint=configurable.get("execution_replay_task_family_fingerprint"),
+                    compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY,
+                )
+
+            replay_event_ids = await asyncio.to_thread(capture_deployed)
+            deployment_receipt["status"] = "captured"
+        except (OSError, ValueError, sqlite3.Error):
+            # The observer and serving binding roll back together. Do not serve
+            # the learned choice if revocation raced or its audit cannot commit.
+            receipt = select_candidate(plan, candidates, policy, ADAPTIVE_COMPUTE_INTEGRITY_KEY,
+                                       attempted_calls, preference_unavailable=True)
+            deployment_receipt = {"status": "baseline_fallback"}
+            replay_event_ids = await _capture_execution_replay(plan, receipt, config)
+    else:
+        replay_event_ids = await _capture_execution_replay(plan, receipt, config)
     shadow_receipt = {}
     if shadow_enabled and ranker is not None and replay_event_ids:
         shadow = select_candidate(
@@ -2447,6 +2495,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             "adaptive_compute_receipt": receipt.model_dump(mode="json"),
             "execution_replay_event_ids": replay_event_ids,
             "preference_shadow_receipt": shadow_receipt,
+            "preference_deployment_receipt": deployment_receipt,
         }
 
     answer, report, uncertainty = selected
@@ -2463,6 +2512,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         "adaptive_compute_receipt": receipt.model_dump(mode="json"),
         "execution_replay_event_ids": replay_event_ids,
         "preference_shadow_receipt": shadow_receipt,
+        "preference_deployment_receipt": deployment_receipt,
     }
 
 

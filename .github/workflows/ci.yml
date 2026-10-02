@@ -102,6 +102,7 @@ jobs:
           python -m evals.prospective_evaluation drill --require-gate
           python -m evals.preference_evaluation drill --require-gate
           python -m evals.preference_shadow_evaluation drill --require-gate
+          python -m evals.preference_deployment_evaluation drill --require-gate
           python -m evals.flywheel --help
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
@@ -265,6 +266,13 @@ jobs:
         with:
           name: preference-shadow-validation
           path: data/evaluations/preference-shadow/drill.json
+          if-no-files-found: error
+
+      - name: Upload preference deployment sentinel
+        uses: actions/upload-artifact@v4
+        with:
+          name: preference-deployment-sentinel
+          path: data/evaluations/preference-deployment/drill.json
           if-no-files-found: error
 
       - name: Upload verifier-guided search ablation

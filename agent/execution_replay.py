@@ -121,6 +121,7 @@ class ExecutionReplayStore:
         origin: Literal["runtime", "synthetic"] = "runtime",
         task_family: str | None = None,
         task_family_fingerprint: str | None = None,
+        on_capture: Callable[[sqlite3.Connection], None] | None = None,
     ) -> list[str]:
         if consent is not True or not tenant.strip() or not request_id.strip():
             return []
@@ -218,6 +219,10 @@ class ExecutionReplayStore:
                         "INSERT INTO observations VALUES (?, ?, ?)",
                         (event.event_id, tenant_hash, event.model_dump_json()),
                     )
+            # Internal deployment binding must commit with the observations.
+            # A failed hook rolls back both; callbacks must not do external I/O.
+            if on_capture is not None:
+                on_capture(db)
         return [row.event_id for row in rows]
 
     def records(self, tenant: str) -> list[tuple[Observation, ReviewLabel | None]]:
@@ -304,6 +309,9 @@ class ExecutionReplayStore:
             ).rowcount
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='preference_shadow_studies'").fetchone():
                 db.execute("DELETE FROM preference_shadow_studies WHERE tenant=?", (digest(self.key, "tenant", tenant),))
+            for table in ("preference_served", "preference_deployments", "preference_deployment_states", "preference_deployment_audit"):
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    db.execute(f"DELETE FROM {table} WHERE tenant=?", (digest(self.key, "tenant", tenant),))
             return deleted
 
     def dataset(self, tenant: str, *, allow_synthetic: bool = False) -> tuple[list[CalibrationExample], dict]:

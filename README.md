@@ -88,6 +88,11 @@ flowchart TD
     ShadowReview --> ShadowGate[Fresh-family paired risk and utility gate]
     ShadowGate --> ApprovalLease[Owner-reviewed model and policy approval lease]
     ApprovalLease --> Preferences
+    ApprovalLease --> Registry[Optional owner-activated tenant deployment registry]
+    Registry --> LiveGuard[Live lineage and delayed-outcome sentinel]
+    LiveGuard -->|healthy and atomic serving capture| Preferences
+    Outcome --> LiveGuard
+    LiveGuard -->|unsafe, degraded, expired, or source revoked| Baseline[Revoke learned selector and preserve baseline]
     Outcome -->|optional stronger evaluation| Cohort[Frozen forward-time task-family cohort]
     Cohort --> Prospective[Drift and paired incumbent checks]
     HoldoutLedger[(One-use holdout ledger)] --> Prospective
@@ -134,6 +139,7 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Prospective AI validation | Pre-execution task-family IDs, frozen chronological cohorts, embargo and label-availability cutoffs, one-use family exposure tracking, live-lineage checks, distribution-shift holds, and paired bootstrap comparisons |
 | Preference learning | Human-reviewed candidate pairs, family-bootstrap Bradley–Terry metadata reward models, training-only feature scaling, conservative margin/OOD fallback, tenant-bound artifacts, safety-gated runtime reranking, and future-family evaluation |
 | Controlled AI rollout | Preregistered non-serving selector comparisons, actual PRM/release eligibility snapshots, disagreement plus audit review, missing-label sensitivity bounds, fresh-family holdout gates, and optional expiring model/policy/scope-bound approvals |
+| Post-activation AI control | Tenant-scoped signed deployment revisions, live approval-source checks, atomic serving provenance, fixed review deadlines, family-deduplicated sequential error monitoring, immediate reviewed-unsafe holds, and irreversible-per-approval baseline rollback |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
 | Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
@@ -174,7 +180,7 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **352 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
+The repository currently contains **378 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
 
 | Module | Focused coverage |
 |---|---:|
@@ -394,6 +400,7 @@ When using this project in a resume or interview, lead with one measurable workf
 - [Forward-time AI validation and holdout governance](docs/prospective-ai-validation.md)
 - [Reviewed preference learning and conservative reranking](docs/reviewed-preference-reranking.md)
 - [Non-serving preference shadows and prospective approval gates](docs/preference-shadow-validation.md)
+- [Revocable preference deployments and delayed-outcome sentinel](docs/preference-deployment-sentinel.md)
 - [Agent memory](docs/agent-memory.md)
 - [Inference gateway](docs/inference-gateway.md)
 - [Online AI governance](docs/online-ai-governance.md)

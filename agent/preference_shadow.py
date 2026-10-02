@@ -176,6 +176,20 @@ def validate_approval(
     now: float | None = None,
 ) -> ShadowApproval:
     approval = ShadowApproval.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    return check_approval(approval, ranker, key, policy, route=route, high_risk=high_risk, now=now)
+
+
+def check_approval(
+    approval: ShadowApproval,
+    ranker: PreferenceRanker,
+    key: bytes,
+    policy: ComputePolicy,
+    *,
+    route: str,
+    high_risk: bool,
+    now: float | None = None,
+) -> ShadowApproval:
+    """Validate a lease in memory or loaded from the legacy file interface."""
     approval.verify(key)
     now = time.time() if now is None else now
     if (
