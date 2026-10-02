@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.process_reward import load_traces
+from agent.process_reward import load_traces, train_process_reward_model
 from agent.search_planner import SearchRequest, VerifierGuidedMCTS
 from agent.verifier_active_learning import VerifierActiveLearningQueue
 from agent.verifier_ensemble import (
@@ -118,9 +118,7 @@ def test_active_learning_queue_is_private_deduplicated_and_reviewable(
     assert queue.pending() == []
     assert queue.counts() == {"reviewed": 1}
     exported = queue.export_reviewed(tmp_path / "reviewed.jsonl")
-    assert len(exported) == 1
-    assert exported[0].review_status == "human_reviewed"
-    assert exported[0].query == "metadata-only active-learning trajectory"
+    assert exported == []  # an ambiguous terminal label is not process supervision
     assert "reviewer@example.com" not in (tmp_path / "reviewed.jsonl").read_text(
         encoding="utf-8"
     )
@@ -139,6 +137,24 @@ def test_shift_ablation_measures_detection_containment_and_review_capture(traine
     assert report.active_learning_capture_rate == 1
     assert report.promoted
     assert verify_report(report)
+
+
+def test_terminal_reviews_never_create_step_labels_or_features(trained, tmp_path):
+    _, artifact = trained
+    request = _request()
+    plan = VerifierGuidedMCTS(EnsembleProcessRewardScorer(corrupt_one_member(artifact))).plan(request)
+    exports = []
+    for label in ("safe", "unsafe"):
+        queue = VerifierActiveLearningQueue(tmp_path / f"{label}.sqlite3")
+        candidate = queue.enqueue(plan, request, uncertainty_threshold=0.08)
+        assert queue.review(candidate.event_id, label, "reviewer")
+        exports.append(queue.export_reviewed(tmp_path / f"{label}.jsonl")[0])
+    assert exports[0].steps == exports[1].steps
+    assert exports[0].safe and not exports[1].safe
+    assert all(step.step_label is None for trace in exports for step in trace.steps)
+    assert all(not step.citation_valid and step.policy_allowed for trace in exports for step in trace.steps)
+    with pytest.raises(ValueError, match="labelled"):
+        train_process_reward_model(exports[:1], explicit_steps_only=True)
 
 
 def test_runtime_hot_loads_ensemble_and_conservative_candidate_score(

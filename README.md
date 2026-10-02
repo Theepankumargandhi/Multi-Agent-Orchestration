@@ -98,6 +98,12 @@ flowchart TD
     HoldoutLedger[(One-use holdout ledger)] --> Prospective
     HoldoutLedger --> PreferenceGate
     HoldoutLedger --> ShadowGate
+    Candidates -->|consented pre-review workflow features| StepSnapshots[Frozen workflow snapshots]
+    StepSnapshots --> StepReviews[Independent per-step correctness reviews]
+    StepReviews --> StepTrain[Explicit-label training and validation-only calibration]
+    StepTrain --> StepGate[Future-family step-quality and missingness gate]
+    HoldoutLedger --> StepGate
+    StepGate --> StepCandidate[Signed verifier candidate for review, not activation]
     Prospective --> CandidateArtifact
     Calibrate --> CandidateArtifact[Candidate calibrator for owner review]
     PRM -->|bad reasoning step or no consensus| Abstain
@@ -140,6 +146,7 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Preference learning | Human-reviewed candidate pairs, family-bootstrap Bradley–Terry metadata reward models, training-only feature scaling, conservative margin/OOD fallback, tenant-bound artifacts, safety-gated runtime reranking, and future-family evaluation |
 | Controlled AI rollout | Preregistered non-serving selector comparisons, actual PRM/release eligibility snapshots, disagreement plus audit review, missing-label sensitivity bounds, fresh-family holdout gates, and optional expiring model/policy/scope-bound approvals |
 | Post-activation AI control | Tenant-scoped signed deployment revisions, live approval-source checks, atomic serving provenance, fixed review deadlines, family-deduplicated sequential error monitoring, immediate reviewed-unsafe holds, and irreversible-per-approval baseline rollback |
+| Reviewed workflow supervision | Frozen runtime workflow features, independent immutable step annotations, explicit-label-only PRM training, chronological family splits, validation-only temperature calibration, constant/weak-credit ablations, and conservative missing-review gates |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
 | Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
@@ -180,7 +187,7 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **378 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
+The repository currently contains **401 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
 
 | Module | Focused coverage |
 |---|---:|
@@ -210,6 +217,7 @@ python -m evals.offline_rl_evaluation --require-promotion
 python -m evals.distillation_evaluation --require-promotion
 python -m evals.replay_calibration --drill --require-gate
 python -m evals.prospective_evaluation drill --require-gate
+python -m evals.process_supervision_evaluation drill --require-gate
 ruff check agent client code_agent evals post_training schema service tests
 python -m pip check
 ```
@@ -365,6 +373,7 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 - Kubernetes manifests are a secure starting point, not a complete managed-cloud architecture.
 - Post-training plumbing is implemented, but no fine-tuned-model quality claim should be made without reviewed data, accelerator training, and a frozen holdout evaluation.
 - Process-reward results use a small synthetic seed to test learning, pruning, integrity, and promotion behavior; they are not evidence that the verifier generalizes to unseen live-model reasoning traces.
+- Independently reviewed process learning predicts correctness of typed workflow proxies, not hidden reasoning or chain-of-thought. Its synthetic controls test leakage prevention and evaluation holds; final-answer lift still needs diverse reviewed runtime data and a separate selective-release evaluation. No model is activated automatically.
 - Verifier-guided search results use deterministic synthetic transitions. They validate planning, budgets, fail-closed behavior, and replay integrity—not real-world reasoning quality or provider cost savings.
 - Verifier-ensemble shift results use one controlled behaviorally inverted member and only three calibration traces. They validate disagreement detection, conservative scoring, and active-learning plumbing—not production OOD coverage.
 - Learned world-model results use a small, mostly authored transition dataset. They validate action-conditioned prediction, conservative rollouts, artifact integrity, and OOD abstention—not general real-world environment modeling.
@@ -401,6 +410,7 @@ When using this project in a resume or interview, lead with one measurable workf
 - [Reviewed preference learning and conservative reranking](docs/reviewed-preference-reranking.md)
 - [Non-serving preference shadows and prospective approval gates](docs/preference-shadow-validation.md)
 - [Revocable preference deployments and delayed-outcome sentinel](docs/preference-deployment-sentinel.md)
+- [Independent workflow supervision and verifier retraining](docs/reviewed-process-supervision.md)
 - [Agent memory](docs/agent-memory.md)
 - [Inference gateway](docs/inference-gateway.md)
 - [Online AI governance](docs/online-ai-governance.md)

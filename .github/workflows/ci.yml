@@ -103,6 +103,7 @@ jobs:
           python -m evals.preference_evaluation drill --require-gate
           python -m evals.preference_shadow_evaluation drill --require-gate
           python -m evals.preference_deployment_evaluation drill --require-gate
+          python -m evals.process_supervision_evaluation drill --require-gate
           python -m evals.flywheel --help
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
@@ -280,6 +281,13 @@ jobs:
         with:
           name: verifier-guided-search-ablation
           path: data/evaluations/search-planning/ci.json
+          if-no-files-found: error
+
+      - name: Upload independently reviewed process controls
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-process-supervision
+          path: data/evaluations/process-supervision/drill.json
           if-no-files-found: error
 
       - name: Upload verifier uncertainty ablation

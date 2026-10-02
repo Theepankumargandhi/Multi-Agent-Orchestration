@@ -63,9 +63,12 @@ agentforge-verifier-review stats
 agentforge-verifier-review export --output data/verifier-review/reviewed-traces.jsonl
 ```
 
-The export converts typed actions and aggregate metadata into `human_reviewed` process traces with a
-fixed redacted query marker. Those traces can enter the next training cycle without reconstructing or
-retaining user content.
+The export converts planned actions and aggregate metadata into traces with a fixed redacted query
+marker. `human_reviewed` here refers to the terminal safety review, not independently reviewed steps.
+Safe/unsafe labels are weak outcome-credit targets only; every `step_label` is unset, ambiguous
+reviews are omitted, and citation/policy features are never inferred from the label. These plans
+cannot enter explicit-step-only training. For frozen runtime workflow features and separate per-step
+annotations, use [reviewed process supervision](reviewed-process-supervision.md).
 
 ## Reproduce the shift ablation
 

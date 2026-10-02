@@ -62,6 +62,7 @@ from agent.preference_deployment import PreferenceDeploymentStore
 from agent.preference_ranking import PreferenceRanker
 from agent.preference_shadow import PreferenceShadowStore, validate_approval
 from agent.process_reward import ProcessRewardScorer, ProcessStep
+from agent.process_supervision import ProcessSupervisionStore
 from agent.search_planner import SearchPlan, SearchPolicy, SearchRequest, VerifierGuidedMCTS
 from agent.tools import perform_web_search
 from agent.uncertainty import assess_grounding_report, load_calibrator
@@ -125,6 +126,7 @@ class AgentState(MessagesState):
     execution_replay_event_ids: list[str]
     preference_shadow_receipt: dict
     preference_deployment_receipt: dict
+    process_supervision_receipt: dict
     evidence_quality_report: dict
     adjudicated_evidence: list[dict]
 
@@ -353,6 +355,7 @@ PREFERENCE_SHADOW_STUDY_ID = os.getenv("PREFERENCE_SHADOW_STUDY_ID", "").strip()
 PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL = os.getenv("PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL", "false").strip().lower() in {"1", "true", "yes", "on"}
 PREFERENCE_SHADOW_APPROVAL_PATH = Path(os.getenv("PREFERENCE_SHADOW_APPROVAL_PATH", "data/evaluations/preference-shadow/approval.json"))
 PREFERENCE_DEPLOYMENT_ENABLED = os.getenv("PREFERENCE_DEPLOYMENT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+PROCESS_SUPERVISION_ENABLED = os.getenv("PROCESS_SUPERVISION_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1279,6 +1282,7 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "execution_replay_event_ids": [],
         "preference_shadow_receipt": {},
         "preference_deployment_receipt": {},
+        "process_supervision_receipt": {},
         "evidence_quality_report": {},
         "adjudicated_evidence": [],
     }
@@ -2171,14 +2175,13 @@ def _load_distilled_policy() -> DistilledPlanningPolicy:
     return _distilled_policy
 
 
-def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float | None:
-    if not PROCESS_REWARD_MODEL_ENABLED:
-        return None
+def _candidate_process_steps(report: GroundingReport) -> list[ProcessStep]:
+    """The same observed workflow proxies are scored and snapshotted pre-review."""
     has_evidence = report.evidence_count > 0
     citations_valid = report.citation_precision >= 0.999 and not any(
         claim.invalid_citation_urls for claim in report.claims
     )
-    steps = [
+    return [
         ProcessStep(
             step_id="retrieve",
             kind="retrieve",
@@ -2207,7 +2210,12 @@ def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float
             confidence=report.confidence,
         ),
     ]
-    return _load_process_reward_scorer().score_steps(steps, high_risk)
+
+
+def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float | None:
+    if not PROCESS_REWARD_MODEL_ENABLED:
+        return None
+    return _load_process_reward_scorer().score_steps(_candidate_process_steps(report), high_risk)
 
 
 def _next_node_after_response(state: AgentState) -> str:
@@ -2479,6 +2487,12 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
     elif shadow_enabled:
         shadow_receipt = {"status": "unavailable"}
     selected = candidate_outputs.get(receipt.selected_candidate_id)
+    process_supervision_receipt = {}
+    if PROCESS_SUPERVISION_ENABLED and replay_event_ids:
+        process_supervision_receipt = await _capture_process_supervision(
+            {name: _candidate_process_steps(report) for name, (_, report, _) in candidate_outputs.items()},
+            replay_event_ids, config,
+        )
     source_meta = (state.get("answer_source_meta") or "").strip()
     if selected is None:
         final = (
@@ -2496,6 +2510,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             "execution_replay_event_ids": replay_event_ids,
             "preference_shadow_receipt": shadow_receipt,
             "preference_deployment_receipt": deployment_receipt,
+            "process_supervision_receipt": process_supervision_receipt,
         }
 
     answer, report, uncertainty = selected
@@ -2513,7 +2528,39 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         "execution_replay_event_ids": replay_event_ids,
         "preference_shadow_receipt": shadow_receipt,
         "preference_deployment_receipt": deployment_receipt,
+        "process_supervision_receipt": process_supervision_receipt,
     }
+
+
+async def _capture_process_supervision(steps_by_candidate: dict, event_ids: list[str], config: RunnableConfig) -> dict:
+    configurable = config.get("configurable") or {}
+    tenant = str(configurable.get("user_id") or "").strip()
+    if (not PROCESS_SUPERVISION_ENABLED or not EXECUTION_REPLAY_ENABLED
+            or configurable.get("execution_replay_consent") is not True or not tenant or not event_ids):
+        return {}
+
+    def capture():
+        from agent.execution_replay import digest
+
+        replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
+        process = ProcessSupervisionStore(replay)
+        mapped = {digest(replay.key, "candidate", name): steps for name, steps in steps_by_candidate.items()}
+        fingerprints = []
+        for observation, _ in replay.records(tenant):
+            if observation.event_id in event_ids:
+                if observation.candidate not in mapped:
+                    raise ValueError("missing observed workflow candidate")
+                snapshot = process.capture(tenant, observation.event_id, mapped[observation.candidate], consent=True)
+                fingerprints.append(snapshot.fingerprint)
+        if len(fingerprints) != len(event_ids):
+            raise ValueError("incomplete workflow snapshot pool")
+        return {"status": "captured", "snapshots": fingerprints}
+
+    try:
+        return await asyncio.to_thread(capture)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        logger.warning("process_supervision_unavailable error_type=%s", type(exc).__name__)
+        return {"status": "unavailable"}
 
 
 async def _capture_execution_replay(plan, receipt, config: RunnableConfig) -> list[str]:

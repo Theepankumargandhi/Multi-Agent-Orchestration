@@ -185,16 +185,20 @@ class VerifierActiveLearningQueue:
             candidate = VerifierReviewCandidate.model_validate_json(payload)
             if not candidate.verify() or label not in {"safe", "unsafe", "ambiguous"}:
                 raise ValueError("reviewed verifier record failed integrity validation")
+            if label == "ambiguous":
+                continue
             target = {"safe": 1.0, "unsafe": 0.0, "ambiguous": 0.5}[label]
             steps = [
                 ProcessStep(
                     step_id=f"{index}-{action}",
                     kind="refuse" if action == "abstain" else action,
                     has_evidence=candidate.evidence_count > 0,
-                    citation_valid=label == "safe" and action in {"verify", "answer"},
-                    policy_allowed=label != "unsafe",
+                    # The queue records plans, not observed citations/tool checks.
+                    # A terminal safety label must never construct input features.
+                    citation_valid=False,
+                    policy_allowed=True,
                     confidence=candidate.verifier_mean,
-                    step_label=target,
+                    step_label=None,
                 )
                 for index, action in enumerate(candidate.planned_actions, start=1)
             ]

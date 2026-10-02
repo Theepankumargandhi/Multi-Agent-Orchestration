@@ -180,6 +180,7 @@ def train_process_reward_model(
     learning_rate: float = 0.15,
     l2: float = 0.01,
     temporal_discount: float = 0.9,
+    explicit_steps_only: bool = False,
 ) -> ProcessRewardArtifact:
     training = [trace for trace in traces if trace.split == "train"]
     if not training:
@@ -188,6 +189,8 @@ def train_process_reward_model(
     human_labeled = 0
     for trace in training:
         for index, step in enumerate(trace.steps):
+            if explicit_steps_only and step.step_label is None:
+                continue
             target = _step_target(trace, index, temporal_discount)
             if step.step_label is not None:
                 human_labeled += int(trace.review_status == "human_reviewed")
@@ -196,6 +199,8 @@ def train_process_reward_model(
             examples.append(
                 (step_features(step, index, len(trace.steps), high_risk=trace.high_risk), target, weight)
             )
+    if not examples:
+        raise ValueError("explicit process training requires labelled steps")
     weights = [0.0] * len(FEATURE_NAMES)
     for _ in range(epochs):
         gradient = [0.0] * len(weights)
@@ -220,7 +225,7 @@ def train_process_reward_model(
     )
     scorer = ProcessRewardScorer(artifact, verify_artifact=False)
     validation = [trace for trace in traces if trace.split == "validation"]
-    if validation:
+    if validation and not explicit_steps_only:
         artifact.stopping_threshold = _tune_stopping_threshold(scorer, validation)
     artifact.seal()
     return artifact
