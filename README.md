@@ -1,6 +1,6 @@
 # AgentForge
 
-**A reliability-first platform for building, evaluating, and operating AI agents.**
+A reliability-first platform for building, evaluating, and operating AI agents.
 
 [![CI](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml)
 [![CD](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml)
@@ -12,7 +12,7 @@ The repository contains two working agent systems:
 - an evidence-aware research agent with hybrid RAG, durable human approval, memory, grounding, calibrated uncertainty, and adaptive test-time compute;
 - a sandboxed coding agent that retrieves repository context, proposes a patch, tests it in an isolated container, and produces a reviewable evidence dossier without modifying the source repository.
 
-Around those agents is the part that matters in production: an inference gateway, evaluation suites, adversarial testing, trace-based observability, release gates, persistence, and deployable FastAPI, Docker, and Kubernetes infrastructure.
+Around those agents are an inference gateway, evaluation suites, adversarial testing, trace-based observability, release gates, persistence, and FastAPI, Docker, and Kubernetes deployment assets. These are reference implementations, not a claim that the repository is ready for unrestricted production traffic.
 
 > This is not presented as a production factuality guarantee or an official benchmark result. The checked-in evaluations are reproducible engineering evidence; the [limitations](#what-the-results-do-not-claim) explain where human-labelled and live-model validation is still required.
 
@@ -33,121 +33,42 @@ That makes the project useful for demonstrating the work expected from an AI eng
 
 ## System at a glance
 
+The research workflow is an 18-node LangGraph state machine. This diagram groups the stages for readability; optional controls are shown where they operate, not as features that are all enabled by default.
+
 ```mermaid
 flowchart TD
-    User[User or API client] --> API[FastAPI service]
-    API --> Auth[Authentication, limits, and tenant context]
-    Auth --> Safety{Safety gate}
-
-    Safety -->|blocked or unavailable| Stop[Safe response]
-    Safety -->|allowed| Memory[Retrieve consented memory]
+    Client[User or API client] --> API[Authentication, limits and tenant context]
+    API --> Safety{Safety gate}
+    Safety -->|blocked or unavailable| Safe[Safe response]
+    Safety -->|allowed| Memory[Optional consented memory retrieval]
     Memory --> Router{Structured intent router}
-
-    Router -->|needs context| Clarify[Ask for clarification]
-    Router -->|math| Math[Math tool]
-    Router -->|local knowledge| RAG[Hybrid RAG]
-    Router -->|relationships| Graph[Knowledge graph retrieval]
-    Router -->|current information| Approval{{Human approval}}
-    Router -->|general| Draft[Draft answer]
-
+    Router --> Clarify[Ask for clarification]
+    Router --> Rewrite[Bounded query rewrite]
+    Rewrite --> Router
+    Router --> Tools[Math, hybrid RAG or graph retrieval]
+    Router --> Approval{{Web approval}}
+    Router -->|general| Draft[Draft response]
     Approval -->|approved| Web[Web retrieval]
-    Approval -->|rejected| Stop
-    Graph --> RAG
-    Math --> Evidence
-    RAG --> Evidence[Evidence adjudication]
+    Approval -->|rejected| Safe
+    Tools --> Evidence[Optional evidence adjudication]
     Web --> Evidence
-    Evidence -->|injection, stale, duplicated, or conflicting| Abstain[Abstain or degrade]
-    Evidence -->|acceptable| Draft
-
-    Draft --> Ground[Claim and citation verification]
-    Ground -->|unsupported| Repair[Bounded repair]
-    Ground -->|supported| Uncertainty{Conformal uncertainty gate}
-    Repair --> Final
-    Uncertainty -->|confident| Final[Release answer]
-    Uncertainty -->|recoverable uncertainty| Compute[Adaptive compute controller]
-    Compute --> Search[Verifier-guided bounded MCTS]
-    OfflineRL[Conservative offline-RL action prior] --> Search
-    Student[Distilled search policy alternative] --> Search
-    Search -->|simulate typed action| World[Learned transition world model]
-    World -->|next-state LCB, success, or OOD| Search
-    Search --> PRM[Calibrated process-reward ensemble]
-    PRM -->|verified plan| Candidates[Generate and verify real answer candidates]
-    Candidates --> Consensus[Bounded consensus selection]
-    Consensus --> Preferences[Optional reviewed preference reranking]
-    Preferences -->|supported margin or baseline fallback| Final
-    Preferences -->|consented candidate metadata| Replay[(Private execution replay)]
-    Replay --> Outcome[Delayed correctness and safety review]
-    Outcome --> Calibrate[Request-group held-out calibration gate]
-    Outcome --> PreferenceTrain[Family-grouped Bradley-Terry training]
-    PreferenceTrain --> PreferenceGate[Future holdout risk and utility gate]
-    PreferenceGate --> PreferenceCandidate[Owner-reviewed tenant-bound ranker]
-    PreferenceCandidate --> Preferences
-    Consensus -->|non-serving same-pool comparison| Shadow[Preference shadow selector]
-    Shadow --> ShadowPairs[Pre-label paired decision snapshots]
-    ShadowPairs --> ShadowReview[Disagreement and audit review queue]
-    ShadowReview --> ShadowGate[Fresh-family paired risk and utility gate]
-    ShadowGate --> ApprovalLease[Owner-reviewed model and policy approval lease]
-    ApprovalLease --> Preferences
-    ApprovalLease --> Registry[Optional owner-activated tenant deployment registry]
-    Registry --> LiveGuard[Live lineage and delayed-outcome sentinel]
-    LiveGuard -->|healthy and atomic serving capture| Preferences
-    Outcome --> LiveGuard
-    LiveGuard -->|unsafe, degraded, expired, or source revoked| Baseline[Revoke learned selector and preserve baseline]
-    Outcome -->|optional stronger evaluation| Cohort[Frozen forward-time task-family cohort]
-    Cohort --> Prospective[Drift and paired incumbent checks]
-    HoldoutLedger[(One-use holdout ledger)] --> Prospective
-    HoldoutLedger --> PreferenceGate
-    HoldoutLedger --> ShadowGate
-    Candidates -->|consented pre-review workflow features| StepSnapshots[Frozen workflow snapshots]
-    StepSnapshots --> StepReviews[Independent per-step correctness reviews]
-    StepReviews --> StepTrain[Explicit-label training and validation-only calibration]
-    StepTrain --> StepGate[Future-family step-quality and missingness gate]
-    HoldoutLedger --> StepGate
-    StepGate --> StepCandidate[Signed verifier candidate for review, not activation]
-    StepReviews --> FamilyEnsemble[Whole-family explicit-label ensemble]
-    FamilyEnsemble --> StepUncertainty[Validation-calibrated step uncertainty and feature support guard]
-    StepUncertainty --> StepRiskGate[Fresh-family risk/coverage and missing-review evaluation]
-    HoldoutLedger --> StepRiskGate
-    StepRiskGate --> StepEnsembleReview[Step artifact for review only, not a serving model]
-    StepEnsembleReview --> EnsembleStudy[Preregistered step-to-answer aggregation]
-    EnsembleStudy --> EnsemblePairs[Guarded and unguarded pre-review outcome shadows]
-    Candidates -->|unchanged incumbent and pool| EnsemblePairs
-    EnsemblePairs --> EnsembleOutcomes[Independent future-family terminal reviews]
-    EnsembleOutcomes --> EnsembleGate[Final-answer risk, coverage and paired utility gate]
-    HoldoutLedger --> EnsembleGate
-    EnsembleGate --> EnsembleReview[Owner review only, no ensemble serving]
-    StepCandidate --> VerifierStudy[Preregistered verifier shadow study]
-    Candidates -->|same pool, unchanged served answer| VerifierPairs[Pre-review verifier comparisons]
-    VerifierStudy --> VerifierPairs
-    VerifierPairs --> Outcome
-    Outcome --> VerifierGate[Fixed-threshold final-outcome risk and coverage gate]
-    HoldoutLedger --> VerifierGate
-    VerifierGate --> VerifierReview[Owner review only, no verifier activation]
-    Prospective --> CandidateArtifact
-    Calibrate --> CandidateArtifact[Candidate calibrator for owner review]
-    PRM -->|bad reasoning step or no consensus| Abstain
-    PRM -->|ensemble disagreement or OOD| ReviewQueue[(Private verifier review queue)]
-    ReviewQueue --> ReviewLabel[Human safe, unsafe, or ambiguous label]
-    ReviewLabel --> Offline
-
-    Final --> Evaluate[Record quality and feedback signals]
-    Abstain --> Evaluate
-    Stop --> Evaluate
-    Clarify --> Evaluate
-    Evaluate --> WriteMemory[Write memory only with explicit consent]
-
-    API <--> State[(PostgreSQL or SQLite checkpoints)]
-    API <--> Cache[(Redis or local cache)]
-    API --> Telemetry[Prometheus, OpenTelemetry, and LangSmith]
-    API --> Gateway[Inference gateway]
-    Gateway --> Bandit{Constrained contextual bandit}
-    Bandit --> Models[Economy, balanced, and quality models]
-    Bandit --> Feedback[Propensity-scored feedback]
-    Feedback --> Offline[IPS, SNIPS, and doubly robust gate]
-    Gateway --> Online[Online SLO and rollback controller]
+    Evidence --> Draft
+    Draft --> Gate{Optional grounding and uncertainty checks}
+    Gate -->|eligible| Result[Answer]
+    Gate -->|unsupported or unrecoverable| Repair[Evidence-only repair or abstention]
+    Gate -->|recoverable and within budget| Compute[Optional planning and verified candidates]
+    Compute --> Select[Consensus and optional preference reranking]
+    Select --> Result
+    Select -->|no eligible candidate| Repair
+    Safe --> Finish[Evaluation and consented memory write]
+    Clarify --> Finish
+    Result --> Finish
+    Repair --> Finish
+    API <--> State[(Durable checkpoints and store)]
+    API -.-> Ops[Optional inference gateway, cache and telemetry]
 ```
 
-The research workflow is an **18-node LangGraph state machine**. The trust controls are independently configurable, so they can be evaluated in isolation or enabled together. Native LangGraph interrupts persist web-approval state in the checkpointer, which means an approval can survive an API restart.
+Native LangGraph interrupts persist web-approval state in the checkpointer, so an approval can survive an API restart when persistent checkpointing is configured. Repair is evidence-only trimming or abstention, not an unchecked second model answer. Query rewriting returns to routing; the full graph includes hybrid retrieval and fallback paths omitted from this overview.
 
 The line-by-line graph description lives in [the runtime flow](docs/architecture/agent_runtime_flow.md), and important trade-offs are recorded as [architecture decisions](docs/architecture/decisions.md).
 
@@ -164,18 +85,47 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Prospective AI validation | Pre-execution task-family IDs, frozen chronological cohorts, embargo and label-availability cutoffs, one-use family exposure tracking, live-lineage checks, distribution-shift holds, and paired bootstrap comparisons |
 | Preference learning | Human-reviewed candidate pairs, family-bootstrap Bradley–Terry metadata reward models, training-only feature scaling, conservative margin/OOD fallback, tenant-bound artifacts, safety-gated runtime reranking, and future-family evaluation |
 | Controlled AI rollout | Preregistered non-serving selector comparisons, actual PRM/release eligibility snapshots, disagreement plus audit review, missing-label sensitivity bounds, fresh-family holdout gates, and optional expiring model/policy/scope-bound approvals |
-| Post-activation AI control | Tenant-scoped signed deployment revisions, live approval-source checks, atomic serving provenance, fixed review deadlines, family-deduplicated sequential error monitoring, immediate reviewed-unsafe holds, and irreversible-per-approval baseline rollback |
+| Post-activation preference control | Optional tenant-scoped signed deployment revisions, live approval-source checks, atomic serving provenance, fixed review deadlines, family-deduplicated sequential error monitoring, immediate reviewed-unsafe holds, and irreversible-per-approval baseline rollback |
 | Reviewed workflow supervision | Frozen runtime workflow features, independent immutable step annotations, explicit-label-only PRM training, chronological family splits, validation-only temperature calibration, constant/weak-credit ablations, and conservative missing-review gates |
 | Verifier outcome validation | Preregistered non-serving PRM comparisons using the actual selector, unchanged eligibility, retained abstentions, descriptive risk/coverage curves, fixed primary thresholds, paired terminal-utility bounds, and source-revocation checks |
 | Reviewed verifier uncertainty | Whole-family bootstrap step ensembles, explicit labels only, validation-calibrated member predictions, training-feature support guards, missing-review-aware family-macro risk/coverage curves, single-model ablation, and signed offline candidates |
-| Step-to-answer validation | Probability-correct aggregation, all-step deferral, prospective guarded/unguarded same-pool answer shadows, independent terminal reviews, retained abstentions, fresh-family outcome gates, and unchanged serving behavior |
+| Step-to-answer validation | Conservative step-correctness ranking heuristic, all-step deferral, prospective guarded/unguarded same-pool answer shadows, independent terminal reviews, retained abstentions, fresh-family outcome gates, and unchanged serving behavior |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
 | Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
 | Observability | Content-free OpenTelemetry GenAI spans, Prometheus metrics, LangSmith hooks, request/node latency, privacy checks, and reliability fault injection |
 | Deployment | FastAPI + SSE, PostgreSQL/SQLite, Redis, Docker Compose, non-root containers, health checks, Kubernetes manifests, and network policy |
 
-The controls are designed to compose. For example, retrieved documents do not go straight into a prompt: the evidence layer first removes suspicious or redundant material; the grounding layer then checks claims against the surviving evidence; the uncertainty layer decides whether the answer can be released; and adaptive compute is reserved for cases that are uncertain but still recoverable.
+When enabled, evidence adjudication filters suspicious or redundant material before synthesis, grounding checks claims afterward, and calibrated uncertainty can withhold an answer. Adaptive compute spends extra inference only within its configured budget. These mechanisms have dependencies and mode restrictions; enabling every flag is not a supported setup recipe.
+
+### What runs, and what is still an experiment?
+
+The basic application provides research routing, retrieval, web approval, and API/UI serving. Memory, the inference gateway, evidence/grounding gates, uncertainty calibration, adaptive compute, learned planning, coding execution, and learning observers are opt-in. Artifact-dependent controls also need the matching model/calibrator and private integrity keys. See [.env.example](.env.example) for the complete configuration.
+
+The latest work closes the gap between predicting a reviewed workflow step and selecting a good final answer:
+
+```mermaid
+flowchart TD
+    Pool[Generated candidates and unchanged incumbent answer] --> Snap[Consented pre-review workflow snapshots]
+    Snap --> Labels[Independent explicit step reviews]
+    Labels --> Fit[Chronological family training and validation calibration]
+    Fit --> StepGate[Fresh-family step-quality and uncertainty evaluation]
+    StepGate --> Candidate[Signed reviewed verifier or step ensemble candidate]
+    Candidate --> Register[Preregister a non-serving outcome study]
+    Future[New future candidate pools] --> Compare[Capture proposals before any reviews]
+    Register --> Compare
+    Compare --> Outcomes[Independent terminal correctness and safety reviews]
+    Outcomes --> Gate[Fixed-threshold risk, coverage and paired utility gate]
+    Ledger[(Shared one-use holdout ledger)] --> StepGate
+    Ledger --> Gate
+    Gate --> Review[Report for owner review, not activation]
+```
+
+Workflow steps are typed views of grounding metadata, not captured hidden reasoning. Step ensembles use explicit labels, whole-family bootstrap sampling, validation-only calibration, and training-feature support guards. The step-to-answer adapter requires every step to be supported, accepted, and predicted correct; its minimum penalized score is a ranking heuristic, not a calibrated answer-correctness probability.
+
+Verifier and ensemble-outcome shadows leave the served answer unchanged and make no extra LLM calls, though they add local scoring/storage work. They require replay consent, process snapshots, a registered study, and `PREFERENCE_RANKING_ENABLED=false`. Reviewed step ensembles have no serving activation path. A passing real outcome report means only `ready_for_owner_review`; a synthetic drill pass proves control behavior, not production readiness.
+
+Preference reranking has a separate optional owner-activated deployment registry. Its live guard checks lineage and delayed outcomes at admission and can revert to the baseline. That capability does not activate reviewed step ensembles or outcome-shadow candidates. Prefer the subsystem guides over mixing these modes.
 
 ## Sandboxed coding agent
 
@@ -201,7 +151,7 @@ flowchart LR
     Owner -->|approved| Patch[Release unified diff]
 ```
 
-Code intelligence uses Tree-sitter for Python, TypeScript, JavaScript, Java, Go, and Rust. A decomposed query searches symbols, files, tests, and dependencies using BM25, semantic embeddings, graph propagation, and reranking. Hard-negative mining trains an integrity-sealed pairwise fusion model, with optional bi-encoder and cross-encoder fine-tuning. The resulting context is deduplicated, compressed to a token budget, and accompanied by provenance receipts.
+Code intelligence uses Tree-sitter for Python, TypeScript, JavaScript, Java, Go, and Rust, including unchanged-file reuse and incremental reparsing. A decomposed query searches symbols, files, tests, and dependencies using BM25, embedding similarity, graph propagation, and reranking. The credential-free defaults are hashing embeddings and a feature reranker; learned Sentence Transformers and cross-encoder adapters require optional dependencies and model loading. Hard-negative mining trains an integrity-sealed pairwise fusion model, with optional bi-encoder and cross-encoder fine-tuning. Context is deduplicated, compressed to an approximate token budget, and accompanied by provenance receipts. Parser coverage is not a promise of six-language execution support: the supplied sandbox image contains Python tools.
 
 The worker never edits the original repository. It operates on a filtered temporary copy and executes tests inside a non-root container with no network, a read-only root filesystem, dropped capabilities, and CPU, memory, PID, and time limits. Jobs are transactional and recoverable: submissions are deduplicated, workers hold expiring leases, abandoned jobs can be reclaimed, and completed artifacts are checked by digest.
 
@@ -209,7 +159,11 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **478 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional. The table below records focused measurements; CI publishes whole-project coverage on each run.
+There are 478 collected test cases. The last full local regression run for implementation commit `504b712` finished with 476 passed and two Docker-dependent tests skipped because the local engine/image was unavailable. Collection was rechecked during this documentation update; that is not a new full execution result.
+
+CI runs on Python 3.11, builds the coding sandbox, executes pytest with coverage, and runs offline control gates, Ruff, dependency auditing, and container build checks. The configured coverage minimum is 30%, not a test-count floor. CI uploads coverage and evaluation artifacts; inspect the run before claiming those checks passed on a particular commit.
+
+The table records historical focused branch-coverage measurements, not whole-project coverage or live-model quality. The latest step-to-answer measurement is documented in [its validation guide](docs/ensemble-outcome-validation.md).
 
 | Module | Focused coverage |
 |---|---:|
@@ -227,13 +181,15 @@ The repository currently contains **478 automated tests**. The CI floor is inten
 
 The deterministic evaluation suites cover more than happy-path output. They exercise evidence injection, copied-source laundering, stale and contradictory evidence, fabricated citations, unsafe high-risk claims, calibration drift, compute-budget violations, process-level reward failures, unsafe trajectory selection, cross-tenant memory access, poisoning, provider failures, cache isolation, canary rollback, contextual-policy support and propensity errors, unsafe tool calls, worker-lease recovery, artifact tampering, and retrieval regressions.
 
-Run the same core checks used in CI:
+After installing the development dependencies below, run a subset of the checks used in CI:
 
 ```bash
 python -m pytest -q --cov --cov-report=term-missing --cov-report=xml
 python -m evals.run_offline_evals --min-score 0.95
+python -m evals.run_experiments --no-store --min-score 0.95
+python -m code_agent.context_evaluation --repository-root . --top-k 8 --min-recall 0.90
 python -m evals.contextual_bandit evals/datasets/contextual_bandit_feedback.jsonl --require-promotion
-python -m evals.process_reward_evaluation --require-promotion
+python -m evals.process_reward_evaluation evals/datasets/process_reward_trajectories.jsonl --require-promotion
 python -m evals.search_planning_evaluation --check evals/experiments/search_planning.report.json --require-promotion
 python -m evals.verifier_uncertainty_evaluation --check-artifact evals/experiments/process_reward_ensemble.json --check-report evals/experiments/verifier_uncertainty.report.json --require-promotion
 python -m evals.world_model_evaluation --require-promotion
@@ -241,13 +197,18 @@ python -m evals.offline_rl_evaluation --require-promotion
 python -m evals.distillation_evaluation --require-promotion
 python -m evals.replay_calibration --drill --require-gate
 python -m evals.prospective_evaluation drill --require-gate
+python -m evals.preference_evaluation drill --require-gate
+python -m evals.preference_shadow_evaluation drill --require-gate
+python -m evals.preference_deployment_evaluation drill --require-gate
 python -m evals.process_supervision_evaluation drill --require-gate
 python -m evals.verifier_shadow_evaluation drill --require-gate
 python -m evals.reviewed_verifier_uncertainty_evaluation drill --require-gate
 python -m evals.ensemble_outcome_evaluation drill --require-gate
-ruff check agent client code_agent evals post_training schema service tests
+python -m ruff check agent client code_agent evals post_training schema scripts service tests
 python -m pip check
 ```
+
+The full command list and artifact uploads are in [.github/workflows/ci.yml](.github/workflows/ci.yml). These drills use authored/synthetic controls and do not activate models. Real reviewed studies require private signed inputs and fresh task families; reusing an exposed holdout with a new policy is rejected. Some output paths are immutable, so use a new output path for a genuinely different experiment rather than overwriting its evidence.
 
 Run the reliability command center locally:
 
@@ -268,16 +229,28 @@ Python 3.11–3.13 is supported.
 
 ```bash
 python -m venv .venv
+```
 
-# Windows PowerShell
+Activate it with the command for your shell:
+
+```powershell
 .venv\Scripts\Activate.ps1
+```
 
+```bash
 # macOS or Linux
 source .venv/bin/activate
+```
 
+Then install the application and its dependencies:
+
+```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements-service.txt -r requirements-app.txt
+python -m pip install --no-deps --editable .
 ```
+
+Run commands from the repository root. The editable install registers the local packages and `agentforge-*` entry points; installing dependencies alone is not the same as installing this project. For tests, lint, and coverage, also install `python -m pip install -r test-requirements.txt`. Alternatively, a fresh development environment can install `requirements.txt` and then the same editable project install.
 
 ### 2. Configure a model provider
 
@@ -285,7 +258,9 @@ python -m pip install -r requirements-service.txt -r requirements-app.txt
 cp .env.example .env
 ```
 
-On Windows PowerShell, use `Copy-Item .env.example .env`. Add at least one of `OPENAI_API_KEY` or `GROQ_API_KEY`. Model credentials stay in the service; clients discover only the configured model IDs through `/capabilities`.
+On Windows PowerShell, use `Copy-Item .env.example .env`. Copy only if `.env` does not already exist; do not overwrite an existing configuration. Add at least one of `OPENAI_API_KEY` or `GROQ_API_KEY` for model responses and replace `USER_AUTH_SECRET` with a long random private value. Provider/model availability must be checked with your own account; the example IDs are configuration examples, not an availability promise. Chroma's configured OpenAI embedding path needs OpenAI credentials for ingestion; a Groq chat key alone does not supply embeddings.
+
+Model credentials stay in the service; clients discover only configured model IDs through `/capabilities`. Real `.env` files, local repositories, evaluation outputs, and the configured checkpoint/store, replay, and process-supervision paths have ignore rules. New private paths need their own rules; check them with `git check-ignore` before staging. Git ignores protect against accidental staging, not disclosure, encryption failures, or previously tracked secrets.
 
 The advanced reliability controls are opt-in so the basic application can start without calibration artifacts or signing keys. Their defaults and explanations are in [.env.example](.env.example).
 
@@ -309,7 +284,9 @@ Open `http://localhost:8501`. API documentation is available at `http://localhos
 docker compose up --build
 ```
 
-The default stack starts the API, UI, PostgreSQL, Redis, Prometheus, and Grafana. Evaluation dashboards are behind the `evaluation` profile:
+The default [compose.yaml](compose.yaml) stack starts the API, UI, PostgreSQL, Redis, Prometheus, and Grafana. Its explicit `environment` values override matching `.env` values, including several disabled AI controls and coding execution. To enable those in containers, use a reviewed Compose override with the correct artifact mounts and keys; changing `.env` alone is not sufficient. The stock stack has neither a coding worker nor a Docker-socket mount.
+
+Evaluation dashboards are behind the `evaluation` profile and read reports from host-mounted `data/evaluations/`. Starting them does not run evaluations or create quality evidence:
 
 ```bash
 docker compose --profile evaluation up --build
@@ -329,6 +306,8 @@ docker compose --profile evaluation up --build
 
 Change the example PostgreSQL, Grafana, authentication, and integrity-signing secrets before exposing the stack outside a local environment.
 
+For local Kubernetes, follow [k8s/README.md](k8s/README.md). That stack differs from Compose: it uses a single API replica with SQLite and does not deploy PostgreSQL, Redis, coding workers, or evaluation dashboards.
+
 ## Try the main workflows
 
 ### Research agent
@@ -341,6 +320,8 @@ Useful demo prompts:
 - `local: explain the checkpoint implementation` — source-grounded local RAG.
 - `How does FastAPI connect to LangGraph in this project?` — relationship and graph retrieval.
 - `What changed in AI news this week?` — web approval, evidence adjudication, and durable resume.
+
+Local/graph questions require an ingested corpus; the service does not automatically index this repository. Evidence adjudication and the other advanced controls appear only when configured. Run live prompts deliberately: they can incur provider charges, and web retrieval needs network access.
 
 ### Ingest local documents
 
@@ -355,13 +336,15 @@ Ingestion is idempotent for unchanged content. Chunks receive deterministic IDs,
 
 ### Run a coding task
 
-Build the purpose-specific sandbox image, then enable `CODE_AGENT_ENABLED`:
+Put an authorized repository beneath `repositories/` and build the purpose-specific sandbox image:
 
 ```bash
 docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
 ```
 
-Submit an authenticated issue to `POST /code/tasks` with an `Idempotency-Key`. Poll the task, inspect its event history and evidence dossier, then explicitly approve or reject the verified patch. The original repository remains unchanged throughout the workflow.
+For a local API on a trusted Docker-capable host, set `CODE_AGENT_ENABLED=true`, `CODE_AGENT_REPOSITORY_ROOT=repositories`, and keep `CODE_AGENT_NETWORK_ENABLED=false`. Restart the API after configuration changes. Submit an authenticated issue to `POST /code/tasks` with an `Idempotency-Key`, a relative repository name such as `sample`, and a trusted fixed test command. Poll the task, inspect its event history and evidence dossier, then explicitly approve or reject the verified patch. Approval releases a diff; it never applies it to the original repository.
+
+See [repositories/README.md](repositories/README.md) for copy exclusions and [the coding-agent guide](docs/code-agent.md) for exact requests and external-worker setup. Do not give a public API container access to the host Docker daemon.
 
 ## Repository map
 
@@ -370,6 +353,8 @@ agent/          LangGraph runtime, retrieval, memory, grounding, and model contr
 code_agent/     Sandboxed coding workflow, code intelligence, security, and benchmarks
 service/        FastAPI endpoints, authentication, persistence, and streaming
 evals/          Datasets, experiment runners, graders, dashboards, and release gates
+repositories/   Git-ignored authorized repositories for coding tasks
+data/           Local runtime stores and outputs; sensitive subpaths are Git-ignored
 post_training/  Reviewed SFT/DPO preparation, LoRA/QLoRA training, and model lineage
 monitoring/     Prometheus and Grafana configuration
 docker/         Runtime and hardened coding-sandbox images
@@ -409,13 +394,13 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 - Learned world-model results use a small, mostly authored transition dataset. They validate action-conditioned prediction, conservative rollouts, artifact integrity, and OOD abstention—not general real-world environment modeling.
 - Conservative offline-RL results use eight authored test episodes with synthetic propensities. They validate CQL, sequential off-policy estimators, PUCT priors, safety masking, and promotion plumbing—not real-traffic policy lift.
 - Reviewed preference reranking learns metadata correlations, not answer semantics. Its synthetic 40-family test demonstrates selection and OOD fallback; offline pools do not reconstruct every live eligibility/PRM decision, so the result is not an end-to-end factuality or live-selector improvement claim.
-- Preference shadow mode compares the actual selectors on already-generated candidates without changing served answers. Its synthetic controls are not randomized traffic lift; reviewed runtime evidence and an owner-approved rollout are still required. Approval checks are opt-in offline leases, not continuous revocation.
+- Preference shadow mode compares selectors on already-generated candidates without changing served answers; synthetic controls are not randomized traffic lift. File-only approvals are offline leases. The optional deployment registry adds live source checks and delayed-outcome revocation at each admission or operator check, but has no background watchdog and cannot retract an answer already committed.
 
 These boundaries are intentional. Good AI engineering includes knowing what the evidence supports—and what it does not.
 
 ## Resume summary
 
-> Built AgentForge, an 18-node LangGraph agent platform combining hybrid and graph RAG, durable human approval, evidence-conflict detection, claim-level grounding, conformal selective answering, and PUCT planning with conservative offline-RL action priors, a learned transition world model, calibrated process-reward ensembles, epistemic OOD controls, replayable plans, and a privacy-safe active-learning loop. Added sequential doubly robust policy evaluation, contextual-bandit routing, tenant-isolated memory, a policy-gated coding agent with six-language Tree-sitter retrieval, FastAPI/SSE serving, privacy-safe telemetry, adversarial evaluation, and Docker/Kubernetes deployment assets.
+> Built an evaluation-driven AI agent platform with an 18-node LangGraph research workflow, hybrid retrieval, durable human approval, configurable grounding and uncertainty gates, and a sandboxed coding agent that produces tested, owner-approved diffs. Implemented signed replay, independently reviewed step learning, and prospective same-pool outcome studies with task-family holdout governance. Verified the implementation with 476 passing local tests; two Docker-dependent tests were skipped.
 
 When using this project in a resume or interview, lead with one measurable workflow rather than listing every subsystem. A strong walkthrough is: retrieve evidence, detect a conflict, withhold an unsupported answer, show the trace and evaluation result, then explain the trade-off between answer coverage, accuracy, latency, and cost.
 
@@ -453,5 +438,8 @@ When using this project in a resume or interview, lead with one measurable workf
 - [GenAI observability](docs/genai-observability.md)
 - [Self-improvement flywheel](docs/self-improvement-flywheel.md)
 - [Post-training](docs/post-training.md)
+- [Kubernetes setup and deployment boundaries](k8s/README.md)
+- [Local coding repositories](repositories/README.md)
+- [Private holdout handling](evals/datasets/private/README.md)
 
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). AgentForge is released under the [MIT License](LICENSE).
