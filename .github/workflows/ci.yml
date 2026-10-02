@@ -106,6 +106,7 @@ jobs:
           python -m evals.process_supervision_evaluation drill --require-gate
           python -m evals.verifier_shadow_evaluation drill --require-gate
           python -m evals.reviewed_verifier_uncertainty_evaluation drill --require-gate
+          python -m evals.ensemble_outcome_evaluation drill --require-gate
           python -m evals.flywheel --help
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
@@ -311,6 +312,13 @@ jobs:
         with:
           name: reviewed-verifier-uncertainty
           path: data/evaluations/reviewed-verifier-uncertainty/drill.json
+          if-no-files-found: error
+
+      - name: Upload step-ensemble final-outcome controls
+        uses: actions/upload-artifact@v4
+        with:
+          name: ensemble-final-outcome-validation
+          path: data/evaluations/ensemble-outcomes/drill.json
           if-no-files-found: error
 
       - name: Upload contextual-bandit policy evidence

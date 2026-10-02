@@ -33,6 +33,7 @@ from agent.adaptive_compute import (
     verify_plan,
 )
 from agent.distilled_policy import DistilledPlanningPolicy
+from agent.ensemble_outcome_shadow import EnsembleOutcomeShadowStore
 from agent.evidence_quality import EvidenceQualityPolicy, adjudicate_evidence
 from agent.execution_replay import ExecutionReplayStore
 from agent.grounding import (
@@ -129,6 +130,7 @@ class AgentState(MessagesState):
     preference_deployment_receipt: dict
     process_supervision_receipt: dict
     verifier_shadow_receipt: dict
+    ensemble_outcome_shadow_receipt: dict
     evidence_quality_report: dict
     adjudicated_evidence: list[dict]
 
@@ -360,6 +362,8 @@ PREFERENCE_DEPLOYMENT_ENABLED = os.getenv("PREFERENCE_DEPLOYMENT_ENABLED", "fals
 PROCESS_SUPERVISION_ENABLED = os.getenv("PROCESS_SUPERVISION_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 VERIFIER_SHADOW_ENABLED = os.getenv("VERIFIER_SHADOW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 VERIFIER_SHADOW_STUDY_ID = os.getenv("VERIFIER_SHADOW_STUDY_ID", "").strip()
+ENSEMBLE_OUTCOME_SHADOW_ENABLED = os.getenv("ENSEMBLE_OUTCOME_SHADOW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+ENSEMBLE_OUTCOME_SHADOW_STUDY_ID = os.getenv("ENSEMBLE_OUTCOME_SHADOW_STUDY_ID", "").strip()
 PROCESS_SUPERVISION_MODEL_KEY = os.getenv("PROCESS_SUPERVISION_MODEL_KEY", "").encode()
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
@@ -1289,6 +1293,7 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "preference_deployment_receipt": {},
         "process_supervision_receipt": {},
         "verifier_shadow_receipt": {},
+        "ensemble_outcome_shadow_receipt": {},
         "evidence_quality_report": {},
         "adjudicated_evidence": [],
     }
@@ -2381,7 +2386,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
                 )
             latency_ms = (time.perf_counter() - call_started) * 1000
             process_reward = _candidate_process_reward(report, plan.high_risk)
-            if VERIFIER_SHADOW_ENABLED:
+            if VERIFIER_SHADOW_ENABLED or ENSEMBLE_OUTCOME_SHADOW_ENABLED:
                 verifier_incumbents.add(_process_reward_scorer.artifact.artifact_fingerprint
                                         if PROCESS_REWARD_MODEL_ENABLED else "confidence-only")
             assessment = candidate_assessment(
@@ -2509,6 +2514,11 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         verifier_shadow_receipt = await _capture_verifier_shadow(
             plan, receipt, candidates, policy, config, verifier_incumbents,
         )
+    ensemble_outcome_shadow_receipt = {}
+    if ENSEMBLE_OUTCOME_SHADOW_ENABLED and replay_event_ids:
+        ensemble_outcome_shadow_receipt = await _capture_verifier_shadow(
+            plan, receipt, candidates, policy, config, verifier_incumbents, ensemble=True,
+        )
     source_meta = (state.get("answer_source_meta") or "").strip()
     if selected is None:
         final = (
@@ -2528,6 +2538,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             "preference_deployment_receipt": deployment_receipt,
             "process_supervision_receipt": process_supervision_receipt,
             "verifier_shadow_receipt": verifier_shadow_receipt,
+            "ensemble_outcome_shadow_receipt": ensemble_outcome_shadow_receipt,
         }
 
     answer, report, uncertainty = selected
@@ -2547,14 +2558,18 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         "preference_deployment_receipt": deployment_receipt,
         "process_supervision_receipt": process_supervision_receipt,
         "verifier_shadow_receipt": verifier_shadow_receipt,
+        "ensemble_outcome_shadow_receipt": ensemble_outcome_shadow_receipt,
     }
 
 
-async def _capture_verifier_shadow(plan, receipt, candidates, policy, config, incumbent_fingerprints) -> dict:
+async def _capture_verifier_shadow(plan, receipt, candidates, policy, config, incumbent_fingerprints, *, ensemble=False) -> dict:
     configurable = config.get("configurable") or {}
     tenant = str(configurable.get("user_id") or "").strip()
     request = str(configurable.get("execution_replay_request_id") or config.get("run_id") or "")
-    if (not VERIFIER_SHADOW_ENABLED or not PROCESS_SUPERVISION_ENABLED or not EXECUTION_REPLAY_ENABLED
+    enabled = ENSEMBLE_OUTCOME_SHADOW_ENABLED if ensemble else VERIFIER_SHADOW_ENABLED
+    study_id = ENSEMBLE_OUTCOME_SHADOW_STUDY_ID if ensemble else VERIFIER_SHADOW_STUDY_ID
+    store_class = EnsembleOutcomeShadowStore if ensemble else VerifierShadowStore
+    if (not enabled or not PROCESS_SUPERVISION_ENABLED or not EXECUTION_REPLAY_ENABLED
             or PREFERENCE_RANKING_ENABLED or configurable.get("execution_replay_consent") is not True
             or not tenant or not request):
         return {}
@@ -2563,8 +2578,8 @@ async def _capture_verifier_shadow(plan, receipt, candidates, policy, config, in
         if len(incumbent_fingerprints) != 1:
             raise ValueError("incumbent changed during candidate scoring")
         replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
-        shadow = VerifierShadowStore(replay, PROCESS_SUPERVISION_MODEL_KEY)
-        row = shadow.capture(VERIFIER_SHADOW_STUDY_ID, tenant, request, plan, receipt, candidates, policy,
+        shadow = store_class(replay, PROCESS_SUPERVISION_MODEL_KEY)
+        row = shadow.capture(study_id, tenant, request, plan, receipt, candidates, policy,
                              consent=True, incumbent_fingerprint=next(iter(incumbent_fingerprints)),
                              compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY)
         return {"status": "captured", "comparison_fingerprint": row.fingerprint}

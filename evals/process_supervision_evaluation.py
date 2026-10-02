@@ -278,12 +278,15 @@ def seed_process(
     review_fraction: float = 1,
     shifted: bool = False,
     origin: str = "synthetic",
+    varied_confidence: bool = False,
 ) -> ProcessCohort:
     clock = [0.0]
     store.replay.clock = lambda: clock[0]
     for split, timestamp, count in (("train", 100, 20), ("validation", 300, 10), ("test", 500, 20)):
         for index in range(count):
             clock[0] = float(timestamp + index)
+            good_confidence = round(0.75 + 0.01 * (index % 20), 6) if varied_confidence else 0.9
+            bad_confidence = round(min(0.99, 0.55 + 0.025 * (index % 20)), 6) if varied_confidence else 0.6
             policy = ComputePolicy()
             plan = plan_compute(
                 ComputeSignals(
@@ -306,7 +309,10 @@ def seed_process(
                     token_count=100,
                     latency_ms=10,
                 )
-                for name, confidence, good in (("good", 0.9, True), ("bad", 0.6, False))
+                for name, confidence, good in (
+                    ("good", good_confidence, True),
+                    ("bad", bad_confidence, False),
+                )
             ]
             receipt = select_candidate(plan, candidates, policy)
             ids = store.replay.capture(
@@ -320,7 +326,7 @@ def seed_process(
             )
             captured = []
             for event_id, good in zip(ids, (True, False), strict=True):
-                confidence = 0.9 if good else 0.6
+                confidence = good_confidence if good else bad_confidence
                 steps = [
                     ProcessStep(
                         step_id="PRIVATE step identifier", kind="retrieve", has_evidence=True, confidence=1

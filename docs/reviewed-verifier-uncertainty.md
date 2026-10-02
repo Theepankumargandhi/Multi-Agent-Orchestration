@@ -164,5 +164,7 @@ fresh-family holdout controls, and missing-review-aware risk/coverage evaluation
 
 There is no runtime activation flag for this artifact. Before any future serving integration,
 evaluate a preregistered mapping from these **step** predictions to final-answer decisions on new
-terminal outcomes. The existing [verifier shadow workflow](verifier-shadow-validation.md) shows
-the required evaluation discipline, but its current model schema does not accept this artifact.
+terminal outcomes. The new [ensemble outcome study](ensemble-outcome-validation.md) implements that
+non-serving evaluation and a no-step-guard ablation. The legacy PRM shadow schema still does not
+accept this artifact; the new protocol uses separate signed types and tables, not an implicit
+replacement of an existing registered model.

@@ -81,7 +81,7 @@ class VerifierComparison(SignedRecord):
     required_consensus: float = Field(ge=0, le=1)
     choices: list[VerifierChoice] = Field(min_length=1, max_length=5)
 
-    def releasable(self):
+    def releasable(self, shadow=False):
         return [
             row
             for row in self.choices
@@ -129,11 +129,10 @@ class VerifierComparison(SignedRecord):
             != 1
         ):
             raise ValueError("verifier pool crosses source requests")
-        releasable = self.releasable()
 
         def choose(shadow):
             selected = max(
-                releasable,
+                self.releasable(shadow),
                 key=lambda row: (
                     row.score
                     if shadow
@@ -172,18 +171,33 @@ class VerifierCohort(SignedRecord):
 
 
 class VerifierShadowStore:
+    # Fixed schemas/tables let other NON-SERVING verifier studies reuse source,
+    # eligibility, chronology and review controls without changing old payloads.
+    study_schema = VerifierStudy
+    choice_schema = VerifierChoice
+    comparison_schema = VerifierComparison
+    member_schema = VerifierMember
+    cohort_schema = VerifierCohort
+    study_table = "verifier_studies"
+    comparison_table = "verifier_comparisons"
+
     def __init__(self, replay: ExecutionReplayStore, model_key: bytes):
         if len(model_key) < 32 or model_key == replay.key:
             raise ValueError("verifier shadow requires an independent model key")
         self.replay, self.model_key = replay, model_key
+        if (self.study_table, self.comparison_table) not in {
+            ("verifier_studies", "verifier_comparisons"),
+            ("ensemble_outcome_studies", "ensemble_outcome_comparisons"),
+        }:
+            raise ValueError("unsupported verifier shadow tables")
         self.process = ProcessSupervisionStore(replay)
         with replay._db() as db:
             db.execute(
-                "CREATE TABLE IF NOT EXISTS verifier_studies (study_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, payload TEXT NOT NULL)"
+                f"CREATE TABLE IF NOT EXISTS {self.study_table} (study_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, payload TEXT NOT NULL)"
             )
             # Deliberately retain comparisons on individual source deletion: lineage must fail, not shrink silently.
             db.execute(
-                "CREATE TABLE IF NOT EXISTS verifier_comparisons (study_id TEXT NOT NULL REFERENCES verifier_studies(study_id) ON DELETE CASCADE, request_group TEXT NOT NULL, tenant TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(study_id, request_group))"
+                f"CREATE TABLE IF NOT EXISTS {self.comparison_table} (study_id TEXT NOT NULL REFERENCES {self.study_table}(study_id) ON DELETE CASCADE, request_group TEXT NOT NULL, tenant TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(study_id, request_group))"
             )
 
     def check_study(self, study: VerifierStudy, tenant: str):
@@ -221,10 +235,11 @@ class VerifierShadowStore:
         compute: ComputePolicy,
         policy: VerifierTrialPolicy,
         incumbent_fingerprint: str = "confidence-only",
+        **study_fields,
     ) -> VerifierStudy:
         if not tenant.strip() or not name.strip() or len(name) > 128:
             raise ValueError("verifier study requires name and tenant")
-        study = VerifierStudy(
+        study = self.study_schema(
             study_id=digest(self.replay.key, "verifier-study", [tenant, name]),
             tenant=digest(self.replay.key, "tenant", tenant),
             registered_at=self.replay.clock(),
@@ -234,22 +249,23 @@ class VerifierShadowStore:
             candidate=candidate,
             training_cohort=training,
             training_report=report,
+            **study_fields,
         ).seal(self.replay.key)
         self.check_study(study, tenant)
         with self.replay._db() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute(
-                "SELECT payload FROM verifier_studies WHERE study_id=?", (study.study_id,)
+                f"SELECT payload FROM {self.study_table} WHERE study_id=?", (study.study_id,)
             ).fetchone()
             if previous:
-                old = VerifierStudy.model_validate_json(previous[0])
+                old = self.study_schema.model_validate_json(previous[0])
                 self.check_study(old, tenant)
                 ignored = {"registered_at", "fingerprint"}
                 if old.model_dump(exclude=ignored) != study.model_dump(exclude=ignored):
                     raise ValueError("registered verifier study is immutable")
                 return old
             db.execute(
-                "INSERT INTO verifier_studies VALUES (?, ?, ?)",
+                f"INSERT INTO {self.study_table} VALUES (?, ?, ?)",
                 (study.study_id, study.tenant, study.model_dump_json()),
             )
         return study
@@ -257,15 +273,33 @@ class VerifierShadowStore:
     def study(self, study_id: str, tenant: str) -> VerifierStudy:
         with self.replay._db() as db:
             row = db.execute(
-                "SELECT tenant, payload FROM verifier_studies WHERE study_id=?", (study_id,)
+                f"SELECT tenant, payload FROM {self.study_table} WHERE study_id=?", (study_id,)
             ).fetchone()
         if row is None:
             raise ValueError("register verifier study before capture")
-        study = VerifierStudy.model_validate_json(row[1])
+        study = self.study_schema.model_validate_json(row[1])
         self.check_study(study, tenant)
         if study.study_id != study_id or row[0] != study.tenant:
             raise ValueError("verifier study index mismatch")
         return study
+
+    def assess_snapshot(self, study, snapshot):
+        score = ProcessRewardScorer(study.candidate.artifact).score_steps(
+            [step.process_step(i) for i, step in enumerate(snapshot.steps)], snapshot.source.high_risk
+        )
+        return score, {}
+
+    def proposal_allowed(self, extras):
+        return True
+
+    def comparison_extras(self, study, choices):
+        return {}
+
+    def review_events(self, study, row):
+        return {row.baseline_event, *(row.select(t) for t in study.trial_policy.curve_thresholds)} - {""}
+
+    def report_extras(self, cohort):
+        return {}
 
     def capture(
         self,
@@ -301,13 +335,8 @@ class VerifierShadowStore:
         snapshots = {
             snap.source.candidate: snap for snap, _ in rows.values() if snap.source.request_group == group
         }
-        scorer = ProcessRewardScorer(study.candidate.artifact)
-        scores = {
-            candidate: scorer.score_steps(
-                [step.process_step(i) for i, step in enumerate(snap.steps)], snap.source.high_risk
-            )
-            for candidate, snap in snapshots.items()
-        }
+        assessments = {candidate: self.assess_snapshot(study, snap) for candidate, snap in snapshots.items()}
+        scores = {candidate: assessment[0] for candidate, assessment in assessments.items()}
         alternate = select_candidate(
             plan,
             [
@@ -365,7 +394,7 @@ class VerifierShadowStore:
             ):
                 raise ValueError("verifier snapshot source binding failed")
             choices.append(
-                VerifierChoice(
+                self.choice_schema(
                     snapshot=snap,
                     eligible=row.eligible,
                     conformal_decision=row.conformal_decision,
@@ -373,6 +402,7 @@ class VerifierShadowStore:
                     baseline_reward=row.process_reward,
                     score=scores[snap.source.candidate],
                     tie_rank=ranks[row.candidate_id],
+                    **assessments[snap.source.candidate][1],
                 )
             )
         if not choices or len(choices) != len(snapshots):
@@ -381,25 +411,31 @@ class VerifierShadowStore:
         def event_for(name):
             return snapshots[digest(self.replay.key, "candidate", name)].source.event_id if name else ""
 
-        comparison = VerifierComparison(
+        proposed = event_for(alternate.selected_candidate_id)
+        if proposed and not self.proposal_allowed(
+            assessments[digest(self.replay.key, "candidate", alternate.selected_candidate_id)][1]
+        ):
+            proposed = ""
+        comparison = self.comparison_schema(
             study_id=study_id,
             request_group=group,
             captured_at=self.replay.clock(),
             baseline_event=event_for(baseline.selected_candidate_id),
-            proposed_event=event_for(alternate.selected_candidate_id),
+            proposed_event=proposed,
             minimum_confidence=min(1, plan.initial_confidence + policy.min_confidence_gain),
             required_consensus=policy.high_risk_min_consensus if plan.high_risk else policy.min_consensus,
             choices=choices,
+            **self.comparison_extras(study, choices),
         ).seal(self.replay.key)
         comparison.verify(self.replay.key)
         with self.replay._db() as db:
             db.execute("BEGIN IMMEDIATE")
             old = db.execute(
-                "SELECT payload FROM verifier_comparisons WHERE study_id=? AND request_group=?",
+                f"SELECT payload FROM {self.comparison_table} WHERE study_id=? AND request_group=?",
                 (study_id, group),
             ).fetchone()
             if old:
-                previous = VerifierComparison.model_validate_json(old[0])
+                previous = self.comparison_schema.model_validate_json(old[0])
                 previous.verify(self.replay.key)
                 if previous.model_dump(exclude={"captured_at", "fingerprint"}) != comparison.model_dump(
                     exclude={"captured_at", "fingerprint"}
@@ -431,7 +467,7 @@ class VerifierShadowStore:
                 if source.observed_at <= study.registered_at or comparison.captured_at < source.observed_at:
                     raise ValueError("verifier request must follow registration")
             db.execute(
-                "INSERT INTO verifier_comparisons VALUES (?, ?, ?, ?)",
+                f"INSERT INTO {self.comparison_table} VALUES (?, ?, ?, ?)",
                 (study_id, group, study.tenant, comparison.model_dump_json()),
             )
         return comparison
@@ -440,23 +476,23 @@ class VerifierShadowStore:
         study = self.study(study_id, tenant)
         with self.replay._db() as db:
             data = db.execute(
-                "SELECT request_group, tenant, payload FROM verifier_comparisons WHERE study_id=?",
+                f"SELECT request_group, tenant, payload FROM {self.comparison_table} WHERE study_id=?",
                 (study_id,),
             ).fetchall()
         result = []
         snapshots = self.process.rows(tenant)
-        scorer = ProcessRewardScorer(study.candidate.artifact)
         for group, tenant_hash, payload in data:
-            row = VerifierComparison.model_validate_json(payload)
+            row = self.comparison_schema.model_validate_json(payload)
             row.verify(self.replay.key)
             if row.request_group != group or row.study_id != study_id or tenant_hash != study.tenant:
                 raise ValueError("verifier comparison index mismatch")
             for choice in row.choices:
                 snap = choice.snapshot
-                if snapshots.get(snap.source.event_id, (None,))[
-                    0
-                ] != snap or choice.score != scorer.score_steps(
-                    [step.process_step(i) for i, step in enumerate(snap.steps)], snap.source.high_risk
+                score, extras = self.assess_snapshot(study, snap)
+                if (
+                    snapshots.get(snap.source.event_id, (None,))[0] != snap
+                    or choice.score != score
+                    or any(getattr(choice, name) != value for name, value in extras.items())
                 ):
                     raise ValueError("verifier workflow lineage or score changed")
             result.append(row)
@@ -494,7 +530,7 @@ class VerifierShadowStore:
             ):
                 raise ValueError("verifier review predates comparison")
             members.append(
-                VerifierMember(
+                self.member_schema(
                     comparison=row,
                     task_family=family.task_family,
                     labels=[
@@ -506,7 +542,7 @@ class VerifierShadowStore:
                     ],
                 )
             )
-        return VerifierCohort(
+        return self.cohort_schema(
             study=study, frozen_at=frozen_at, members=members, exclusions=dict(excluded)
         ).seal(self.replay.key)
 
@@ -521,10 +557,7 @@ class VerifierShadowStore:
         for member in cohort.members:
             row = member.comparison
             # Review the union of every preregistered curve choice and the incumbent, not only disagreements.
-            events = {
-                row.baseline_event,
-                *(row.select(threshold) for threshold in cohort.study.trial_policy.curve_thresholds),
-            } - {""}
+            events = self.review_events(cohort.study, row)
             known = {
                 choice.snapshot.source.event_id
                 for choice, label in zip(row.choices, member.labels, strict=True)

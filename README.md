@@ -109,6 +109,13 @@ flowchart TD
     StepUncertainty --> StepRiskGate[Fresh-family risk/coverage and missing-review evaluation]
     HoldoutLedger --> StepRiskGate
     StepRiskGate --> StepEnsembleReview[Step artifact for review only, not a serving model]
+    StepEnsembleReview --> EnsembleStudy[Preregistered step-to-answer aggregation]
+    EnsembleStudy --> EnsemblePairs[Guarded and unguarded pre-review outcome shadows]
+    Candidates -->|unchanged incumbent and pool| EnsemblePairs
+    EnsemblePairs --> EnsembleOutcomes[Independent future-family terminal reviews]
+    EnsembleOutcomes --> EnsembleGate[Final-answer risk, coverage and paired utility gate]
+    HoldoutLedger --> EnsembleGate
+    EnsembleGate --> EnsembleReview[Owner review only, no ensemble serving]
     StepCandidate --> VerifierStudy[Preregistered verifier shadow study]
     Candidates -->|same pool, unchanged served answer| VerifierPairs[Pre-review verifier comparisons]
     VerifierStudy --> VerifierPairs
@@ -161,6 +168,7 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Reviewed workflow supervision | Frozen runtime workflow features, independent immutable step annotations, explicit-label-only PRM training, chronological family splits, validation-only temperature calibration, constant/weak-credit ablations, and conservative missing-review gates |
 | Verifier outcome validation | Preregistered non-serving PRM comparisons using the actual selector, unchanged eligibility, retained abstentions, descriptive risk/coverage curves, fixed primary thresholds, paired terminal-utility bounds, and source-revocation checks |
 | Reviewed verifier uncertainty | Whole-family bootstrap step ensembles, explicit labels only, validation-calibrated member predictions, training-feature support guards, missing-review-aware family-macro risk/coverage curves, single-model ablation, and signed offline candidates |
+| Step-to-answer validation | Probability-correct aggregation, all-step deferral, prospective guarded/unguarded same-pool answer shadows, independent terminal reviews, retained abstentions, fresh-family outcome gates, and unchanged serving behavior |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
 | Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
@@ -201,7 +209,7 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **455 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional. The table below records focused measurements; CI publishes whole-project coverage on each run.
+The repository currently contains **478 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional. The table below records focused measurements; CI publishes whole-project coverage on each run.
 
 | Module | Focused coverage |
 |---|---:|
@@ -209,6 +217,7 @@ The repository currently contains **455 automated tests**. The CI floor is inten
 | Verifier-guided search | 93% |
 | Calibrated verifier ensemble | 90% |
 | Reviewed step ensemble + offline evaluator (combined) | 96% |
+| Step-to-answer adapter + outcome control runner (combined) | 98% |
 | Evidence quality | 97% |
 | Conformal uncertainty | 95% |
 | Grounding verification | 94% |
@@ -235,6 +244,7 @@ python -m evals.prospective_evaluation drill --require-gate
 python -m evals.process_supervision_evaluation drill --require-gate
 python -m evals.verifier_shadow_evaluation drill --require-gate
 python -m evals.reviewed_verifier_uncertainty_evaluation drill --require-gate
+python -m evals.ensemble_outcome_evaluation drill --require-gate
 ruff check agent client code_agent evals post_training schema service tests
 python -m pip check
 ```
@@ -393,6 +403,7 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 - Independently reviewed process learning predicts correctness of typed workflow proxies, not hidden reasoning or chain-of-thought. Its synthetic controls test leakage prevention and evaluation holds; final-answer lift still needs diverse reviewed runtime data and a separate selective-release evaluation. No model is activated automatically.
 - Verifier shadows evaluate frozen same-pool selections, not changes to generation or randomized traffic lift. Their curve thresholds are registered before collection; only the fixed primary threshold gates owner review. Small synthetic controls are not evidence of live factuality or token-cost savings.
 - Reviewed step ensembles are offline prediction artifacts, not answer-release models. Their feature envelopes cannot detect semantic shift, and bootstrap percentiles are not finite-sample risk guarantees. The repetitive clean control matches the single-model baseline; it does not demonstrate an ensemble accuracy gain or activate a verifier.
+- Step-to-answer outcome shadows test a preregistered ranking heuristic on the same generated pool. Synthetic unsafe-shift and deferral controls are not live factuality or causal traffic lift. Conservative deferral can reject correct answers; an independent terminal-outcome gate is still required, and no ensemble model is served automatically.
 - Verifier-guided search results use deterministic synthetic transitions. They validate planning, budgets, fail-closed behavior, and replay integrity—not real-world reasoning quality or provider cost savings.
 - Verifier-ensemble shift results use one controlled behaviorally inverted member and only three calibration traces. They validate disagreement detection, conservative scoring, and active-learning plumbing—not production OOD coverage.
 - Learned world-model results use a small, mostly authored transition dataset. They validate action-conditioned prediction, conservative rollouts, artifact integrity, and OOD abstention—not general real-world environment modeling.
@@ -432,6 +443,7 @@ When using this project in a resume or interview, lead with one measurable workf
 - [Independent workflow supervision and verifier retraining](docs/reviewed-process-supervision.md)
 - [Verifier shadows, risk/coverage curves, and final-outcome validation](docs/verifier-shadow-validation.md)
 - [Independently reviewed verifier ensembles and selective step uncertainty](docs/reviewed-verifier-uncertainty.md)
+- [Step-to-answer aggregation and prospective ensemble outcome validation](docs/ensemble-outcome-validation.md)
 - [Agent memory](docs/agent-memory.md)
 - [Inference gateway](docs/inference-gateway.md)
 - [Online AI governance](docs/online-ai-governance.md)

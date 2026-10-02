@@ -35,7 +35,7 @@ def _utility(label):
     return value, value
 
 
-def threshold_metrics(cohort: VerifierCohort, threshold: float) -> dict:
+def threshold_metrics(cohort: VerifierCohort, threshold: float, *, unguarded: bool = False) -> dict:
     outcomes = []
     for member in cohort.members:
         row = member.comparison
@@ -43,7 +43,7 @@ def threshold_metrics(cohort: VerifierCohort, threshold: float) -> dict:
             choice.snapshot.source.event_id: label
             for choice, label in zip(row.choices, member.labels, strict=True)
         }
-        proposed = row.select(threshold)
+        proposed = row.select_unguarded(threshold) if unguarded else row.select(threshold)
         baseline = row.baseline_event
 
         def interval(event):
@@ -179,6 +179,7 @@ def evaluate_verifier(
         "failure_reasons": sorted(set(failures)),
         "ready_for_owner_review": not failures and not cohort.study.candidate.simulation,
         "production_activation": False,
+        **store.report_extras(cohort),
     }
     report["fingerprint"] = digest(key, "verifier-shadow-report", report)
     ledger.finish(study_id, report)
@@ -303,7 +304,16 @@ def run_drill():
     }
 
 
-def main(argv=None):
+def main(
+    argv=None,
+    *,
+    store_class=VerifierShadowStore,
+    cohort_class=VerifierCohort,
+    candidate_class=ReviewedProcessCandidate,
+    drill_runner=run_drill,
+    default_output="data/evaluations/verifier-shadow/drill.json",
+    aggregation_class=None,
+):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--store", default=os.getenv("EXECUTION_REPLAY_PATH", "data/execution-replay/replay.sqlite3")
@@ -319,6 +329,8 @@ def main(argv=None):
     register.add_argument("--compute-policy", required=True)
     register.add_argument("--trial-policy", required=True)
     register.add_argument("--incumbent-fingerprint", default="confidence-only")
+    if aggregation_class is not None:
+        register.add_argument("--aggregation-policy", required=True)
     queue = commands.add_parser("queue")
     queue.add_argument("study_id")
     freeze = commands.add_parser("freeze")
@@ -329,7 +341,7 @@ def main(argv=None):
     evaluate.add_argument("--output", required=True)
     evaluate.add_argument("--require-gate", action="store_true")
     drill = commands.add_parser("drill")
-    drill.add_argument("--output", default="data/evaluations/verifier-shadow/drill.json")
+    drill.add_argument("--output", default=default_output)
     drill.add_argument("--require-gate", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -355,11 +367,11 @@ def main(argv=None):
             if Path(args.output).resolve() in protected:
                 raise ValueError("output aliases input, storage, or active verifier")
         if args.command == "drill":
-            report = run_drill()
+            report = drill_runner()
         else:
             if not args.tenant.strip():
                 raise ValueError("verifier study requires tenant")
-            store = VerifierShadowStore(
+            store = store_class(
                 ExecutionReplayStore(args.store, os.getenv("EXECUTION_REPLAY_KEY", "").encode()),
                 os.getenv("PROCESS_SUPERVISION_MODEL_KEY", "").encode(),
             )
@@ -368,7 +380,7 @@ def main(argv=None):
                 def read(path):
                     return json.loads(Path(path).read_text(encoding="utf-8"))
 
-                candidate = ReviewedProcessCandidate.model_validate(read(args.candidate))
+                candidate = candidate_class.model_validate(read(args.candidate))
                 if candidate.simulation:
                     raise ValueError("synthetic candidates are for the drill, not runtime registration")
                 study = store.register(
@@ -380,6 +392,11 @@ def main(argv=None):
                     ComputePolicy.model_validate(read(args.compute_policy)),
                     VerifierTrialPolicy.model_validate(read(args.trial_policy)),
                     args.incumbent_fingerprint,
+                    **(
+                        {"aggregation": aggregation_class.model_validate(read(args.aggregation_policy))}
+                        if aggregation_class
+                        else {}
+                    ),
                 )
                 print(json.dumps({"study_id": study.study_id, "registered_at": study.registered_at}))
                 return 0
@@ -391,7 +408,7 @@ def main(argv=None):
                 write_once(args.output, cohort.model_dump(mode="json"))
                 print(json.dumps({"families": len(cohort.members), "fingerprint": cohort.fingerprint}))
                 return 0
-            cohort = VerifierCohort.model_validate_json(Path(args.cohort).read_text(encoding="utf-8"))
+            cohort = cohort_class.model_validate_json(Path(args.cohort).read_text(encoding="utf-8"))
             if cohort.study.candidate.simulation:
                 raise ValueError("use the drill for synthetic evidence")
             report = evaluate_verifier(
