@@ -1137,6 +1137,9 @@ async def capabilities():
             "search_policy_distillation": os.getenv(
                 "SEARCH_DISTILLATION_ENABLED", "false"
             ).strip().lower() in {"1", "true", "yes", "on"},
+            "execution_feedback_calibration": os.getenv(
+                "EXECUTION_REPLAY_ENABLED", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"},
             "uncertainty_aware_verifier_ensemble": bool(
                 os.getenv("VERIFIER_ENSEMBLE_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}
@@ -1413,6 +1416,8 @@ def _parse_input(
     config = _checkpoint_config(user_id, thread_id, selected_model)
     config["configurable"]["requested_model"] = user_input.model
     config["configurable"]["model_selection"] = model_selection
+    config["configurable"]["execution_replay_consent"] = user_input.execution_replay_consent
+    config["configurable"]["execution_replay_request_id"] = str(run_id)
     config["run_id"] = run_id
     kwargs = dict(
         input=(Command(resume=resume_value) if resume_value is not None else {"messages": [input_message.to_langchain()]}),
@@ -1674,6 +1679,7 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
                 "adaptive_compute_receipt_fingerprint": (
                     response.get("adaptive_compute_receipt") or {}
                 ).get("receipt_fingerprint"),
+                "execution_replay_event_ids": response.get("execution_replay_event_ids") or [],
                 "evidence_quality_action": (
                     response.get("evidence_quality_report") or {}
                 ).get("action"),

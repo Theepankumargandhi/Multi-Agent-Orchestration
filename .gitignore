@@ -18,6 +18,7 @@ data/chroma_db/
 data/graph_chroma_db/
 data/code-agent/
 data/memory/
+data/execution-replay/
 
 # VSCode
 .vscode

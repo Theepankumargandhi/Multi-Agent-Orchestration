@@ -74,6 +74,8 @@ agentforge-verifier-review = "agent.verifier_active_learning:main"
 agentforge-world-model-eval = "evals.world_model_evaluation:main"
 agentforge-offline-rl-eval = "evals.offline_rl_evaluation:main"
 agentforge-distillation-eval = "evals.distillation_evaluation:main"
+agentforge-execution-replay = "agent.execution_replay:main"
+agentforge-replay-calibration = "evals.replay_calibration:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*", "client*", "code_agent*", "evals*", "post_training*", "schema*", "service*"]

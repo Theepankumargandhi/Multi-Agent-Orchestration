@@ -49,6 +49,10 @@ class UserInput(BaseModel):
         examples=["847c6285-8fc9-4560-a83f-4e6285809254"],
         max_length=128,
     )
+    execution_replay_consent: bool = Field(
+        default=False, strict=True,
+        description="Opt in this request to private, content-free candidate feedback capture.",
+    )
 
     @field_validator("message")
     @classmethod

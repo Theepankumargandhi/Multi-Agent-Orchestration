@@ -34,6 +34,7 @@ from agent.adaptive_compute import (
 )
 from agent.distilled_policy import DistilledPlanningPolicy
 from agent.evidence_quality import EvidenceQualityPolicy, adjudicate_evidence
+from agent.execution_replay import ExecutionReplayStore
 from agent.grounding import (
     GroundingPolicy,
     GroundingReport,
@@ -118,6 +119,7 @@ class AgentState(MessagesState):
     uncertainty_receipt: dict
     adaptive_compute_plan: dict
     adaptive_compute_receipt: dict
+    execution_replay_event_ids: list[str]
     evidence_quality_report: dict
     adjudicated_evidence: list[dict]
 
@@ -331,6 +333,11 @@ SEARCH_DISTILLATION_PATH = Path(os.getenv(
 ))
 _distilled_policy = None
 _distilled_policy_mtime_ns = -1
+EXECUTION_REPLAY_ENABLED = os.getenv("EXECUTION_REPLAY_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+EXECUTION_REPLAY_PATH = Path(os.getenv("EXECUTION_REPLAY_PATH", "data/execution-replay/replay.sqlite3"))
+EXECUTION_REPLAY_KEY = os.getenv("EXECUTION_REPLAY_KEY", "").encode()
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1254,6 +1261,7 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "uncertainty_receipt": {},
         "adaptive_compute_plan": {},
         "adaptive_compute_receipt": {},
+        "execution_replay_event_ids": [],
         "evidence_quality_report": {},
         "adjudicated_evidence": [],
     }
@@ -2229,6 +2237,7 @@ async def grounding_verifier_agent(state: AgentState, config: RunnableConfig):
         "uncertainty_receipt": {},
         "adaptive_compute_plan": {},
         "adaptive_compute_receipt": {},
+        "execution_replay_event_ids": [],
     }
     if UNCERTAINTY_CALIBRATION_ENABLED and report.action == "pass":
         try:
@@ -2370,6 +2379,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         ADAPTIVE_COMPUTE_INTEGRITY_KEY,
         attempted_calls,
     )
+    replay_event_ids = await _capture_execution_replay(plan, receipt, config)
     selected = candidate_outputs.get(receipt.selected_candidate_id)
     source_meta = (state.get("answer_source_meta") or "").strip()
     if selected is None:
@@ -2385,6 +2395,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
                 item for item in (source_meta, "adaptive_compute:abstain") if item
             ),
             "adaptive_compute_receipt": receipt.model_dump(mode="json"),
+            "execution_replay_event_ids": replay_event_ids,
         }
 
     answer, report, uncertainty = selected
@@ -2399,7 +2410,31 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             item for item in (source_meta, "adaptive_compute:released") if item
         ),
         "adaptive_compute_receipt": receipt.model_dump(mode="json"),
+        "execution_replay_event_ids": replay_event_ids,
     }
+
+
+async def _capture_execution_replay(plan, receipt, config: RunnableConfig) -> list[str]:
+    configurable = config.get("configurable") or {}
+    tenant = str(configurable.get("user_id") or "").strip()
+    request_id = str(configurable.get("execution_replay_request_id") or config.get("run_id") or "")
+    consent = configurable.get("execution_replay_consent") is True
+    if not EXECUTION_REPLAY_ENABLED or not consent or not tenant or not request_id:
+        return []
+
+    def capture():
+        store = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
+        return store.capture(
+            plan, receipt, tenant=tenant, request_id=request_id, consent=consent,
+            compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY,
+        )
+
+    try:
+        return await asyncio.to_thread(capture)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        # Persistence failure cannot relax answer verification or interrupt output.
+        logger.warning("execution_replay_unavailable error_type=%s", type(exc).__name__)
+        return []
 
 
 async def grounding_repair_agent(state: AgentState, config: RunnableConfig):
