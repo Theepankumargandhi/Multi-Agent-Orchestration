@@ -1130,6 +1130,10 @@ async def capabilities():
                 os.getenv("WORLD_MODEL_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}
             ),
+            "conservative_offline_rl_planning": bool(
+                os.getenv("OFFLINE_RL_POLICY_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
             "uncertainty_aware_verifier_ensemble": bool(
                 os.getenv("VERIFIER_ENSEMBLE_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}

@@ -97,3 +97,7 @@ reward with a calibrated lower confidence bound and makes OOD answer branches fa
 The optional [learned world model](learned-world-model-planning.md) replaces fixed confidence and
 evidence increments with action-conditioned transition distributions, transition-success estimates,
 and a separate dynamics OOD gate.
+
+The optional [conservative offline-RL policy](conservative-offline-rl-planning.md) replaces uniform
+tree priors with safety-masked Q-value lower bounds and PUCT, while retaining uniform priors as the
+OOD fallback.

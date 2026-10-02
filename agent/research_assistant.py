@@ -54,6 +54,7 @@ from agent.model_gateway import (
     ProviderResult,
     ProviderSpec,
 )
+from agent.offline_rl import ConservativePlanningPolicy
 from agent.online_evaluation import append_online_event, event_from_gateway_receipt
 from agent.process_reward import ProcessRewardScorer, ProcessStep
 from agent.search_planner import SearchPlan, SearchPolicy, SearchRequest, VerifierGuidedMCTS
@@ -305,11 +306,22 @@ WORLD_MODEL_PATH = Path(
         "data/evaluations/world-model/world-model.json",
     )
 )
+OFFLINE_RL_POLICY_ENABLED = os.getenv(
+    "OFFLINE_RL_POLICY_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+OFFLINE_RL_POLICY_PATH = Path(
+    os.getenv(
+        "OFFLINE_RL_POLICY_PATH",
+        "data/evaluations/offline-rl/offline-rl-policy.json",
+    )
+)
 _process_reward_scorer = None
 _process_reward_mtime_ns = -1
 _verifier_review_queue = None
 _world_model = None
 _world_model_mtime_ns = -1
+_offline_rl_policy = None
+_offline_rl_policy_mtime_ns = -1
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -2027,6 +2039,9 @@ def _adaptive_compute_plan(
                 max_nodes=VERIFIER_MCTS_MAX_NODES,
             ),
             world_model=_load_world_model() if WORLD_MODEL_ENABLED else None,
+            planning_policy=(
+                _load_offline_rl_policy() if OFFLINE_RL_POLICY_ENABLED else None
+            ),
         ).plan(search_request)
         _queue_verifier_review(search_plan, search_request)
         return attach_search_plan(
@@ -2098,6 +2113,18 @@ def _load_world_model() -> AgentWorldModel:
         _world_model = AgentWorldModel.load(WORLD_MODEL_PATH)
         _world_model_mtime_ns = stat.st_mtime_ns
     return _world_model
+
+
+def _load_offline_rl_policy() -> ConservativePlanningPolicy:
+    global _offline_rl_policy, _offline_rl_policy_mtime_ns
+    stat = OFFLINE_RL_POLICY_PATH.stat()
+    if (
+        _offline_rl_policy is None
+        or _offline_rl_policy_mtime_ns != stat.st_mtime_ns
+    ):
+        _offline_rl_policy = ConservativePlanningPolicy.load(OFFLINE_RL_POLICY_PATH)
+        _offline_rl_policy_mtime_ns = stat.st_mtime_ns
+    return _offline_rl_policy
 
 
 def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float | None:

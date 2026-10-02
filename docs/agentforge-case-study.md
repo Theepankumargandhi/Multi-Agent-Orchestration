@@ -215,6 +215,20 @@ scenario completes, and both shifted scenarios abstain. The 42.6% and 71.3% impr
 authored data; they establish the training, uncertainty, promotion, and fallback pipeline, not a
 claim that the model represents arbitrary real environments.
 
+The planner now has a third learned component: a Conservative Q-Learning policy trained entirely
+from logged typed-action trajectories. A bootstrapped Q ensemble produces risk-adjusted action
+priors for PUCT, while the existing planner still owns evidence, verification, safety, and compute
+constraints. Unknown routes and high ensemble disagreement fall back to uniform priors rather than
+turning an uncertain acceleration policy into an availability dependency.
+
+The promotion gate uses sequential off-policy evaluation instead of replaying only the actions the
+candidate already prefers. It accumulates per-decision importance ratios and reports IPS, SNIPS, a
+doubly robust return, effective sample size, and a whole-episode bootstrap interval. On the authored
+eight-episode holdout, mean behavior return is `0.2825`; estimated target return is `0.8071` with a
+95% interval of `[0.6183, 1.0186]`, effective sample size `4.39`, positive-action accuracy `100%`,
+zero behavior-support violations, and zero actions outside the safety mask. These are deterministic integration results with synthetic
+propensities, not evidence of real-traffic policy improvement.
+
 ## Evidence-intelligence and conflict-control evidence
 
 An optional 18th graph node now evaluates retrieved material before answer generation. It quarantines

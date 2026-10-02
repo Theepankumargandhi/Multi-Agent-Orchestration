@@ -10,6 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agent.offline_rl import ConservativePlanningPolicy, PlanningState
 from agent.process_reward import ProcessRewardScorer, ProcessStep
 from agent.verifier_ensemble import EnsembleProcessRewardScorer, RewardEstimate
 from agent.world_model import AgentWorldModel
@@ -98,6 +99,10 @@ class SearchPlan(BaseModel):
     world_model_max_uncertainty: float = Field(default=0, ge=0)
     world_model_ood: bool = False
     transition_success_lcb: float = Field(default=1, ge=0, le=1)
+    tree_policy_strategy: Literal["uct", "offline_rl_puct"] = "uct"
+    offline_rl_policy_fingerprint: str = ""
+    offline_rl_max_uncertainty: float = Field(default=0, ge=0)
+    offline_rl_ood: bool = False
     tokens_planned: int = Field(ge=0)
     iterations: int = Field(ge=0)
     nodes_expanded: int = Field(ge=0)
@@ -133,6 +138,7 @@ class _Node:
     verifier_uncertainty: float = 0.0
     risk_adjusted_reward: float = 0.0
     verifier_ood: bool = False
+    action_priors: dict[SearchAction, float] = field(default_factory=dict)
 
     @property
     def mean_value(self) -> float:
@@ -147,13 +153,50 @@ class VerifierGuidedMCTS:
         scorer: ProcessRewardScorer | EnsembleProcessRewardScorer,
         policy: SearchPolicy | None = None,
         world_model: AgentWorldModel | None = None,
+        planning_policy: ConservativePlanningPolicy | None = None,
     ) -> None:
         self.scorer = scorer
         self.policy = policy or SearchPolicy()
         self.world_model = world_model
+        self.planning_policy = planning_policy
         self._unsafe_pruned = 0
         self._budget_pruned = 0
         self._reward_cache: dict[str, RewardEstimate] = {}
+        self._offline_rl_max_uncertainty = 0.0
+        self._offline_rl_ood = False
+
+    def _action_priors(
+        self,
+        state: SearchState,
+        request: SearchRequest,
+        actions: list[SearchAction],
+    ) -> dict[SearchAction, float]:
+        if not actions:
+            return {}
+        if self.planning_policy is None:
+            return {action: 1 / len(actions) for action in actions}
+        estimate = self.planning_policy.priors(
+            route=request.route,
+            high_risk=state.high_risk,
+            state=PlanningState(
+                evidence_count=state.evidence_count,
+                confidence=state.confidence,
+                reasoned=state.reasoned,
+                verified=state.verified,
+            ),
+            actions=actions,
+        )
+        self._offline_rl_max_uncertainty = max(
+            self._offline_rl_max_uncertainty, estimate.max_uncertainty
+        )
+        self._offline_rl_ood = self._offline_rl_ood or estimate.out_of_distribution
+        return {item.action: item.probability for item in estimate.actions}
+
+    @staticmethod
+    def _ordered_actions(
+        actions: list[SearchAction], priors: dict[SearchAction, float]
+    ) -> list[SearchAction]:
+        return sorted(actions, key=lambda action: (-priors.get(action, 0.0), action))
 
     def _answer_safe(self, state: SearchState) -> bool:
         required_evidence = 2 if state.high_risk else 1
@@ -384,6 +427,18 @@ class VerifierGuidedMCTS:
         return 0.12 - cost, estimate
 
     def _select_child(self, node: _Node) -> _Node:
+        if self.planning_policy is not None:
+            return max(
+                node.children.values(),
+                key=lambda child: (
+                    child.mean_value
+                    + self.policy.exploration_constant
+                    * node.action_priors.get(child.action or "abstain", 0.0)
+                    * math.sqrt(max(1, node.visits))
+                    / (1 + child.visits),
+                    str(child.action),
+                ),
+            )
         log_parent = math.log(max(1, node.visits))
         return max(
             node.children.values(),
@@ -399,6 +454,8 @@ class VerifierGuidedMCTS:
         self._unsafe_pruned = 0
         self._budget_pruned = 0
         self._reward_cache = {}
+        self._offline_rl_max_uncertainty = 0.0
+        self._offline_rl_ood = False
         root_state = SearchState(
             evidence_count=request.evidence_count,
             confidence=request.confidence,
@@ -407,7 +464,9 @@ class VerifierGuidedMCTS:
             verified=request.initial_verified,
         )
         root = _Node(state=root_state)
-        root.untried = self._valid_actions(root.state, request)
+        root_actions = self._valid_actions(root.state, request)
+        root.action_priors = self._action_priors(root.state, request, root_actions)
+        root.untried = self._ordered_actions(root_actions, root.action_priors)
         nodes = [root]
         terminal_nodes: list[_Node] = []
         unique_states = {_hash(root.state.model_dump(mode="json"))}
@@ -422,7 +481,13 @@ class VerifierGuidedMCTS:
                 action = node.untried.pop(0)
                 child_state = self._transition(node.state, action, request)
                 child = _Node(state=child_state, parent=node, action=action)
-                child.untried = self._valid_actions(child_state, request)
+                child_actions = self._valid_actions(child_state, request)
+                child.action_priors = self._action_priors(
+                    child_state, request, child_actions
+                )
+                child.untried = self._ordered_actions(
+                    child_actions, child.action_priors
+                )
                 node.children[action] = child
                 nodes.append(child)
                 unique_states.add(_hash(child_state.model_dump(mode="json")))
@@ -496,6 +561,16 @@ class VerifierGuidedMCTS:
             world_model_max_uncertainty=best.state.world_model_uncertainty,
             world_model_ood=best.state.world_model_ood,
             transition_success_lcb=best.state.transition_success_lcb,
+            tree_policy_strategy=(
+                "offline_rl_puct" if self.planning_policy is not None else "uct"
+            ),
+            offline_rl_policy_fingerprint=(
+                self.planning_policy.artifact.artifact_fingerprint
+                if self.planning_policy is not None
+                else ""
+            ),
+            offline_rl_max_uncertainty=self._offline_rl_max_uncertainty,
+            offline_rl_ood=self._offline_rl_ood,
             tokens_planned=best.state.tokens_used,
             iterations=completed_iterations,
             nodes_expanded=len(nodes),

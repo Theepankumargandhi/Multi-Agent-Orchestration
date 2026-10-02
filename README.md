@@ -66,6 +66,7 @@ flowchart TD
     Uncertainty -->|confident| Final[Release answer]
     Uncertainty -->|recoverable uncertainty| Compute[Adaptive compute controller]
     Compute --> Search[Verifier-guided bounded MCTS]
+    OfflineRL[Conservative offline-RL action prior] --> Search
     Search -->|simulate typed action| World[Learned transition world model]
     World -->|next-state LCB, success, or OOD| Search
     Search --> PRM[Calibrated process-reward ensemble]
@@ -104,7 +105,7 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, hard-negative learning-to-rank, caching, and retrieval ablations |
 | Evidence intelligence | Prompt-injection quarantine, source-independence checks, cross-domain duplicate detection, freshness policy, and numeric/negation conflict graphs |
 | Trustworthy generation | Claim-to-evidence alignment, citation allowlisting, high-risk thresholds, conformal selective answering, and fail-closed abstention |
-| Test-time compute | Confidence-aware early exit, verifier-guided MCTS over typed actions, learned action-conditioned world-model rollouts, calibrated PRM ensembles, epistemic-uncertainty penalties, OOD abstention, active learning, unsafe-branch pruning, and token/node/call/latency budgets |
+| Test-time compute | Confidence-aware early exit, offline-RL-guided PUCT, learned action-conditioned world-model rollouts, calibrated PRM ensembles, epistemic-uncertainty penalties, OOD fallback/abstention, active learning, unsafe-branch pruning, and token/node/call/latency budgets |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
 | Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
@@ -145,7 +146,7 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-The repository currently contains **250 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
+The repository currently contains **255 automated tests**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; focused coverage and the current whole-project percentage are published by every CI run.
 
 | Module | Focused coverage |
 |---|---:|
@@ -171,6 +172,7 @@ python -m evals.process_reward_evaluation --require-promotion
 python -m evals.search_planning_evaluation --check evals/experiments/search_planning.report.json --require-promotion
 python -m evals.verifier_uncertainty_evaluation --check-artifact evals/experiments/process_reward_ensemble.json --check-report evals/experiments/verifier_uncertainty.report.json --require-promotion
 python -m evals.world_model_evaluation --require-promotion
+python -m evals.offline_rl_evaluation --require-promotion
 ruff check agent client code_agent evals post_training schema service tests
 python -m pip check
 ```
@@ -329,12 +331,13 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 - Verifier-guided search results use deterministic synthetic transitions. They validate planning, budgets, fail-closed behavior, and replay integrity—not real-world reasoning quality or provider cost savings.
 - Verifier-ensemble shift results use one controlled behaviorally inverted member and only three calibration traces. They validate disagreement detection, conservative scoring, and active-learning plumbing—not production OOD coverage.
 - Learned world-model results use a small, mostly authored transition dataset. They validate action-conditioned prediction, conservative rollouts, artifact integrity, and OOD abstention—not general real-world environment modeling.
+- Conservative offline-RL results use eight authored test episodes with synthetic propensities. They validate CQL, sequential off-policy estimators, PUCT priors, safety masking, and promotion plumbing—not real-traffic policy lift.
 
 These boundaries are intentional. Good AI engineering includes knowing what the evidence supports—and what it does not.
 
 ## Resume summary
 
-> Built AgentForge, an 18-node LangGraph agent platform combining hybrid and graph RAG, durable human approval, evidence-conflict detection, claim-level grounding, conformal selective answering, and process-reward-guided MCTS with a learned action-conditioned world model, calibrated verifier ensembles, epistemic OOD abstention, replayable plans, and a privacy-safe active-learning loop. Added contextual-bandit routing, tenant-isolated memory, a policy-gated coding agent with six-language Tree-sitter retrieval, FastAPI/SSE serving, privacy-safe telemetry, adversarial evaluation, and Docker/Kubernetes deployment assets.
+> Built AgentForge, an 18-node LangGraph agent platform combining hybrid and graph RAG, durable human approval, evidence-conflict detection, claim-level grounding, conformal selective answering, and PUCT planning with conservative offline-RL action priors, a learned transition world model, calibrated process-reward ensembles, epistemic OOD controls, replayable plans, and a privacy-safe active-learning loop. Added sequential doubly robust policy evaluation, contextual-bandit routing, tenant-isolated memory, a policy-gated coding agent with six-language Tree-sitter retrieval, FastAPI/SSE serving, privacy-safe telemetry, adversarial evaluation, and Docker/Kubernetes deployment assets.
 
 When using this project in a resume or interview, lead with one measurable workflow rather than listing every subsystem. A strong walkthrough is: retrieve evidence, detect a conflict, withhold an unsupported answer, show the trace and evaluation result, then explain the trade-off between answer coverage, accuracy, latency, and cost.
 
@@ -352,6 +355,7 @@ When using this project in a resume or interview, lead with one measurable workf
 - [Verifier-guided reasoning search](docs/verifier-guided-search.md)
 - [Uncertainty-aware verifier ensemble](docs/verifier-uncertainty.md)
 - [Learned world-model planning](docs/learned-world-model-planning.md)
+- [Conservative offline-RL planning](docs/conservative-offline-rl-planning.md)
 - [Agent memory](docs/agent-memory.md)
 - [Inference gateway](docs/inference-gateway.md)
 - [Online AI governance](docs/online-ai-governance.md)
