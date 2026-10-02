@@ -299,9 +299,12 @@ class ExecutionReplayStore:
     def delete_tenant(self, tenant: str) -> int:
         with self._db() as db:
             db.execute("DELETE FROM request_families WHERE tenant=?", (digest(self.key, "tenant", tenant),))
-            return db.execute(
+            deleted = db.execute(
                 "DELETE FROM observations WHERE tenant=?", (digest(self.key, "tenant", tenant),)
             ).rowcount
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='preference_shadow_studies'").fetchone():
+                db.execute("DELETE FROM preference_shadow_studies WHERE tenant=?", (digest(self.key, "tenant", tenant),))
+            return deleted
 
     def dataset(self, tenant: str, *, allow_synthetic: bool = False) -> tuple[list[CalibrationExample], dict]:
         """One pre-label-selected candidate per request; stable request-level holdout.

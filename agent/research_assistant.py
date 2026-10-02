@@ -59,6 +59,7 @@ from agent.model_gateway import (
 from agent.offline_rl import ConservativePlanningPolicy
 from agent.online_evaluation import append_online_event, event_from_gateway_receipt
 from agent.preference_ranking import PreferenceRanker
+from agent.preference_shadow import PreferenceShadowStore, validate_approval
 from agent.process_reward import ProcessRewardScorer, ProcessStep
 from agent.search_planner import SearchPlan, SearchPolicy, SearchRequest, VerifierGuidedMCTS
 from agent.tools import perform_web_search
@@ -121,6 +122,7 @@ class AgentState(MessagesState):
     adaptive_compute_plan: dict
     adaptive_compute_receipt: dict
     execution_replay_event_ids: list[str]
+    preference_shadow_receipt: dict
     evidence_quality_report: dict
     adjudicated_evidence: list[dict]
 
@@ -344,6 +346,10 @@ PREFERENCE_RANKING_ENABLED = os.getenv("PREFERENCE_RANKING_ENABLED", "false").st
 }
 PREFERENCE_RANKING_PATH = Path(os.getenv("PREFERENCE_RANKING_PATH", "data/evaluations/preferences/active.json"))
 PREFERENCE_RANKING_KEY = os.getenv("PREFERENCE_RANKING_KEY", "").encode()
+PREFERENCE_SHADOW_ENABLED = os.getenv("PREFERENCE_SHADOW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+PREFERENCE_SHADOW_STUDY_ID = os.getenv("PREFERENCE_SHADOW_STUDY_ID", "").strip()
+PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL = os.getenv("PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL", "false").strip().lower() in {"1", "true", "yes", "on"}
+PREFERENCE_SHADOW_APPROVAL_PATH = Path(os.getenv("PREFERENCE_SHADOW_APPROVAL_PATH", "data/evaluations/preference-shadow/approval.json"))
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -2379,27 +2385,51 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             )
 
     ranker, ranker_unavailable = None, False
-    if PREFERENCE_RANKING_ENABLED:
-        tenant = str((config.get("configurable") or {}).get("user_id") or "").strip()
+    configurable = config.get("configurable") or {}
+    tenant = str(configurable.get("user_id") or "").strip()
+    shadow_enabled = (
+        PREFERENCE_SHADOW_ENABLED
+        and not PREFERENCE_RANKING_ENABLED
+        and EXECUTION_REPLAY_ENABLED
+        and configurable.get("execution_replay_consent") is True
+        and bool(tenant)
+        and bool(configurable.get("execution_replay_request_id") or config.get("run_id"))
+    )
+    if PREFERENCE_RANKING_ENABLED or shadow_enabled:
         try:
             if not tenant:
                 raise ValueError("preference ranking requires tenant identity")
             ranker = await asyncio.to_thread(
                 PreferenceRanker.load, PREFERENCE_RANKING_PATH, PREFERENCE_RANKING_KEY, tenant,
             )
+            if PREFERENCE_RANKING_ENABLED and PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL:
+                await asyncio.to_thread(
+                    validate_approval, PREFERENCE_SHADOW_APPROVAL_PATH, ranker,
+                    PREFERENCE_RANKING_KEY, policy, route=plan.route, high_risk=plan.high_risk,
+                )
         except (OSError, ValueError):
             logger.warning("preference_ranker_unavailable; preserving existing release policy")
             ranker_unavailable = True
+            ranker = None
     receipt = select_candidate(
         plan,
         candidates,
         policy,
         ADAPTIVE_COMPUTE_INTEGRITY_KEY,
         attempted_calls,
-        preference_ranker=ranker,
-        preference_unavailable=ranker_unavailable,
+        preference_ranker=ranker if PREFERENCE_RANKING_ENABLED else None,
+        preference_unavailable=ranker_unavailable if PREFERENCE_RANKING_ENABLED else False,
     )
     replay_event_ids = await _capture_execution_replay(plan, receipt, config)
+    shadow_receipt = {}
+    if shadow_enabled and ranker is not None and replay_event_ids:
+        shadow = select_candidate(
+            plan, candidates, policy, ADAPTIVE_COMPUTE_INTEGRITY_KEY,
+            attempted_calls, preference_ranker=ranker,
+        )
+        shadow_receipt = await _capture_preference_shadow(plan, receipt, shadow, policy, config)
+    elif shadow_enabled:
+        shadow_receipt = {"status": "unavailable"}
     selected = candidate_outputs.get(receipt.selected_candidate_id)
     source_meta = (state.get("answer_source_meta") or "").strip()
     if selected is None:
@@ -2416,6 +2446,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             ),
             "adaptive_compute_receipt": receipt.model_dump(mode="json"),
             "execution_replay_event_ids": replay_event_ids,
+            "preference_shadow_receipt": shadow_receipt,
         }
 
     answer, report, uncertainty = selected
@@ -2431,6 +2462,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         ),
         "adaptive_compute_receipt": receipt.model_dump(mode="json"),
         "execution_replay_event_ids": replay_event_ids,
+        "preference_shadow_receipt": shadow_receipt,
     }
 
 
@@ -2457,6 +2489,38 @@ async def _capture_execution_replay(plan, receipt, config: RunnableConfig) -> li
         # Persistence failure cannot relax answer verification or interrupt output.
         logger.warning("execution_replay_unavailable error_type=%s", type(exc).__name__)
         return []
+
+
+async def _capture_preference_shadow(plan, baseline, shadow, policy, config: RunnableConfig) -> dict:
+    configurable = config.get("configurable") or {}
+    if (
+        not PREFERENCE_SHADOW_ENABLED
+        or PREFERENCE_RANKING_ENABLED
+        or not EXECUTION_REPLAY_ENABLED
+        or configurable.get("execution_replay_consent") is not True
+    ):
+        return {}
+
+    def capture():
+        replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
+        row = PreferenceShadowStore(replay).capture(
+            PREFERENCE_SHADOW_STUDY_ID, str(configurable.get("user_id") or ""),
+            str(configurable.get("execution_replay_request_id") or config.get("run_id") or ""),
+            plan, baseline, shadow, policy, consent=True, compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY,
+        )
+        if row is None:
+            return {}
+        return {
+            "status": "captured",
+            "study_id": row.study_id,
+            "comparison_fingerprint": row.fingerprint,
+        }
+
+    try:
+        return await asyncio.to_thread(capture)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        logger.warning("preference_shadow_unavailable error_type=%s", type(exc).__name__)
+        return {"status": "unavailable"}
 
 
 async def grounding_repair_agent(state: AgentState, config: RunnableConfig):

@@ -32,7 +32,7 @@ class ComputePolicy(BaseModel):
     version: str = "adaptive-compute-v1"
     max_candidates: int = Field(default=3, ge=2, le=5)
     max_extra_tokens: int = Field(default=1800, ge=128, le=8192)
-    max_latency_ms: float = Field(default=15000, ge=100, le=120000)
+    max_latency_ms: float = Field(default=15000.0, ge=100, le=120000)
     min_confidence_gain: float = Field(default=0.04, ge=0, le=1)
     min_consensus: float = Field(default=0.5, ge=0, le=1)
     high_risk_min_consensus: float = Field(default=0.67, ge=0, le=1)

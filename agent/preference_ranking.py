@@ -262,8 +262,23 @@ class PreferenceArtifact(SignedRecord):
     training_fingerprint: str = Field(pattern=HEX)
     members: list[list[float]] = Field(min_length=5, max_length=15)
     support: list[FeatureSupport] = Field(min_length=1)
-    risk_multiplier: float = Field(default=2, ge=1, le=5)
+    risk_multiplier: float = Field(default=2.0, ge=1, le=5)
     minimum_margin: float = Field(default=0.1, gt=0, le=2)
+
+    def verify(self, key: bytes) -> None:
+        if len(key) < 32:
+            raise ValueError("preference artifact requires a key of at least 32 bytes")
+        try:
+            super().verify(key)
+        except ValueError:
+            # Schema 1.0 originally emitted the float default as integer 2.
+            # Accept ONLY its authentic legacy representation, not other changes.
+            payload = self.model_dump(exclude={"fingerprint"})
+            payload["risk_multiplier"] = 2
+            if self.risk_multiplier != 2.0 or not hmac.compare_digest(
+                self.fingerprint, digest(key, type(self).__name__, payload)
+            ):
+                raise
 
     @model_validator(mode="after")
     def valid_features(self):
@@ -377,6 +392,7 @@ class PreferenceRanker:
         if artifact.simulation and not allow_simulation:
             raise ValueError("synthetic preference artifacts cannot be activated")
         self.artifact = artifact.model_copy(deep=True)
+        self.tenant = tenant
 
     @classmethod
     def load(cls, path: str | Path, key: bytes, tenant: str):
