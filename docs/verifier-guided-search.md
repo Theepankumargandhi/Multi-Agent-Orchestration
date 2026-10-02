@@ -93,3 +93,7 @@ the same runtime and evaluation harness.
 
 The optional [uncertainty-aware verifier ensemble](verifier-uncertainty.md) replaces the point
 reward with a calibrated lower confidence bound and makes OOD answer branches fail closed.
+
+The optional [learned world model](learned-world-model-planning.md) replaces fixed confidence and
+evidence increments with action-conditioned transition distributions, transition-success estimates,
+and a separate dynamics OOD gate.

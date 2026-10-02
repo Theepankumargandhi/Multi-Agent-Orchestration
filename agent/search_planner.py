@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from agent.process_reward import ProcessRewardScorer, ProcessStep
 from agent.verifier_ensemble import EnsembleProcessRewardScorer, RewardEstimate
+from agent.world_model import AgentWorldModel
 
 SearchAction = Literal["retrieve", "reason", "verify", "answer", "abstain"]
 
@@ -66,6 +67,10 @@ class SearchState(BaseModel):
     steps: list[ProcessStep] = Field(default_factory=list)
     terminal: bool = False
     terminal_action: Literal["answer", "abstain", ""] = ""
+    world_model_uncertainty: float = 0.0
+    world_model_ood: bool = False
+    transition_success_lcb: float = 1.0
+    world_model_fingerprint: str = ""
 
 
 class RootActionStat(BaseModel):
@@ -88,6 +93,11 @@ class SearchPlan(BaseModel):
     verifier_uncertainty: float = Field(default=0, ge=0, le=1)
     risk_adjusted_reward: float = Field(default=0, ge=0, le=1)
     verifier_ood: bool = False
+    dynamics_strategy: Literal["heuristic", "learned_world_model"] = "heuristic"
+    world_model_fingerprint: str = ""
+    world_model_max_uncertainty: float = Field(default=0, ge=0)
+    world_model_ood: bool = False
+    transition_success_lcb: float = Field(default=1, ge=0, le=1)
     tokens_planned: int = Field(ge=0)
     iterations: int = Field(ge=0)
     nodes_expanded: int = Field(ge=0)
@@ -136,9 +146,11 @@ class VerifierGuidedMCTS:
         self,
         scorer: ProcessRewardScorer | EnsembleProcessRewardScorer,
         policy: SearchPolicy | None = None,
+        world_model: AgentWorldModel | None = None,
     ) -> None:
         self.scorer = scorer
         self.policy = policy or SearchPolicy()
+        self.world_model = world_model
         self._unsafe_pruned = 0
         self._budget_pruned = 0
         self._reward_cache: dict[str, RewardEstimate] = {}
@@ -150,11 +162,22 @@ class VerifierGuidedMCTS:
             and state.verified
             and state.evidence_count >= required_evidence
             and state.confidence >= self.policy.answer_confidence_floor
+            and not state.world_model_ood
+            and (
+                self.world_model is None
+                or state.transition_success_lcb >= self.world_model.artifact.success_floor
+            )
         )
 
     def _valid_actions(self, state: SearchState, request: SearchRequest) -> list[SearchAction]:
         if state.terminal or len(state.actions) >= self.policy.max_depth:
             return []
+        if state.world_model_ood:
+            return (
+                ["abstain"]
+                if state.tokens_used + ACTION_TOKEN_COST["abstain"] <= request.token_budget
+                else []
+            )
         actions: list[SearchAction] = []
         if (
             request.retrieval_available
@@ -197,15 +220,46 @@ class VerifierGuidedMCTS:
             actions.append("abstain")
         return actions
 
-    @staticmethod
-    def _transition(state: SearchState, action: SearchAction) -> SearchState:
+    def _transition(
+        self, state: SearchState, action: SearchAction, request: SearchRequest
+    ) -> SearchState:
         updated = state.model_copy(deep=True)
         updated.actions.append(action)
         updated.tokens_used += ACTION_TOKEN_COST[action]
+        confidence_delta = {
+            "retrieve": 0.08,
+            "reason": 0.1,
+            "verify": 0.08,
+            "answer": 0.0,
+            "abstain": 0.0,
+        }[action]
+        evidence_delta = 1 if action == "retrieve" else 0
+        if self.world_model is not None:
+            prediction = self.world_model.predict(
+                route=request.route,
+                action=action,
+                high_risk=state.high_risk,
+                evidence_count=state.evidence_count,
+                confidence=state.confidence,
+                reasoned=state.reasoned,
+                verified=state.verified,
+            )
+            confidence_delta = prediction.confidence_delta_lcb
+            evidence_delta = max(0, round(prediction.evidence_delta_lcb))
+            updated.world_model_uncertainty = max(
+                state.world_model_uncertainty, prediction.epistemic_uncertainty
+            )
+            updated.world_model_ood = state.world_model_ood or prediction.out_of_distribution
+            updated.transition_success_lcb = min(
+                state.transition_success_lcb, prediction.success_lcb
+            )
+            updated.world_model_fingerprint = prediction.model_fingerprint
+        updated.confidence = max(
+            0.0, min(1.0, updated.confidence + confidence_delta)
+        )
+        updated.evidence_count = max(0, updated.evidence_count + evidence_delta)
         if action == "retrieve":
             updated.retrieved += 1
-            updated.evidence_count += 1
-            updated.confidence = min(1.0, updated.confidence + 0.08)
             updated.steps.append(
                 ProcessStep(
                     step_id=f"retrieve-{updated.retrieved}",
@@ -217,7 +271,6 @@ class VerifierGuidedMCTS:
             )
         elif action == "reason":
             updated.reasoned = True
-            updated.confidence = min(1.0, updated.confidence + 0.1)
             updated.steps.append(
                 ProcessStep(
                     step_id="reason",
@@ -229,7 +282,6 @@ class VerifierGuidedMCTS:
             )
         elif action == "verify":
             updated.verified = True
-            updated.confidence = min(1.0, updated.confidence + 0.08)
             updated.steps.append(
                 ProcessStep(
                     step_id="verify",
@@ -282,11 +334,11 @@ class VerifierGuidedMCTS:
                 ),
                 actions[0],
             )
-            simulated = self._transition(simulated, preferred)
+            simulated = self._transition(simulated, preferred, request)
         if not simulated.terminal:
             actions = self._valid_actions(simulated, request)
             if "abstain" in actions:
-                simulated = self._transition(simulated, "abstain")
+                simulated = self._transition(simulated, "abstain", request)
         return simulated
 
     def _reward_estimate(self, state: SearchState) -> RewardEstimate:
@@ -368,7 +420,7 @@ class VerifierGuidedMCTS:
                 node = self._select_child(node)
             if node.untried and len(nodes) < self.policy.max_nodes:
                 action = node.untried.pop(0)
-                child_state = self._transition(node.state, action)
+                child_state = self._transition(node.state, action, request)
                 child = _Node(state=child_state, parent=node, action=action)
                 child.untried = self._valid_actions(child_state, request)
                 node.children[action] = child
@@ -400,7 +452,7 @@ class VerifierGuidedMCTS:
                 cursor = cursor.parent
             completed_iterations += 1
         if not terminal_nodes:
-            fallback = self._transition(root_state, "abstain")
+            fallback = self._transition(root_state, "abstain", request)
             value, estimate = self._terminal_value(fallback, request)
             terminal_nodes.append(
                 _Node(
@@ -437,6 +489,13 @@ class VerifierGuidedMCTS:
             verifier_uncertainty=best.verifier_uncertainty,
             risk_adjusted_reward=best.risk_adjusted_reward,
             verifier_ood=best.verifier_ood,
+            dynamics_strategy=(
+                "learned_world_model" if self.world_model is not None else "heuristic"
+            ),
+            world_model_fingerprint=best.state.world_model_fingerprint,
+            world_model_max_uncertainty=best.state.world_model_uncertainty,
+            world_model_ood=best.state.world_model_ood,
+            transition_success_lcb=best.state.transition_success_lcb,
             tokens_planned=best.state.tokens_used,
             iterations=completed_iterations,
             nodes_expanded=len(nodes),

@@ -71,6 +71,7 @@ agentforge-process-reward-eval = "evals.process_reward_evaluation:main"
 agentforge-search-planning-eval = "evals.search_planning_evaluation:main"
 agentforge-verifier-uncertainty-eval = "evals.verifier_uncertainty_evaluation:main"
 agentforge-verifier-review = "agent.verifier_active_learning:main"
+agentforge-world-model-eval = "evals.world_model_evaluation:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*", "client*", "code_agent*", "evals*", "post_training*", "schema*", "service*"]

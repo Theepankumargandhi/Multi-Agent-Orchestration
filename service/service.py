@@ -1126,6 +1126,10 @@ async def capabilities():
                 os.getenv("VERIFIER_MCTS_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}
             ),
+            "learned_world_model_planning": bool(
+                os.getenv("WORLD_MODEL_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
             "uncertainty_aware_verifier_ensemble": bool(
                 os.getenv("VERIFIER_ENSEMBLE_ENABLED", "false").strip().lower()
                 in {"1", "true", "yes", "on"}

@@ -191,6 +191,7 @@ def test_monitoring_endpoints_are_public():
         assert capabilities.json()["features"]["claim_level_grounding_verification"] is True
         assert capabilities.json()["features"]["conformal_uncertainty_control"] is True
         assert capabilities.json()["features"]["adaptive_test_time_compute"] is True
+        assert capabilities.json()["features"]["learned_world_model_planning"] is False
         assert capabilities.json()["features"]["evidence_intelligence"] is True
         assert "poisoning_quarantine" in capabilities.json()["agent_memory"]["controls"]
         assert "fail_closed_abstention" in capabilities.json()["grounding_verification"]["controls"]

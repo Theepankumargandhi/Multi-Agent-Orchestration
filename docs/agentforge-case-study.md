@@ -201,6 +201,20 @@ unsafe trajectory in every shifted case. The ensemble preserves all five clean s
 and contains all five shifts with zero unsafe selections, and queues every shifted case for review.
 This is a narrow control-plane test, not evidence that five small models cover real production drift.
 
+The latest layer also learns the planner's action dynamics instead of assuming that retrieval,
+reasoning, and verification always produce fixed confidence gains. A three-member bootstrapped world
+model predicts next-state confidence, evidence change, and transition success from route, risk,
+action, and current planning state. MCTS rolls forward with conservative lower bounds; unsupported
+routes or excessive member disagreement remove answer branches and lead to abstention. Artifacts and
+plan receipts carry fingerprints so a changed dynamics model is visible and tampering fails closed.
+
+On a ten-transition synthetic holdout, confidence-delta MAE falls from `0.01000` for the fixed rules
+to `0.00574` for learned dynamics, while transition-success Brier score falls from `0.10000` to
+`0.02867`. All unseen-route and injected member-shift probes are detected, the supported planning
+scenario completes, and both shifted scenarios abstain. The 42.6% and 71.3% improvements are narrow offline ablations over
+authored data; they establish the training, uncertainty, promotion, and fallback pipeline, not a
+claim that the model represents arbitrary real environments.
+
 ## Evidence-intelligence and conflict-control evidence
 
 An optional 18th graph node now evaluates retrieved material before answer generation. It quarantines

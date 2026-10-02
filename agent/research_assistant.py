@@ -61,6 +61,7 @@ from agent.tools import perform_web_search
 from agent.uncertainty import assess_grounding_report, load_calibrator
 from agent.verifier_active_learning import VerifierActiveLearningQueue
 from agent.verifier_ensemble import EnsembleProcessRewardScorer
+from agent.world_model import AgentWorldModel
 
 logger = logging.getLogger("agentforge.research")
 
@@ -295,9 +296,20 @@ VERIFIER_REVIEW_UNCERTAINTY_THRESHOLD = max(
     0.001,
     min(float(os.getenv("VERIFIER_REVIEW_UNCERTAINTY_THRESHOLD", "0.08")), 0.5),
 )
+WORLD_MODEL_ENABLED = os.getenv("WORLD_MODEL_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+WORLD_MODEL_PATH = Path(
+    os.getenv(
+        "WORLD_MODEL_PATH",
+        "data/evaluations/world-model/world-model.json",
+    )
+)
 _process_reward_scorer = None
 _process_reward_mtime_ns = -1
 _verifier_review_queue = None
+_world_model = None
+_world_model_mtime_ns = -1
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -2014,6 +2026,7 @@ def _adaptive_compute_plan(
                 iterations=VERIFIER_MCTS_ITERATIONS,
                 max_nodes=VERIFIER_MCTS_MAX_NODES,
             ),
+            world_model=_load_world_model() if WORLD_MODEL_ENABLED else None,
         ).plan(search_request)
         _queue_verifier_review(search_plan, search_request)
         return attach_search_plan(
@@ -2076,6 +2089,15 @@ def _queue_verifier_review(
         )
     except (OSError, sqlite3.Error, ValueError):
         logger.exception("Unable to persist verifier review candidate")
+
+
+def _load_world_model() -> AgentWorldModel:
+    global _world_model, _world_model_mtime_ns
+    stat = WORLD_MODEL_PATH.stat()
+    if _world_model is None or _world_model_mtime_ns != stat.st_mtime_ns:
+        _world_model = AgentWorldModel.load(WORLD_MODEL_PATH)
+        _world_model_mtime_ns = stat.st_mtime_ns
+    return _world_model
 
 
 def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float | None:
