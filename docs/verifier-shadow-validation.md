@@ -171,3 +171,8 @@ behavior—not live factuality, causal traffic lift, OOD robustness, or broad re
 | Complete reviews | 40 | 36 | +1.55 | Pass controls only |
 | 50% paired review coverage | 40 | 36 | -2.00 | Hold |
 | Unsafe answer shift | 40 | 36 | -3.90 | Hold |
+
+The next offline learning branch is [reviewed step uncertainty](reviewed-verifier-uncertainty.md):
+whole-family ensembles, validation-only calibration and an unfamiliar-feature guard. It produces
+a different, step-level artifact. It does not replace this study's registered trajectory model,
+inherit its outcome evidence, or grant serving authority.
