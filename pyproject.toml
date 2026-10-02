@@ -81,6 +81,7 @@ agentforge-preference-eval = "evals.preference_evaluation:main"
 agentforge-preference-shadow = "evals.preference_shadow_evaluation:main"
 agentforge-preference-deployment = "evals.preference_deployment_evaluation:main"
 agentforge-process-supervision = "evals.process_supervision_evaluation:main"
+agentforge-verifier-shadow = "evals.verifier_shadow_evaluation:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*", "client*", "code_agent*", "evals*", "post_training*", "schema*", "service*"]

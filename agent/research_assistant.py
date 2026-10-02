@@ -68,6 +68,7 @@ from agent.tools import perform_web_search
 from agent.uncertainty import assess_grounding_report, load_calibrator
 from agent.verifier_active_learning import VerifierActiveLearningQueue
 from agent.verifier_ensemble import EnsembleProcessRewardScorer
+from agent.verifier_shadow import VerifierShadowStore
 from agent.world_model import AgentWorldModel
 
 logger = logging.getLogger("agentforge.research")
@@ -127,6 +128,7 @@ class AgentState(MessagesState):
     preference_shadow_receipt: dict
     preference_deployment_receipt: dict
     process_supervision_receipt: dict
+    verifier_shadow_receipt: dict
     evidence_quality_report: dict
     adjudicated_evidence: list[dict]
 
@@ -356,6 +358,9 @@ PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL = os.getenv("PREFERENCE_RANKING_REQUI
 PREFERENCE_SHADOW_APPROVAL_PATH = Path(os.getenv("PREFERENCE_SHADOW_APPROVAL_PATH", "data/evaluations/preference-shadow/approval.json"))
 PREFERENCE_DEPLOYMENT_ENABLED = os.getenv("PREFERENCE_DEPLOYMENT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 PROCESS_SUPERVISION_ENABLED = os.getenv("PROCESS_SUPERVISION_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+VERIFIER_SHADOW_ENABLED = os.getenv("VERIFIER_SHADOW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+VERIFIER_SHADOW_STUDY_ID = os.getenv("VERIFIER_SHADOW_STUDY_ID", "").strip()
+PROCESS_SUPERVISION_MODEL_KEY = os.getenv("PROCESS_SUPERVISION_MODEL_KEY", "").encode()
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1283,6 +1288,7 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "preference_shadow_receipt": {},
         "preference_deployment_receipt": {},
         "process_supervision_receipt": {},
+        "verifier_shadow_receipt": {},
         "evidence_quality_report": {},
         "adjudicated_evidence": [],
     }
@@ -2312,6 +2318,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
     candidates = []
     candidate_outputs: dict[str, tuple[str, GroundingReport, dict]] = {}
     attempted_calls = 0
+    verifier_incumbents = set()
     consumed_tokens = 0
     started = time.perf_counter()
     system = (
@@ -2373,6 +2380,10 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
                     "abstain" if decision.out_of_distribution else decision.decision
                 )
             latency_ms = (time.perf_counter() - call_started) * 1000
+            process_reward = _candidate_process_reward(report, plan.high_risk)
+            if VERIFIER_SHADOW_ENABLED:
+                verifier_incumbents.add(_process_reward_scorer.artifact.artifact_fingerprint
+                                        if PROCESS_REWARD_MODEL_ENABLED else "confidence-only")
             assessment = candidate_assessment(
                 candidate_id=candidate_id,
                 answer=answer,
@@ -2386,7 +2397,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
                 ],
                 token_count=token_count,
                 latency_ms=latency_ms,
-                process_reward=_candidate_process_reward(report, plan.high_risk),
+                process_reward=process_reward,
             )
             candidates.append(assessment)
             candidate_outputs[candidate_id] = (answer, report, uncertainty)
@@ -2493,6 +2504,11 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             {name: _candidate_process_steps(report) for name, (_, report, _) in candidate_outputs.items()},
             replay_event_ids, config,
         )
+    verifier_shadow_receipt = {}
+    if VERIFIER_SHADOW_ENABLED and replay_event_ids:
+        verifier_shadow_receipt = await _capture_verifier_shadow(
+            plan, receipt, candidates, policy, config, verifier_incumbents,
+        )
     source_meta = (state.get("answer_source_meta") or "").strip()
     if selected is None:
         final = (
@@ -2511,6 +2527,7 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
             "preference_shadow_receipt": shadow_receipt,
             "preference_deployment_receipt": deployment_receipt,
             "process_supervision_receipt": process_supervision_receipt,
+            "verifier_shadow_receipt": verifier_shadow_receipt,
         }
 
     answer, report, uncertainty = selected
@@ -2529,7 +2546,34 @@ async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig)
         "preference_shadow_receipt": shadow_receipt,
         "preference_deployment_receipt": deployment_receipt,
         "process_supervision_receipt": process_supervision_receipt,
+        "verifier_shadow_receipt": verifier_shadow_receipt,
     }
+
+
+async def _capture_verifier_shadow(plan, receipt, candidates, policy, config, incumbent_fingerprints) -> dict:
+    configurable = config.get("configurable") or {}
+    tenant = str(configurable.get("user_id") or "").strip()
+    request = str(configurable.get("execution_replay_request_id") or config.get("run_id") or "")
+    if (not VERIFIER_SHADOW_ENABLED or not PROCESS_SUPERVISION_ENABLED or not EXECUTION_REPLAY_ENABLED
+            or PREFERENCE_RANKING_ENABLED or configurable.get("execution_replay_consent") is not True
+            or not tenant or not request):
+        return {}
+
+    def capture():
+        if len(incumbent_fingerprints) != 1:
+            raise ValueError("incumbent changed during candidate scoring")
+        replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
+        shadow = VerifierShadowStore(replay, PROCESS_SUPERVISION_MODEL_KEY)
+        row = shadow.capture(VERIFIER_SHADOW_STUDY_ID, tenant, request, plan, receipt, candidates, policy,
+                             consent=True, incumbent_fingerprint=next(iter(incumbent_fingerprints)),
+                             compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY)
+        return {"status": "captured", "comparison_fingerprint": row.fingerprint}
+
+    try:
+        return await asyncio.to_thread(capture)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        logger.warning("verifier_shadow_unavailable error_type=%s", type(exc).__name__)
+        return {"status": "unavailable"}
 
 
 async def _capture_process_supervision(steps_by_candidate: dict, event_ids: list[str], config: RunnableConfig) -> dict:

@@ -10,8 +10,6 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from pydantic import Field
-
 from agent.adaptive_compute import (
     ComputePolicy,
     ComputeSignals,
@@ -26,26 +24,9 @@ from agent.process_reward import (
     ProcessStep,
     train_process_reward_model,
 )
-from agent.process_supervision import ProcessCohort, ProcessSupervisionStore
-from agent.prospective_validation import HoldoutLedger, SignedRecord
+from agent.process_supervision import ProcessCohort, ProcessSupervisionStore, ReviewedProcessCandidate
+from agent.prospective_validation import HoldoutLedger
 from evals.preference_evaluation import _paired_lower, write_once
-
-HEX = r"^[a-f0-9]{64}$"
-
-
-class ReviewedProcessCandidate(SignedRecord):
-    tenant: str = Field(pattern=HEX)
-    cohort_fingerprint: str = Field(pattern=HEX)
-    report_fingerprint: str = Field(pattern=HEX)
-    simulation: bool
-    calibration_temperature: float = Field(ge=0.25, le=4)
-    explicit_training_steps: int = Field(ge=1)
-    artifact: ProcessRewardArtifact
-
-    def verify(self, key: bytes) -> None:
-        super().verify(key)
-        if not self.artifact.verify():
-            raise ValueError("reviewed process candidate contains invalid model")
 
 
 def _temperature(probability: float, temperature: float) -> float:

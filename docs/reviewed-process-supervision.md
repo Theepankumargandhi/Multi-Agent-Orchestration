@@ -124,6 +124,10 @@ Nothing extracts the model, alters an ensemble, renews approval, or activates it
 Before any owner activation, evaluate final-answer quality, selective coverage/risk, and live shift
 behavior on a separate fresh cohort. Step prediction alone is not enough.
 
+The next stage is now implemented as [non-serving verifier shadow validation](verifier-shadow-validation.md).
+It preregisters a model and primary threshold, compares selections on the actual generated pool, and
+evaluates delayed terminal outcomes without changing answers or activating the candidate.
+
 Private SQLite data and generated files under `data/` are ignored by Git. Tenant deletion removes
 workflow snapshots and annotations from replay storage. Previously exported cohort/candidate files
 need their own retention/deletion policy; they are not automatically erased with the database rows.

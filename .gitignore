@@ -20,6 +20,7 @@ data/code-agent/
 data/memory/
 data/execution-replay/
 data/process-supervision/
+data/verifier-shadow/
 
 # VSCode
 .vscode

@@ -309,7 +309,7 @@ class ExecutionReplayStore:
             ).rowcount
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='preference_shadow_studies'").fetchone():
                 db.execute("DELETE FROM preference_shadow_studies WHERE tenant=?", (digest(self.key, "tenant", tenant),))
-            for table in ("preference_served", "preference_deployments", "preference_deployment_states", "preference_deployment_audit", "process_step_reviews", "process_snapshots"):
+            for table in ("preference_served", "preference_deployments", "preference_deployment_states", "preference_deployment_audit", "verifier_comparisons", "verifier_studies", "process_step_reviews", "process_snapshots"):
                 if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                     db.execute(f"DELETE FROM {table} WHERE tenant=?", (digest(self.key, "tenant", tenant),))
             return deleted

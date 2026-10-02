@@ -16,10 +16,25 @@ from agent.execution_replay import (
     digest,
 )
 from agent.preference_ranking import StrictModel
-from agent.process_reward import ProcessStep, ProcessTrace, StepKind
+from agent.process_reward import ProcessRewardArtifact, ProcessStep, ProcessTrace, StepKind
 from agent.prospective_validation import SignedRecord
 
 HEX = r"^[a-f0-9]{64}$"
+
+
+class ReviewedProcessCandidate(SignedRecord):
+    tenant: str = Field(pattern=HEX)
+    cohort_fingerprint: str = Field(pattern=HEX)
+    report_fingerprint: str = Field(pattern=HEX)
+    simulation: bool
+    calibration_temperature: float = Field(ge=0.25, le=4)
+    explicit_training_steps: int = Field(ge=1)
+    artifact: ProcessRewardArtifact
+
+    def verify(self, key: bytes) -> None:
+        super().verify(key)
+        if not self.artifact.verify():
+            raise ValueError("reviewed process candidate contains invalid model")
 
 
 class WorkflowStep(StrictModel):
