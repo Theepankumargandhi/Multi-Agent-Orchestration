@@ -310,6 +310,10 @@ async def test_real_docker_reference_and_mutant_execution():
         pytest.skip("Docker/image required; never execute references or mutants on host")
     report = await calibrate_suite(code_task(), FIXTURE.resolve(), authored_suite(), policy(), REFERENCE.resolve())
     assert report.eligible and report.mutation_score == 1 and verify_calibration_report(report)
+    assert [row.killing_probe_indices for row in report.mutants] == [[0, 1, 3], [2], [0, 1, 2, 3], [2]]
+    weak = BehavioralProbeSuite(probes=[authored_suite().probes[0]])
+    report = await calibrate_suite(code_task(), FIXTURE.resolve(), weak, policy(), REFERENCE.resolve())
+    assert not report.eligible and report.mutation_score == 0.5 and verify_calibration_report(report)
 
 
 @pytest.mark.asyncio

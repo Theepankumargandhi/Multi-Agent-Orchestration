@@ -47,7 +47,7 @@ For example:
 
 Paired relations allow simple metamorphic checks without a literal expected output, but the relation itself can still be wrong. Canonical JSON equality is strict: `true`, `1`, and `1.0` are distinct. Exceptions, unsupported outputs, invalid targets, malformed receipts, timeouts, harness changes, unstable outcomes, and workspace changes hold the candidate. Duplicate probes and oversized inputs are rejected.
 
-The controller supplies a fixed harness and the command `python -I .agentforge-regression-probe.py`. Repository functions execute only in Docker. Temporary harness/receipt files are removed before patch comparison and fresh owner tests; they are not released in the diff. No dependencies are installed and no host-execution fallback exists.
+The controller supplies a fixed harness and the command `python -I -B .agentforge-regression-probe.py`. Repository functions execute only in Docker. Each fresh process uses its own empty bytecode-cache prefix: `-I` ignores environment-based bytecode controls, and `-B` alone does not prevent reading an existing cache. This avoids replaying timestamp-valid bytecode after rapid same-size source edits. Temporary harness/receipt files are removed before patch comparison and fresh owner tests; they are not released in the diff. No dependencies are installed and no host-execution fallback exists.
 
 ## Opt in deliberately
 

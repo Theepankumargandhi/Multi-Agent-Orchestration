@@ -50,6 +50,17 @@ jobs:
       - name: Build coding sandbox image
         run: docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
 
+      - name: Run reference-oracle and mutation controls (authored, no provider)
+        run: python -m evals.oracle_calibration_evaluation --output data/evaluations/oracle-calibration/ci.json
+
+      - name: Upload oracle-calibration controls
+        if: always() && hashFiles('data/evaluations/oracle-calibration/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: oracle-calibration-controls
+          path: data/evaluations/oracle-calibration/ci.*
+          if-no-files-found: error
+
       - name: Run unit and integration tests
         env:
           CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
@@ -132,17 +143,6 @@ jobs:
         with:
           name: regression-challenge-controls
           path: data/evaluations/regression-challenges/ci.*
-          if-no-files-found: error
-
-      - name: Run reference-oracle and mutation controls (authored, no provider)
-        run: python -m evals.oracle_calibration_evaluation --output data/evaluations/oracle-calibration/ci.json
-
-      - name: Upload oracle-calibration controls
-        if: always() && hashFiles('data/evaluations/oracle-calibration/ci.json') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: oracle-calibration-controls
-          path: data/evaluations/oracle-calibration/ci.*
           if-no-files-found: error
 
       - name: Run offline AI evaluation gates

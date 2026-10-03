@@ -1,12 +1,12 @@
 {
   "schema_version": "1.0",
-  "artifact_fingerprint": "57d3f143b34a5b797b2bfe89678b4ba4e53b063febabadebd3dcbbed1c79a370",
+  "artifact_fingerprint": "72caabadefb12247ef8cfc11bc3a326197f3f6609ca5f82ba1dd9a49614069c4",
   "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-  "index_fingerprint": "61602bcc9d56b7141d7f7e80c5e4073bcc959520d91ddf78c9bbe342771bf1da",
+  "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
   "base": {
     "schema_version": "2.0",
     "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-    "index_fingerprint": "61602bcc9d56b7141d7f7e80c5e4073bcc959520d91ddf78c9bbe342771bf1da",
+    "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
     "strategy": "hybrid_rerank",
     "embedding_backend": "hashing-semantic-384",
     "reranker_backend": "query-facet-reranker-v1",
@@ -150,11 +150,11 @@
   "learned": {
     "schema_version": "2.0",
     "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-    "index_fingerprint": "61602bcc9d56b7141d7f7e80c5e4073bcc959520d91ddf78c9bbe342771bf1da",
+    "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
     "strategy": "hybrid_rerank",
     "embedding_backend": "hashing-semantic-384",
     "reranker_backend": "query-facet-reranker-v1",
-    "fusion_backend": "pairwise-logistic:57d3f143b34a",
+    "fusion_backend": "pairwise-logistic:72caabadefb1",
     "parser_backends": {
       "tree-sitter": 82,
       "lexical-only": 6
@@ -248,8 +248,8 @@
           "code_agent/api.py",
           "service/service.py",
           "scripts/ingestion/generate_synthetic_graph_pdfs.py",
-          "post_training/models.py",
           "schema/schema.py",
+          "post_training/models.py",
           "agent/knowledge_graph.py",
           "agent/memory.py"
         ],

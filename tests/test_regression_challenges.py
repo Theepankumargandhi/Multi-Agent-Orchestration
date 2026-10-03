@@ -3,6 +3,7 @@
 import ast
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -33,6 +34,17 @@ from tests.test_repair_tournament import (
 def suite(expected=3):
     return BehavioralProbeSuite(probes=[BehavioralProbe(target="app.value", expected=expected,
         rationale="Authored expected output for the requested public contract.")])
+
+
+def test_probe_harness_disables_writes_and_uses_a_fresh_cache_prefix():
+    assert "-I" in PROBE_COMMAND and "-B" in PROBE_COMMAND
+    source = runner_source(suite())
+    tree = ast.parse(source)  # Inspect only; never execute a probe on the host.
+    assignments = [node for node in tree.body if isinstance(node, ast.Assign)]
+    prefix = next(node for node in assignments if isinstance(node.targets[0], ast.Attribute)
+                  and ast.unparse(node.targets[0]) == "sys.pycache_prefix")
+    assert ast.unparse(prefix.value).startswith("tempfile.mkdtemp(")
+    assert source.index("sys.pycache_prefix") < source.index("importlib.import_module(module)")
 
 
 class ProbeSandbox(ControlledSandbox):
@@ -292,5 +304,18 @@ async def test_real_docker_harness_executes_exact_and_metamorphic_probes(tmp_pat
         assert candidate_matches(evidence)
         assert evidence.suite_sha256 == fingerprint(probes.model_dump(mode="json"))
         assert sandbox.workspace.changed_files() == []
+        # Warm bytecode in Docker, then preserve source size and mtime while editing.
+        # -B alone disables writes but can still read this timestamp-valid stale cache.
+        original = sandbox.workspace.resolve("app.py").stat()
+        warmed = sandbox.run(["python", "-I", "-c", "import app; assert app.value(3) == 6"])
+        assert warmed.exit_code == 0 and not warmed.timed_out
+        assert any((sandbox.workspace.root / "__pycache__").glob("app.*.pyc"))
+        sandbox.workspace.write_file("app.py", "def value(x):\n    return x * 3\n")
+        changed = sandbox.workspace.resolve("app.py")
+        assert changed.stat().st_size == original.st_size
+        os.utime(changed, ns=(original.st_atime_ns, original.st_mtime_ns))
+        evidence = await execute_suite(task, sandbox, probes)
+        assert evidence.statuses == ["mismatched", "matched", "matched"]
+        assert evidence.stable and evidence.workspace_unchanged and not candidate_matches(evidence)
     finally:
         sandbox.close()

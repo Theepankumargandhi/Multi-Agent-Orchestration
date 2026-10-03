@@ -15,7 +15,7 @@ from code_agent.verification import repository_fingerprint
 
 RUNNER_PATH = ".agentforge-regression-probe.py"
 RECEIPT_PATH = ".agentforge-regression-result.json"
-PROBE_COMMAND = ["python", "-I", RUNNER_PATH]
+PROBE_COMMAND = ["python", "-I", "-B", RUNNER_PATH]
 
 
 def canonical(value) -> str:
@@ -109,8 +109,12 @@ async def generate_suite(task: CodeTask, workspace, policy: RegressionChallengeP
 _HARNESS = '''import importlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 
+# -I ignores PYTHONDONTWRITEBYTECODE. -B prevents writes, while a fresh
+# cache prefix also prevents reading stale bytecode from previous source variants.
+sys.pycache_prefix = tempfile.mkdtemp(prefix="agentforge-probe-cache-")
 sys.path.insert(0, str(Path.cwd()))
 suite = json.loads(PAYLOAD)
 
