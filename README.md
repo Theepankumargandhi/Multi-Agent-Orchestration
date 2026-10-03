@@ -427,11 +427,7 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 
 These boundaries are intentional. Good AI engineering includes knowing what the evidence supports—and what it does not.
 
-## Resume summary
 
-> Built an evaluation-driven AI agent platform with LangGraph research orchestration, hybrid retrieval, and sandboxed coding teams. Implemented shared inference budgets, challenge review, execution-gated patch selection, and human-approved diffs; validated recovery and fail-closed behavior with controlled ablations. Live coding-quality gains remain unmeasured.
-
-When using this project in a resume or interview, lead with one measurable workflow rather than listing every subsystem. A strong walkthrough is: retrieve evidence, detect a conflict, withhold an unsupported answer, show the trace and evaluation result, then explain the trade-off between answer coverage, accuracy, latency, and cost.
 
 ## Documentation
 
