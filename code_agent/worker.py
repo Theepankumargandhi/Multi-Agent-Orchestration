@@ -55,8 +55,8 @@ class CodeAgentWorker:
         self.policy = policy
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:8]}"
         self.lease_seconds = max(15, lease_seconds)
-        if workflow not in {"verified_pr", "single_agent"}:
-            raise ValueError("workflow must be verified_pr or single_agent")
+        if workflow not in {"verified_pr", "single_agent", "repair_tournament"}:
+            raise ValueError("workflow must be verified_pr, single_agent, or repair_tournament")
         self.workflow = workflow
         self.solver = solver or self._solve
 
@@ -73,6 +73,10 @@ class CodeAgentWorker:
         sandbox: DockerSandbox | None = None
         try:
             repository = repository_path(self.repository_root, task.repository, self.policy)
+            if self.workflow == "repair_tournament":
+                from code_agent.repair_tournament import build_repair_tournament
+
+                return await build_repair_tournament(task.model).solve(task, repository)
             sandbox = DockerSandbox(repository, task.policy)
             await asyncio.to_thread(sandbox.start)
             agent = (

@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "model_type": "pairwise-logistic-fusion",
+  "feature_names": [
+    "lexical",
+    "semantic",
+    "graph",
+    "rerank"
+  ],
+  "weights": {
+    "lexical": 2.2498773486298953,
+    "semantic": 0.5766855579838762,
+    "graph": 0.026669032613951902,
+    "rerank": 1.2605630205011953
+  },
+  "dataset_fingerprint": "ffa2d8f29ab72f45d1f8b2ca315bba2f4a422d723d538b27bada721a235d45e3",
+  "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
+  "training_pairs": 44,
+  "hard_negatives_per_positive": 4,
+  "epochs": 400,
+  "learning_rate": 0.15,
+  "l2": 0.01,
+  "pairwise_accuracy": 0.8863636363636364,
+  "mean_pairwise_margin": 1.219113850171215,
+  "artifact_fingerprint": "72caabadefb12247ef8cfc11bc3a326197f3f6609ca5f82ba1dd9a49614069c4"
+}

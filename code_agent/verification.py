@@ -341,6 +341,7 @@ def build_pr_dossier(
             "changed_files": result.changed_files,
         },
         "verification": verification.model_dump(mode="json") if verification else None,
+        "repair_tournament": result.tournament.model_dump(mode="json") if result.tournament else None,
         "execution": {
             "attempt": job.attempt,
             "iterations": result.iterations,
@@ -400,4 +401,33 @@ def build_pr_dossier(
             "",
         ]
     )
+    if result.tournament:
+        tournament = result.tournament
+        markdown += "\n## Repair tournament\n\n"
+        markdown += f"Selected: `{tournament.winner_id or 'none'}`; evidence SHA-256: `{tournament.fingerprint}`.\n\n"
+        markdown += "| Candidate | Perspective | Eligible | Changed files | Changed lines | Reasons |\n"
+        markdown += "|---|---|---|---:|---:|---|\n"
+        for candidate in tournament.candidates:
+            markdown += (f"| {candidate.candidate_id} | {candidate.perspective} | {candidate.eligible} | "
+                         f"{candidate.changed_files} | {candidate.changed_lines} | {', '.join(candidate.reasons) or 'none'} |\n")
+        if tournament.policy.regression_challenges:
+            markdown += "\n### Pre-patch regression probes\n\n"
+            markdown += f"Suite SHA-256: `{tournament.regression_suite_sha256 or 'unavailable'}`.\n\n"
+            markdown += ("The JSON dossier retains the exact generated calls, expectations, and rationales for owner review. "
+                         "Baseline discrimination does not establish oracle correctness. Raw function outputs are not retained.\n\n")
+            markdown += "| Candidate | Probe outcomes | Stable repeated run | Workspace unchanged |\n|---|---|---|---|\n"
+            for candidate in tournament.candidates:
+                probes = candidate.regression_probes
+                markdown += (f"| {candidate.candidate_id} | {', '.join(probes.statuses) if probes else 'not run'} | "
+                             f"{probes.stable if probes else False} | {probes.workspace_unchanged if probes else False} |\n")
+        if tournament.oracle_calibration:
+            oracle = tournament.oracle_calibration
+            markdown += "\n### Reference agreement and mutation sensitivity\n\n"
+            markdown += (f"Eligible: `{oracle.eligible}`; killed `{oracle.killed_mutants}/{len(oracle.mutants)}`; "
+                         f"score `{oracle.mutation_score:.3f}`; reference unchanged: `{oracle.reference_unchanged}`.\n\n")
+            markdown += "| Mutant | Operator | Outcome | Killing probe indices |\n|---|---|---|---|\n"
+            for mutant in oracle.mutants:
+                markdown += f"| {mutant.mutant_id} | {mutant.operator} | {mutant.status} | {mutant.killing_probe_indices} |\n"
+            markdown += ("\nReference and mutant source are not in this dossier. Agreement is conditional on the operator reference; "
+                         "the greedy probe cover is diagnostic only and does not shorten the served suite.\n")
     return json_payload, markdown

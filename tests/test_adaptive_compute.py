@@ -82,6 +82,21 @@ def test_selector_releases_only_grounded_conformal_consensus():
     assert "private answer" not in serialized
 
 
+def test_selector_uses_process_reward_for_verifier_guided_best_of_n():
+    plan = plan_compute(
+        _signals(uncertainty_decision="abstain", grounding_confidence=0.6),
+        integrity_key=KEY,
+    )
+    candidates = [
+        _candidate("overconfident", 0.98, ["ev-1"], process_reward=0.25),
+        _candidate("verified", 0.88, ["ev-1"], process_reward=0.92),
+    ]
+    receipt = select_candidate(plan, candidates, integrity_key=KEY)
+    assert receipt.selected_candidate_id == "verified"
+    selected = next(item for item in receipt.candidate_summaries if item.candidate_id == "verified")
+    assert selected.process_reward == 0.92
+
+
 def test_selector_abstains_on_disagreement_or_failed_conformal_filter():
     plan = plan_compute(
         _signals(uncertainty_decision="abstain", grounding_confidence=0.5),

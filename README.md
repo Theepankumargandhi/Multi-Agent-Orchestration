@@ -1,6 +1,6 @@
 # AgentForge
 
-**A reliability-first platform for building, evaluating, and operating AI agents.**
+A reliability-first platform for building, evaluating, and operating AI agents.
 
 [![CI](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/ci.yml)
 [![CD](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml/badge.svg)](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/workflows/cd-release.yml)
@@ -12,7 +12,7 @@ The repository contains two working agent systems:
 - an evidence-aware research agent with hybrid RAG, durable human approval, memory, grounding, calibrated uncertainty, and adaptive test-time compute;
 - a sandboxed coding agent that retrieves repository context, proposes a patch, tests it in an isolated container, and produces a reviewable evidence dossier without modifying the source repository.
 
-Around those agents is the part that matters in production: an inference gateway, evaluation suites, adversarial testing, trace-based observability, release gates, persistence, and deployable FastAPI, Docker, and Kubernetes infrastructure.
+Around those agents are an inference gateway, evaluation suites, adversarial testing, trace-based observability, release gates, persistence, and FastAPI, Docker, and Kubernetes deployment assets. These are reference implementations, not a claim that the repository is ready for unrestricted production traffic.
 
 > This is not presented as a production factuality guarantee or an official benchmark result. The checked-in evaluations are reproducible engineering evidence; the [limitations](#what-the-results-do-not-claim) explain where human-labelled and live-model validation is still required.
 
@@ -33,56 +33,42 @@ That makes the project useful for demonstrating the work expected from an AI eng
 
 ## System at a glance
 
+The research workflow is an 18-node LangGraph state machine. This diagram groups the stages for readability; optional controls are shown where they operate, not as features that are all enabled by default.
+
 ```mermaid
 flowchart TD
-    User[User or API client] --> API[FastAPI service]
-    API --> Auth[Authentication, limits, and tenant context]
-    Auth --> Safety{Safety gate}
-
-    Safety -->|blocked or unavailable| Stop[Safe response]
-    Safety -->|allowed| Memory[Retrieve consented memory]
+    Client[User or API client] --> API[Authentication, limits and tenant context]
+    API --> Safety{Safety gate}
+    Safety -->|blocked or unavailable| Safe[Safe response]
+    Safety -->|allowed| Memory[Optional consented memory retrieval]
     Memory --> Router{Structured intent router}
-
-    Router -->|needs context| Clarify[Ask for clarification]
-    Router -->|math| Math[Math tool]
-    Router -->|local knowledge| RAG[Hybrid RAG]
-    Router -->|relationships| Graph[Knowledge graph retrieval]
-    Router -->|current information| Approval{{Human approval}}
-    Router -->|general| Draft[Draft answer]
-
+    Router --> Clarify[Ask for clarification]
+    Router --> Rewrite[Bounded query rewrite]
+    Rewrite --> Router
+    Router --> Tools[Math, hybrid RAG or graph retrieval]
+    Router --> Approval{{Web approval}}
+    Router -->|general| Draft[Draft response]
     Approval -->|approved| Web[Web retrieval]
-    Approval -->|rejected| Stop
-    Graph --> RAG
-    Math --> Evidence
-    RAG --> Evidence[Evidence adjudication]
+    Approval -->|rejected| Safe
+    Tools --> Evidence[Optional evidence adjudication]
     Web --> Evidence
-    Evidence -->|injection, stale, duplicated, or conflicting| Abstain[Abstain or degrade]
-    Evidence -->|acceptable| Draft
-
-    Draft --> Ground[Claim and citation verification]
-    Ground -->|unsupported| Repair[Bounded repair]
-    Ground -->|supported| Uncertainty{Conformal uncertainty gate}
-    Repair --> Final
-    Uncertainty -->|confident| Final[Release answer]
-    Uncertainty -->|recoverable uncertainty| Compute[Budgeted multi-candidate deliberation]
-    Compute -->|grounded consensus| Final
-    Compute -->|no consensus or budget exhausted| Abstain
-
-    Final --> Evaluate[Record quality and feedback signals]
-    Abstain --> Evaluate
-    Stop --> Evaluate
-    Clarify --> Evaluate
-    Evaluate --> WriteMemory[Write memory only with explicit consent]
-
-    API <--> State[(PostgreSQL or SQLite checkpoints)]
-    API <--> Cache[(Redis or local cache)]
-    API --> Telemetry[Prometheus, OpenTelemetry, and LangSmith]
-    API --> Gateway[Inference gateway]
-    Gateway --> Models[Primary, fallback, canary, and shadow models]
-    Gateway --> Online[Online SLO and rollback controller]
+    Evidence --> Draft
+    Draft --> Gate{Optional grounding and uncertainty checks}
+    Gate -->|eligible| Result[Answer]
+    Gate -->|unsupported or unrecoverable| Repair[Evidence-only repair or abstention]
+    Gate -->|recoverable and within budget| Compute[Optional planning and verified candidates]
+    Compute --> Select[Consensus and optional preference reranking]
+    Select --> Result
+    Select -->|no eligible candidate| Repair
+    Safe --> Finish[Evaluation and consented memory write]
+    Clarify --> Finish
+    Result --> Finish
+    Repair --> Finish
+    API <--> State[(Durable checkpoints and store)]
+    API -.-> Ops[Optional inference gateway, cache and telemetry]
 ```
 
-The research workflow is an **18-node LangGraph state machine**. The trust controls are independently configurable, so they can be evaluated in isolation or enabled together. Native LangGraph interrupts persist web-approval state in the checkpointer, which means an approval can survive an API restart.
+Native LangGraph interrupts persist web-approval state in the checkpointer, so an approval can survive an API restart when persistent checkpointing is configured. Repair is evidence-only trimming or abstention, not an unchecked second model answer. Query rewriting returns to routing; the full graph includes hybrid retrieval and fallback paths omitted from this overview.
 
 The line-by-line graph description lives in [the runtime flow](docs/architecture/agent_runtime_flow.md), and important trade-offs are recorded as [architecture decisions](docs/architecture/decisions.md).
 
@@ -91,17 +77,56 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Area | What the implementation demonstrates |
 |---|---|
 | Agent orchestration | Typed LangGraph state, structured routing, clarification, bounded repair, native interrupts, and route-scoped evidence |
-| Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, caching, and retrieval ablations |
+| Coding validation | Isolated specialist repair teams, pre-patch behavioral probe generation, metamorphic comparisons, shared inference budgets, fresh execution gates, and human-reviewed diffs |
+| Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, hard-negative learning-to-rank, caching, evidence-span coverage, and family-aware retrieval ablations |
 | Evidence intelligence | Prompt-injection quarantine, source-independence checks, cross-domain duplicate detection, freshness policy, and numeric/negation conflict graphs |
 | Trustworthy generation | Claim-to-evidence alignment, citation allowlisting, high-risk thresholds, conformal selective answering, and fail-closed abstention |
-| Test-time compute | Confidence-aware early exit, bounded candidate generation, grounded candidate filtering, consensus, and token/call/latency budgets |
+| Test-time compute | Confidence-aware early exit, offline-RL or search-distilled PUCT priors, learned action-conditioned world-model rollouts, calibrated PRM ensembles, uncertainty penalties, OOD fallback/abstention, active learning, and measured quality/compute curves |
+| Execution-to-learning loop | Consented content-free candidate observations, keyed tenant isolation, immutable delayed labels, request-grouped calibration/test splits, coverage/risk gates, and candidate-only recalibration |
+| Prospective AI validation | Pre-execution task-family IDs, frozen chronological cohorts, embargo and label-availability cutoffs, one-use family exposure tracking, live-lineage checks, distribution-shift holds, and paired bootstrap comparisons |
+| Preference learning | Human-reviewed candidate pairs, family-bootstrap Bradley–Terry metadata reward models, training-only feature scaling, conservative margin/OOD fallback, tenant-bound artifacts, safety-gated runtime reranking, and future-family evaluation |
+| Controlled AI rollout | Preregistered non-serving selector comparisons, actual PRM/release eligibility snapshots, disagreement plus audit review, missing-label sensitivity bounds, fresh-family holdout gates, and optional expiring model/policy/scope-bound approvals |
+| Post-activation preference control | Optional tenant-scoped signed deployment revisions, live approval-source checks, atomic serving provenance, fixed review deadlines, family-deduplicated sequential error monitoring, immediate reviewed-unsafe holds, and irreversible-per-approval baseline rollback |
+| Reviewed workflow supervision | Frozen runtime workflow features, independent immutable step annotations, explicit-label-only PRM training, chronological family splits, validation-only temperature calibration, constant/weak-credit ablations, and conservative missing-review gates |
+| Verifier outcome validation | Preregistered non-serving PRM comparisons using the actual selector, unchanged eligibility, retained abstentions, descriptive risk/coverage curves, fixed primary thresholds, paired terminal-utility bounds, and source-revocation checks |
+| Reviewed verifier uncertainty | Whole-family bootstrap step ensembles, explicit labels only, validation-calibrated member predictions, training-feature support guards, missing-review-aware family-macro risk/coverage curves, single-model ablation, and signed offline candidates |
+| Step-to-answer validation | Conservative step-correctness ranking heuristic, all-step deferral, prospective guarded/unguarded same-pool answer shadows, independent terminal reviews, retained abstentions, fresh-family outcome gates, and unchanged serving behavior |
 | Long-term memory | Episodic, semantic, preference, and procedural memory with consent, tenant isolation, provenance, TTLs, corrections, deletion, and poisoning controls |
-| Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, canaries, shadow evaluation, and online rollback decisions |
+| Model operations | Tenant budgets, provider deadlines, circuit breakers, fallback, isolated semantic caching, constrained contextual-bandit routing, canaries, shadow evaluation, and online rollback decisions |
 | Evaluation | Versioned datasets, fingerprints, trace replay, confidence intervals, failure slices, Pareto analysis, human-review provenance, adversarial arenas, and CI gates |
 | Observability | Content-free OpenTelemetry GenAI spans, Prometheus metrics, LangSmith hooks, request/node latency, privacy checks, and reliability fault injection |
 | Deployment | FastAPI + SSE, PostgreSQL/SQLite, Redis, Docker Compose, non-root containers, health checks, Kubernetes manifests, and network policy |
 
-The controls are designed to compose. For example, retrieved documents do not go straight into a prompt: the evidence layer first removes suspicious or redundant material; the grounding layer then checks claims against the surviving evidence; the uncertainty layer decides whether the answer can be released; and adaptive compute is reserved for cases that are uncertain but still recoverable.
+When enabled, evidence adjudication filters suspicious or redundant material before synthesis, grounding checks claims afterward, and calibrated uncertainty can withhold an answer. Adaptive compute spends extra inference only within its configured budget. These mechanisms have dependencies and mode restrictions; enabling every flag is not a supported setup recipe.
+
+### What runs, and what is still an experiment?
+
+The basic application provides research routing, retrieval, web approval, and API/UI serving. Memory, the inference gateway, evidence/grounding gates, uncertainty calibration, adaptive compute, learned planning, coding execution, and learning observers are opt-in. Artifact-dependent controls also need the matching model/calibrator and private integrity keys. See [.env.example](.env.example) for the complete configuration.
+
+The reviewed workflow-supervision stack closes the gap between predicting a reviewed step and selecting a good final answer:
+
+```mermaid
+flowchart TD
+    Pool[Generated candidates and unchanged incumbent answer] --> Snap[Consented pre-review workflow snapshots]
+    Snap --> Labels[Independent explicit step reviews]
+    Labels --> Fit[Chronological family training and validation calibration]
+    Fit --> StepGate[Fresh-family step-quality and uncertainty evaluation]
+    StepGate --> Candidate[Signed reviewed verifier or step ensemble candidate]
+    Candidate --> Register[Preregister a non-serving outcome study]
+    Future[New future candidate pools] --> Compare[Capture proposals before any reviews]
+    Register --> Compare
+    Compare --> Outcomes[Independent terminal correctness and safety reviews]
+    Outcomes --> Gate[Fixed-threshold risk, coverage and paired utility gate]
+    Ledger[(Shared one-use holdout ledger)] --> StepGate
+    Ledger --> Gate
+    Gate --> Review[Report for owner review, not activation]
+```
+
+Workflow steps are typed views of grounding metadata, not captured hidden reasoning. Step ensembles use explicit labels, whole-family bootstrap sampling, validation-only calibration, and training-feature support guards. The step-to-answer adapter requires every step to be supported, accepted, and predicted correct; its minimum penalized score is a ranking heuristic, not a calibrated answer-correctness probability.
+
+Verifier and ensemble-outcome shadows leave the served answer unchanged and make no extra LLM calls, though they add local scoring/storage work. They require replay consent, process snapshots, a registered study, and `PREFERENCE_RANKING_ENABLED=false`. Reviewed step ensembles have no serving activation path. A passing real outcome report means only `ready_for_owner_review`; a synthetic drill pass proves control behavior, not production readiness.
+
+Preference reranking has a separate optional owner-activated deployment registry. Its live guard checks lineage and delayed outcomes at admission and can revert to the baseline. That capability does not activate reviewed step ensembles or outcome-shadow candidates. Prefer the subsystem guides over mixing these modes.
 
 ## Sandboxed coding agent
 
@@ -127,19 +152,41 @@ flowchart LR
     Owner -->|approved| Patch[Release unified diff]
 ```
 
-Code intelligence uses Tree-sitter for Python, TypeScript, JavaScript, Java, Go, and Rust. A decomposed query searches symbols, files, tests, and dependencies using BM25, semantic embeddings, graph propagation, and reranking. The resulting context is deduplicated, compressed to a token budget, and accompanied by provenance receipts.
+Code intelligence uses Tree-sitter for Python, TypeScript, JavaScript, Java, Go, and Rust, including unchanged-file reuse and incremental reparsing. A decomposed query searches symbols, files, tests, and dependencies using BM25, embedding similarity, graph propagation, and reranking. The credential-free defaults are hashing embeddings and a feature reranker; learned Sentence Transformers and cross-encoder adapters require optional dependencies and model loading. Hard-negative mining trains an integrity-sealed pairwise fusion model, with optional bi-encoder and cross-encoder fine-tuning. Context is deduplicated, compressed to an approximate token budget, and accompanied by provenance receipts. Parser coverage is not a promise of six-language execution support: the supplied sandbox image contains Python tools.
 
 The worker never edits the original repository. It operates on a filtered temporary copy and executes tests inside a non-root container with no network, a read-only root filesystem, dropped capabilities, and CPU, memory, PID, and time limits. Jobs are transactional and recoverable: submissions are deduplicated, workers hold expiring leases, abandoned jobs can be reclaimed, and completed artifacts are checked by digest.
 
 See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code-intelligence.md), and [coding-agent evaluation](docs/coding-agent-evaluation.md).
 
+The [evidence-span evaluator](docs/evidence-span-retrieval.md) asks a more practical retrieval question: did the code needed to solve the task survive compression? It checks source-hashed line ranges against the actual context, compares strategies with paired task-family intervals, and reports missing evidence across fixed token budgets. In its authored 12-query/six-family fixture, both strategies retrieve every relevant file but retain only 83.3% of required spans. That is a useful compression failure, not a claimed model improvement. Synthetic studies stay held and cannot activate a model.
+
+The opt-in [query-aware context packer](docs/query-aware-context-packing.md) prioritizes declarations, guards, and exits, emits complete source lines, and preserves provenance across files. Holding the ranker constant, its authored-fixture span recall is 100% versus the legacy packer's 83.3% across three budgets. The paired family interval includes zero; this is a regression control, not proof of general coding-quality improvement. The default remains `legacy` and no serving policy is automatically changed.
+
 ## Evaluation evidence
 
-The repository currently contains **212 automated tests** with **60.60% branch-aware coverage**. The CI floor is intentionally lower than the measured total so platform-specific integration paths can remain optional; the newest trust modules have focused coverage between 94% and 98%.
+The optional [multi-agent repair tournament](docs/multi-agent-repair-tournament.md) explores fixes with three specialist teams in isolated sandboxes, adds a separate challenge review, and selects only from patches that pass fresh execution gates. Teams share bounded inference budgets and branch from one frozen source snapshot. The winner's diff remains behind owner approval; competing patches are never combined. The default workflow is still `verified_pr`.
+
+Its seven authored one-team/three-team controls test fallback, veto, timeout, and budget behavior. The focused runtime/control suite passed 33 tests with 96.3% combined statement/branch coverage. These are orchestration checks, not real-world coding-quality results. A frozen live benchmark matrix is provided but has not been run with providers or Docker locally.
+
+The optional [regression-challenge agent](docs/regression-challenge-agent.md) designs a common behavioral suite before seeing any candidate patch. It emits bounded JSON calls to operator-selected Python functions, not executable test code. Baseline discrimination, repeated execution, metamorphic comparisons, workspace integrity, and fresh owner tests control candidate eligibility. Exact expectations remain available for review because a generated oracle can be wrong. The authored weak-patch/full-fix ablation runs in Docker in CI; it has not been executed locally and no live-model gain is claimed.
+
+The optional [reference-calibration gate](docs/oracle-calibration.md) evaluates the generated tests themselves. Before teams start, their expectations must agree with a pinned, operator-approved reference in a private verification workspace. Bounded AST mutations then measure which controlled faults the suite catches. Wrong expectations, weak sensitivity, unstable execution, reference changes, and cleanup failures hold the job. Reference and mutant source never enter model prompts or candidate patches. The kill matrix and greedy probe-cover diagnostic appear in the owner dossier; they do not establish general correctness or automatically reduce the suite.
+
+The reference-calibration iteration's affected Python 3.13 regression passed **238 tests with five skips across 243 cases**: four Docker-dependent tests and one Windows directory-symlink check. Its runtime and evaluator separately passed **27 tests with one Docker skip** on both Python 3.11 and 3.13, with **95.7% combined statement/branch coverage**. The preceding full Python 3.13 run passed 607 tests with four skips across 611 cases. These counts describe those specific validation runs, not a test-count or coverage claim for every later change. Repository-wide Ruff and collection passed. Exact retrieval artifact reproduction passed on Python 3.11; it remains separate from promotion or serving activation. The refreshed candidate only matches the fixed baseline on the five-query holdout, with no measured gain.
+
+These are local test results, not a completed GitHub run. The host dependency check reported missing or mismatched optional service packages, and local Docker builds were unavailable; dependency installation/auditing and container checks still need the CI runner. No live-provider quality result is implied.
+
+CI runs on Python 3.11, builds the coding sandbox, executes pytest with coverage, and runs offline control gates, Ruff, dependency auditing, and container build checks. The configured coverage minimum is 30%, not a test-count floor. CI uploads coverage and evaluation artifacts; inspect the run before claiming those checks passed on a particular commit.
+
+The table records historical focused branch-coverage measurements, not whole-project coverage or live-model quality. The latest step-to-answer measurement is documented in [its validation guide](docs/ensemble-outcome-validation.md).
 
 | Module | Focused coverage |
 |---|---:|
-| Adaptive test-time compute | 98% |
+| Adaptive test-time compute | 94% |
+| Verifier-guided search | 93% |
+| Calibrated verifier ensemble | 90% |
+| Reviewed step ensemble + offline evaluator (combined) | 96% |
+| Step-to-answer adapter + outcome control runner (combined) | 98% |
 | Evidence quality | 97% |
 | Conformal uncertainty | 95% |
 | Grounding verification | 94% |
@@ -147,16 +194,50 @@ The repository currently contains **212 automated tests** with **60.60% branch-a
 | Agent memory | 92% |
 | Online quality controller | 89% |
 
-The deterministic evaluation suites cover more than happy-path output. They exercise evidence injection, copied-source laundering, stale and contradictory evidence, fabricated citations, unsafe high-risk claims, calibration drift, compute-budget violations, cross-tenant memory access, poisoning, provider failures, cache isolation, canary rollback, unsafe tool calls, worker-lease recovery, artifact tampering, and retrieval regressions.
+The deterministic evaluation suites cover more than happy-path output. They exercise evidence injection, copied-source laundering, stale and contradictory evidence, fabricated citations, unsafe high-risk claims, calibration drift, compute-budget violations, process-level reward failures, unsafe trajectory selection, cross-tenant memory access, poisoning, provider failures, cache isolation, canary rollback, contextual-policy support and propensity errors, unsafe tool calls, worker-lease recovery, artifact tampering, and retrieval regressions.
 
-Run the same core checks used in CI:
+After installing the development dependencies below, run a subset of the checks used in CI:
 
 ```bash
 python -m pytest -q --cov --cov-report=term-missing --cov-report=xml
 python -m evals.run_offline_evals --min-score 0.95
-ruff check agent client code_agent evals post_training schema service tests
+python -m evals.run_experiments --no-store --min-score 0.95
+python -m code_agent.context_evaluation --repository-root . --top-k 8 --min-recall 0.90
+python -m evals.contextual_bandit evals/datasets/contextual_bandit_feedback.jsonl --require-promotion
+python -m evals.process_reward_evaluation evals/datasets/process_reward_trajectories.jsonl --require-promotion
+python -m evals.search_planning_evaluation --check evals/experiments/search_planning.report.json --require-promotion
+python -m evals.verifier_uncertainty_evaluation --check-artifact evals/experiments/process_reward_ensemble.json --check-report evals/experiments/verifier_uncertainty.report.json --require-promotion
+python -m evals.world_model_evaluation --require-promotion
+python -m evals.offline_rl_evaluation --require-promotion
+python -m evals.distillation_evaluation --require-promotion
+python -m evals.replay_calibration --drill --require-gate
+python -m evals.prospective_evaluation drill --require-gate
+python -m evals.preference_evaluation drill --require-gate
+python -m evals.preference_shadow_evaluation drill --require-gate
+python -m evals.preference_deployment_evaluation drill --require-gate
+python -m evals.process_supervision_evaluation drill --require-gate
+python -m evals.verifier_shadow_evaluation drill --require-gate
+python -m evals.reviewed_verifier_uncertainty_evaluation drill --require-gate
+python -m evals.ensemble_outcome_evaluation drill --require-gate
+python -m ruff check agent client code_agent evals post_training schema scripts service tests
 python -m pip check
 ```
+
+The full command list and artifact uploads are in [.github/workflows/ci.yml](.github/workflows/ci.yml). These drills use authored/synthetic controls and do not activate models. Real reviewed studies require private signed inputs and fresh task families; reusing an exposed holdout with a new policy is rejected. Some output paths are immutable, so use a new output path for a genuinely different experiment rather than overwriting its evidence.
+
+Retrieval artifact reproducibility and model promotion are different checks. Offline evaluation at a Git root uses tracked source/configuration, excludes private repositories and prose, and normalizes checkout line endings. After this source refresh, the fusion candidate is reproducible and matches the fixed baseline on the five-query check (NDCG `0.9594`, recall/MRR `1.00`). It meets that small check's non-regression thresholds but demonstrates no measured gain. Serving still uses the fixed baseline; see [code intelligence](docs/code-intelligence.md) before considering activation.
+
+Ordinary CI requires exact artifact reproducibility and publishes the experimental retrieval decision as a job summary and downloadable report. A valid quality hold does not fail code CI; missing, tampered, or inconsistent evidence does. The separate manual **Retrieval Candidate Promotion** workflow retains `--require-promotion` and fails for this held candidate. Neither workflow activates a model. A green code check is not model approval.
+
+The contextual-bandit check uses a different numerical contract: exact integrity and training/configuration identity, with at most `1e-12` absolute roundoff in learned coefficients. It records both independently verified fingerprints rather than rewriting the reference artifact. The previously failing routing step passed locally on Python 3.11 and 3.13, with 22 regression tests on each. Process-reward and verifier-ensemble checks follow the same bounded-weight contract; their report comparisons still require exact lineage, behavioral outcomes, safety metrics, and promotion decisions. Promotion thresholds remain unchanged; see [the evaluation protocol](docs/evaluation.md) for the distinction and local-environment limits. Inspect the PR's current GitHub checks before merging.
+
+Generate an evidence-span comparison and a readable review card with a fresh output name:
+
+```bash
+python -m evals.retrieval_span_evaluation --plan evals/experiments/retrieval_span_plan.json --output data/evaluations/retrieval-spans/my-study-v1.json
+```
+
+CI uploads the same synthetic study as `evidence-span-retrieval-comparison`. The strict `--require-gate` option still fails a held study; the default synthetic labels are intentionally ineligible for owner-review readiness. Reports are source/protocol fingerprinted and are not overwritten by a second run.
 
 Run the reliability command center locally:
 
@@ -177,16 +258,28 @@ Python 3.11–3.13 is supported.
 
 ```bash
 python -m venv .venv
+```
 
-# Windows PowerShell
+Activate it with the command for your shell:
+
+```powershell
 .venv\Scripts\Activate.ps1
+```
 
+```bash
 # macOS or Linux
 source .venv/bin/activate
+```
 
+Then install the application and its dependencies:
+
+```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements-service.txt -r requirements-app.txt
+python -m pip install --no-deps --editable .
 ```
+
+Run commands from the repository root. The editable install registers the local packages and `agentforge-*` entry points; installing dependencies alone is not the same as installing this project. For tests, lint, and coverage, also install `python -m pip install -r test-requirements.txt`. Alternatively, a fresh development environment can install `requirements.txt` and then the same editable project install.
 
 ### 2. Configure a model provider
 
@@ -194,7 +287,9 @@ python -m pip install -r requirements-service.txt -r requirements-app.txt
 cp .env.example .env
 ```
 
-On Windows PowerShell, use `Copy-Item .env.example .env`. Add at least one of `OPENAI_API_KEY` or `GROQ_API_KEY`. Model credentials stay in the service; clients discover only the configured model IDs through `/capabilities`.
+On Windows PowerShell, use `Copy-Item .env.example .env`. Copy only if `.env` does not already exist; do not overwrite an existing configuration. Add at least one of `OPENAI_API_KEY` or `GROQ_API_KEY` for model responses and replace `USER_AUTH_SECRET` with a long random private value. Provider/model availability must be checked with your own account; the example IDs are configuration examples, not an availability promise. Chroma's configured OpenAI embedding path needs OpenAI credentials for ingestion; a Groq chat key alone does not supply embeddings.
+
+Model credentials stay in the service; clients discover only configured model IDs through `/capabilities`. Real `.env` files, local repositories, evaluation outputs, and the configured checkpoint/store, replay, and process-supervision paths have ignore rules. New private paths need their own rules; check them with `git check-ignore` before staging. Git ignores protect against accidental staging, not disclosure, encryption failures, or previously tracked secrets.
 
 The advanced reliability controls are opt-in so the basic application can start without calibration artifacts or signing keys. Their defaults and explanations are in [.env.example](.env.example).
 
@@ -218,7 +313,9 @@ Open `http://localhost:8501`. API documentation is available at `http://localhos
 docker compose up --build
 ```
 
-The default stack starts the API, UI, PostgreSQL, Redis, Prometheus, and Grafana. Evaluation dashboards are behind the `evaluation` profile:
+The default [compose.yaml](compose.yaml) stack starts the API, UI, PostgreSQL, Redis, Prometheus, and Grafana. Its explicit `environment` values override matching `.env` values, including several disabled AI controls and coding execution. To enable those in containers, use a reviewed Compose override with the correct artifact mounts and keys; changing `.env` alone is not sufficient. The stock stack has neither a coding worker nor a Docker-socket mount.
+
+Evaluation dashboards are behind the `evaluation` profile and read reports from host-mounted `data/evaluations/`. Starting them does not run evaluations or create quality evidence:
 
 ```bash
 docker compose --profile evaluation up --build
@@ -238,6 +335,8 @@ docker compose --profile evaluation up --build
 
 Change the example PostgreSQL, Grafana, authentication, and integrity-signing secrets before exposing the stack outside a local environment.
 
+For local Kubernetes, follow [k8s/README.md](k8s/README.md). That stack differs from Compose: it uses a single API replica with SQLite and does not deploy PostgreSQL, Redis, coding workers, or evaluation dashboards.
+
 ## Try the main workflows
 
 ### Research agent
@@ -250,6 +349,8 @@ Useful demo prompts:
 - `local: explain the checkpoint implementation` — source-grounded local RAG.
 - `How does FastAPI connect to LangGraph in this project?` — relationship and graph retrieval.
 - `What changed in AI news this week?` — web approval, evidence adjudication, and durable resume.
+
+Local/graph questions require an ingested corpus; the service does not automatically index this repository. Evidence adjudication and the other advanced controls appear only when configured. Run live prompts deliberately: they can incur provider charges, and web retrieval needs network access.
 
 ### Ingest local documents
 
@@ -264,13 +365,15 @@ Ingestion is idempotent for unchanged content. Chunks receive deterministic IDs,
 
 ### Run a coding task
 
-Build the purpose-specific sandbox image, then enable `CODE_AGENT_ENABLED`:
+Put an authorized repository beneath `repositories/` and build the purpose-specific sandbox image:
 
 ```bash
 docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
 ```
 
-Submit an authenticated issue to `POST /code/tasks` with an `Idempotency-Key`. Poll the task, inspect its event history and evidence dossier, then explicitly approve or reject the verified patch. The original repository remains unchanged throughout the workflow.
+For a local API on a trusted Docker-capable host, set `CODE_AGENT_ENABLED=true`, `CODE_AGENT_REPOSITORY_ROOT=repositories`, and keep `CODE_AGENT_NETWORK_ENABLED=false`. Restart the API after configuration changes. Submit an authenticated issue to `POST /code/tasks` with an `Idempotency-Key`, a relative repository name such as `sample`, and a trusted fixed test command. Poll the task, inspect its event history and evidence dossier, then explicitly approve or reject the verified patch. Approval releases a diff; it never applies it to the original repository.
+
+See [repositories/README.md](repositories/README.md) for copy exclusions and [the coding-agent guide](docs/code-agent.md) for exact requests and external-worker setup. Do not give a public API container access to the host Docker daemon.
 
 ## Repository map
 
@@ -279,6 +382,8 @@ agent/          LangGraph runtime, retrieval, memory, grounding, and model contr
 code_agent/     Sandboxed coding workflow, code intelligence, security, and benchmarks
 service/        FastAPI endpoints, authentication, persistence, and streaming
 evals/          Datasets, experiment runners, graders, dashboards, and release gates
+repositories/   Git-ignored authorized repositories for coding tasks
+data/           Local runtime stores and outputs; sensitive subpaths are Git-ignored
 post_training/  Reviewed SFT/DPO preparation, LoRA/QLoRA training, and model lineage
 monitoring/     Prometheus and Grafana configuration
 docker/         Runtime and hardened coding-sandbox images
@@ -308,7 +413,25 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 - The Docker sandbox is strong process isolation for a portfolio system, but hostile multi-tenant execution should use isolated microVM workers and an external immutable artifact store.
 - Kubernetes manifests are a secure starting point, not a complete managed-cloud architecture.
 - Post-training plumbing is implemented, but no fine-tuned-model quality claim should be made without reviewed data, accelerator training, and a frozen holdout evaluation.
+- Process-reward results use a small synthetic seed to test learning, pruning, integrity, and promotion behavior; they are not evidence that the verifier generalizes to unseen live-model reasoning traces.
+- Independently reviewed process learning predicts correctness of typed workflow proxies, not hidden reasoning or chain-of-thought. Its synthetic controls test leakage prevention and evaluation holds; final-answer lift still needs diverse reviewed runtime data and a separate selective-release evaluation. No model is activated automatically.
+- Verifier shadows evaluate frozen same-pool selections, not changes to generation or randomized traffic lift. Their curve thresholds are registered before collection; only the fixed primary threshold gates owner review. Small synthetic controls are not evidence of live factuality or token-cost savings.
+- Reviewed step ensembles are offline prediction artifacts, not answer-release models. Their feature envelopes cannot detect semantic shift, and bootstrap percentiles are not finite-sample risk guarantees. The repetitive clean control matches the single-model baseline; it does not demonstrate an ensemble accuracy gain or activate a verifier.
+- Step-to-answer outcome shadows test a preregistered ranking heuristic on the same generated pool. Synthetic unsafe-shift and deferral controls are not live factuality or causal traffic lift. Conservative deferral can reject correct answers; an independent terminal-outcome gate is still required, and no ensemble model is served automatically.
+- Verifier-guided search results use deterministic synthetic transitions. They validate planning, budgets, fail-closed behavior, and replay integrity—not real-world reasoning quality or provider cost savings.
+- Verifier-ensemble shift results use one controlled behaviorally inverted member and only three calibration traces. They validate disagreement detection, conservative scoring, and active-learning plumbing—not production OOD coverage.
+- Learned world-model results use a small, mostly authored transition dataset. They validate action-conditioned prediction, conservative rollouts, artifact integrity, and OOD abstention—not general real-world environment modeling.
+- Conservative offline-RL results use eight authored test episodes with synthetic propensities. They validate CQL, sequential off-policy estimators, PUCT priors, safety masking, and promotion plumbing—not real-traffic policy lift.
+- Reviewed preference reranking learns metadata correlations, not answer semantics. Its synthetic 40-family test demonstrates selection and OOD fallback; offline pools do not reconstruct every live eligibility/PRM decision, so the result is not an end-to-end factuality or live-selector improvement claim.
+- Preference shadow mode compares selectors on already-generated candidates without changing served answers; synthetic controls are not randomized traffic lift. File-only approvals are offline leases. The optional deployment registry adds live source checks and delayed-outcome revocation at each admission or operator check, but has no background watchdog and cannot retract an answer already committed.
 
+These boundaries are intentional. Good AI engineering includes knowing what the evidence supports—and what it does not.
+
+## Resume summary
+
+> Built an evaluation-driven AI agent platform with LangGraph research orchestration, hybrid retrieval, and sandboxed coding teams. Implemented shared inference budgets, challenge review, execution-gated patch selection, and human-approved diffs; validated recovery and fail-closed behavior with controlled ablations. Live coding-quality gains remain unmeasured.
+
+When using this project in a resume or interview, lead with one measurable workflow rather than listing every subsystem. A strong walkthrough is: retrieve evidence, detect a conflict, withhold an unsupported answer, show the trace and evaluation result, then explain the trade-off between answer coverage, accuracy, latency, and cost.
 
 ## Documentation
 
@@ -320,14 +443,38 @@ The checked-in datasets are intentionally useful for regression testing, but sev
 - [Grounding verification](docs/grounding-verification.md)
 - [Uncertainty calibration](docs/uncertainty-calibration.md)
 - [Adaptive test-time compute](docs/adaptive-test-time-compute.md)
+- [Process reward modeling](docs/process-reward-modeling.md)
+- [Verifier-guided reasoning search](docs/verifier-guided-search.md)
+- [Uncertainty-aware verifier ensemble](docs/verifier-uncertainty.md)
+- [Learned world-model planning](docs/learned-world-model-planning.md)
+- [Conservative offline-RL planning](docs/conservative-offline-rl-planning.md)
+- [Search policy distillation and compute curves](docs/search-policy-distillation.md)
+- [Execution feedback and gated recalibration](docs/execution-feedback-calibration.md)
+- [Forward-time AI validation and holdout governance](docs/prospective-ai-validation.md)
+- [Reviewed preference learning and conservative reranking](docs/reviewed-preference-reranking.md)
+- [Non-serving preference shadows and prospective approval gates](docs/preference-shadow-validation.md)
+- [Revocable preference deployments and delayed-outcome sentinel](docs/preference-deployment-sentinel.md)
+- [Independent workflow supervision and verifier retraining](docs/reviewed-process-supervision.md)
+- [Verifier shadows, risk/coverage curves, and final-outcome validation](docs/verifier-shadow-validation.md)
+- [Independently reviewed verifier ensembles and selective step uncertainty](docs/reviewed-verifier-uncertainty.md)
+- [Step-to-answer aggregation and prospective ensemble outcome validation](docs/ensemble-outcome-validation.md)
 - [Agent memory](docs/agent-memory.md)
 - [Inference gateway](docs/inference-gateway.md)
 - [Online AI governance](docs/online-ai-governance.md)
 - [Code agent](docs/code-agent.md)
 - [Code intelligence](docs/code-intelligence.md)
+- [Evidence-span retrieval evaluation](docs/evidence-span-retrieval.md)
+- [Query-aware context packing](docs/query-aware-context-packing.md)
+- [Multi-agent repair tournament](docs/multi-agent-repair-tournament.md)
+- [Independent regression-challenge agent](docs/regression-challenge-agent.md)
+- [Private-reference calibration and mutation sensitivity](docs/oracle-calibration.md)
+- [Retrieval query robustness](docs/retrieval-robustness.md)
 - [Security threat model](docs/security/threat-model.md)
 - [GenAI observability](docs/genai-observability.md)
 - [Self-improvement flywheel](docs/self-improvement-flywheel.md)
 - [Post-training](docs/post-training.md)
+- [Kubernetes setup and deployment boundaries](k8s/README.md)
+- [Local coding repositories](repositories/README.md)
+- [Private holdout handling](evals/datasets/private/README.md)
 
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). AgentForge is released under the [MIT License](LICENSE).

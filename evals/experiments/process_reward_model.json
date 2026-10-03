@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "model_type": "process-logistic-regression",
+  "feature_names": [
+    "bias",
+    "progress",
+    "retrieve",
+    "tool",
+    "verify",
+    "answer",
+    "has_evidence",
+    "citation_valid",
+    "policy_allowed",
+    "error",
+    "confidence",
+    "high_risk"
+  ],
+  "weights": [
+    -0.4879566441269215,
+    -0.8134217046656316,
+    0.26738469541791565,
+    -0.7456794155938522,
+    -0.19456719953504953,
+    -0.8450496299234762,
+    2.3917250746906245,
+    1.4661196930398825,
+    0.7669693039568001,
+    -0.7422436342331927,
+    -0.5898853867626698,
+    -0.1304269010256347
+  ],
+  "stopping_threshold": 0.75,
+  "temporal_discount": 0.9,
+  "training_examples": 36,
+  "human_labeled_steps": 0,
+  "dataset_fingerprint": "bc399e8313e8230e5ae13127df7536ad0e0d5681fcaa75a8ceb7ae078a82a7fd",
+  "artifact_fingerprint": "3d917d03b40d39225e64fd8a6b7d7e32f024200b06b79ac4b10ef5583f3439c7"
+}

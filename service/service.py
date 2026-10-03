@@ -27,6 +27,7 @@ from langsmith import Client as LangsmithClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from agent import build_research_assistant
+from agent.execution_replay import digest
 from agent.mcp_client import close_mcp_client
 from agent.memory import (
     MemoryCandidate,
@@ -44,6 +45,7 @@ from code_agent.api import (
 )
 from code_agent.observability import capture_research_agent_trace
 from evals.adaptive_router import CostAwareRouter
+from evals.contextual_bandit import BanditArtifact, ContextualBanditPolicy
 from evals.platform import ExperimentStore
 from schema import (
     AuthLoginInput,
@@ -112,6 +114,15 @@ ADAPTIVE_MODEL_ROUTER_PATH = Path(
 )
 ADAPTIVE_SMALL_MODEL = os.getenv("ADAPTIVE_SMALL_MODEL", "gpt-4o-mini").strip()
 ADAPTIVE_STRONG_MODEL = os.getenv("ADAPTIVE_STRONG_MODEL", "").strip()
+CONTEXTUAL_BANDIT_ROUTER_ENABLED = os.getenv(
+    "CONTEXTUAL_BANDIT_ROUTER_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+CONTEXTUAL_BANDIT_POLICY_PATH = Path(
+    os.getenv("CONTEXTUAL_BANDIT_POLICY_PATH", "data/evaluations/bandit/policy.json")
+)
+CONTEXTUAL_BANDIT_EPSILON = min(
+    0.25, max(0.0, float(os.getenv("CONTEXTUAL_BANDIT_EPSILON", "0")))
+)
 MODEL_GATEWAY_ENABLED = os.getenv("MODEL_GATEWAY_ENABLED", "false").strip().lower() in {
     "1",
     "true",
@@ -124,6 +135,7 @@ AGENT_MEMORY_ENABLED = os.getenv("AGENT_MEMORY_ENABLED", "false").strip().lower(
 _USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{3,64}$")
 _password_hasher = None
 _adaptive_router_cache: tuple[float, CostAwareRouter] | None = None
+_contextual_bandit_cache: tuple[float, ContextualBanditPolicy] | None = None
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(message)s")
 logger = logging.getLogger("agent_service")
@@ -756,13 +768,51 @@ def _checkpoint_config(user_id: str | None, thread_id: str, model: str) -> Runna
     )
 
 
-def _select_runtime_model(requested_model: str, query: str) -> tuple[str, Dict[str, Any]]:
-    """Resolve the opt-in adaptive pseudo-model to a measured small/strong model."""
-    global _adaptive_router_cache
+def _select_runtime_model(
+    requested_model: str, query: str, request_id: str = ""
+) -> tuple[str, Dict[str, Any]]:
+    """Resolve the opt-in adaptive pseudo-model through the active learned policy."""
+    global _adaptive_router_cache, _contextual_bandit_cache
     if requested_model != "adaptive":
         return requested_model, {"policy": "explicit", "selected_model": requested_model}
     if not ADAPTIVE_MODEL_ROUTER_ENABLED:
         raise HTTPException(status_code=400, detail="Adaptive model routing is disabled")
+    if CONTEXTUAL_BANDIT_ROUTER_ENABLED:
+        try:
+            modified = CONTEXTUAL_BANDIT_POLICY_PATH.stat().st_mtime
+            if _contextual_bandit_cache is None or _contextual_bandit_cache[0] != modified:
+                artifact = BanditArtifact.load(CONTEXTUAL_BANDIT_POLICY_PATH)
+                _contextual_bandit_cache = (modified, ContextualBanditPolicy(artifact))
+            policy = _contextual_bandit_cache[1]
+            high_risk = bool(policy.features(query)[7])
+            decision = policy.decide(
+                query,
+                request_id=request_id or hashlib.sha256(query.encode()).hexdigest(),
+                high_risk=high_risk,
+                epsilon=CONTEXTUAL_BANDIT_EPSILON,
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            logger.error(
+                json.dumps({"event": "contextual_bandit_load_failed", "error": type(exc).__name__})
+            )
+            raise HTTPException(
+                status_code=503, detail="Contextual-bandit routing policy is unavailable"
+            ) from exc
+        selected_estimate = next(
+            item for item in decision.estimates if item.action == decision.action
+        )
+        return decision.model, {
+            "policy": "safety_constrained_contextual_bandit",
+            "selected_tier": decision.action,
+            "selected_model": decision.model,
+            "propensity": round(decision.propensity, 6),
+            "exploration": decision.exploration,
+            "expected_utility": round(selected_estimate.expected_utility, 6),
+            "uncertainty": round(selected_estimate.uncertainty, 6),
+            "feasible_actions": decision.feasible_actions,
+            "high_risk_override": high_risk,
+            "policy_fingerprint": decision.policy_fingerprint,
+        }
     if not ADAPTIVE_SMALL_MODEL or not ADAPTIVE_STRONG_MODEL:
         raise HTTPException(status_code=503, detail="Adaptive model routing is not configured")
     try:
@@ -1044,11 +1094,21 @@ async def capabilities():
         models.append({"id": groq_model, "label": f"Groq · {groq_model}"})
     if (
         ADAPTIVE_MODEL_ROUTER_ENABLED
-        and ADAPTIVE_SMALL_MODEL
-        and ADAPTIVE_STRONG_MODEL
-        and ADAPTIVE_MODEL_ROUTER_PATH.exists()
+        and (
+            (CONTEXTUAL_BANDIT_ROUTER_ENABLED and CONTEXTUAL_BANDIT_POLICY_PATH.exists())
+            or (
+                ADAPTIVE_SMALL_MODEL
+                and ADAPTIVE_STRONG_MODEL
+                and ADAPTIVE_MODEL_ROUTER_PATH.exists()
+            )
+        )
     ):
-        models.append({"id": "adaptive", "label": "Adaptive - quality/cost router"})
+        label = (
+            "Adaptive - contextual bandit"
+            if CONTEXTUAL_BANDIT_ROUTER_ENABLED
+            else "Adaptive - quality/cost router"
+        )
+        models.append({"id": "adaptive", "label": label})
     return {
         "models": models,
         "features": {
@@ -1058,6 +1118,37 @@ async def capabilities():
             "graph_rag": bool(os.getenv("GRAPH_RAG_ENABLED", "true").lower() not in {"0", "false", "off"}),
             "mcp": bool(os.getenv("MCP_TOOLS_ENABLED", "false").lower() not in {"0", "false", "off"}),
             "evaluation_api": ENABLE_EVAL_API,
+            "contextual_bandit_router": CONTEXTUAL_BANDIT_ROUTER_ENABLED,
+            "process_reward_model": bool(
+                os.getenv("PROCESS_REWARD_MODEL_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
+            "verifier_guided_mcts": bool(
+                os.getenv("VERIFIER_MCTS_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
+            "learned_world_model_planning": bool(
+                os.getenv("WORLD_MODEL_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
+            "conservative_offline_rl_planning": bool(
+                os.getenv("OFFLINE_RL_POLICY_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
+            "search_policy_distillation": os.getenv(
+                "SEARCH_DISTILLATION_ENABLED", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"},
+            "execution_feedback_calibration": os.getenv(
+                "EXECUTION_REPLAY_ENABLED", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"},
+            "uncertainty_aware_verifier_ensemble": bool(
+                os.getenv("VERIFIER_ENSEMBLE_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
+            "verifier_active_learning": bool(
+                os.getenv("VERIFIER_ACTIVE_LEARNING_ENABLED", "false").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
             "sandboxed_code_agent": CODE_AGENT_ENABLED,
             "durable_code_jobs": True,
             "verified_pr_workflow": True,
@@ -1320,10 +1411,22 @@ def _parse_input(
     run_id = uuid4()
     thread_id = thread_id or user_input.thread_id or str(uuid4())
     input_message = ChatMessage(type="human", content=user_input.message)
-    selected_model, model_selection = _select_runtime_model(user_input.model, user_input.message)
+    selected_model, model_selection = _select_runtime_model(
+        user_input.model, user_input.message, thread_id
+    )
     config = _checkpoint_config(user_id, thread_id, selected_model)
     config["configurable"]["requested_model"] = user_input.model
     config["configurable"]["model_selection"] = model_selection
+    config["configurable"]["execution_replay_consent"] = user_input.execution_replay_consent
+    config["configurable"]["execution_replay_request_id"] = str(run_id)
+    replay_key = os.getenv("EXECUTION_REPLAY_KEY", "").encode()
+    family = user_input.execution_replay_task_family
+    # Do not put a raw family ID into graph/checkpoint/tracing configuration.
+    config["configurable"]["execution_replay_task_family_fingerprint"] = (
+        digest(replay_key, "task-family", [config["configurable"]["user_id"], family])
+        if family and user_input.execution_replay_consent and len(replay_key) >= 32
+        else None
+    )
     config["run_id"] = run_id
     kwargs = dict(
         input=(Command(resume=resume_value) if resume_value is not None else {"messages": [input_message.to_langchain()]}),
@@ -1585,6 +1688,7 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
                 "adaptive_compute_receipt_fingerprint": (
                     response.get("adaptive_compute_receipt") or {}
                 ).get("receipt_fingerprint"),
+                "execution_replay_event_ids": response.get("execution_replay_event_ids") or [],
                 "evidence_quality_action": (
                     response.get("evidence_quality_report") or {}
                 ).get("action"),

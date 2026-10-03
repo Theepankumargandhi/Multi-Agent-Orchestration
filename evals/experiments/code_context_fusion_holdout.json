@@ -1,0 +1,299 @@
+{
+  "schema_version": "1.0",
+  "artifact_fingerprint": "72caabadefb12247ef8cfc11bc3a326197f3f6609ca5f82ba1dd9a49614069c4",
+  "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
+  "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
+  "base": {
+    "schema_version": "2.0",
+    "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
+    "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
+    "strategy": "hybrid_rerank",
+    "embedding_backend": "hashing-semantic-384",
+    "reranker_backend": "query-facet-reranker-v1",
+    "fusion_backend": "fixed-weight-v1",
+    "parser_backends": {
+      "tree-sitter": 82,
+      "lexical-only": 6
+    },
+    "top_k": 8,
+    "max_tokens": 4096,
+    "total": 5,
+    "recall_at_k": 1.0,
+    "mrr": 1.0,
+    "ndcg_at_k": 0.9593872208972474,
+    "mean_context_tokens": 3746.8,
+    "mean_selected_files": 8.0,
+    "mean_compression_ratio": 0.046084518232827,
+    "mean_duplicate_lines_removed": 22.0,
+    "outcomes": [
+      {
+        "case_id": "durable-worker-leases",
+        "selected_paths": [
+          "code_agent/execution.py",
+          "code_agent/api.py",
+          "code_agent/job_models.py",
+          "code_agent/worker.py",
+          "code_agent/retrieval_backends.py",
+          "code_agent/agent.py",
+          "code_agent/models.py",
+          "code_agent/workspace.py"
+        ],
+        "relevant_paths": [
+          "code_agent/execution.py",
+          "code_agent/worker.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 0.8772153153380493,
+        "context_tokens": 3438,
+        "selected_files": 8,
+        "compression_ratio": 0.05782406138668128,
+        "duplicate_lines_removed": 29
+      },
+      {
+        "case_id": "verified-pr-review",
+        "selected_paths": [
+          "code_agent/verified_pr.py",
+          "code_agent/repair_tournament.py",
+          "code_agent/verification.py",
+          "code_agent/models.py",
+          "code_agent/worker.py",
+          "code_agent/evaluation.py",
+          "code_agent/api.py",
+          "code_agent/regression_challenges.py"
+        ],
+        "relevant_paths": [
+          "code_agent/verified_pr.py",
+          "code_agent/verification.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 0.9197207891481876,
+        "context_tokens": 4096,
+        "selected_files": 8,
+        "compression_ratio": 0.06151907434986825,
+        "duplicate_lines_removed": 26
+      },
+      {
+        "case_id": "swebench-sanitization",
+        "selected_paths": [
+          "code_agent/swebench.py",
+          "code_agent/repair_tournament.py",
+          "code_agent/evaluation_models.py",
+          "code_agent/benchmark_release.py",
+          "code_agent/workspace.py",
+          "code_agent/evaluation.py",
+          "code_agent/verification.py",
+          "code_agent/regression_challenges.py"
+        ],
+        "relevant_paths": [
+          "code_agent/swebench.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "context_tokens": 3354,
+        "selected_files": 8,
+        "compression_ratio": 0.025145348837209314,
+        "duplicate_lines_removed": 15
+      },
+      {
+        "case_id": "conversation-isolation",
+        "selected_paths": [
+          "service/persistence_store.py",
+          "service/service.py",
+          "code_agent/api.py",
+          "schema/schema.py",
+          "scripts/ingestion/generate_synthetic_graph_pdfs.py",
+          "post_training/models.py",
+          "agent/memory.py",
+          "client/client.py"
+        ],
+        "relevant_paths": [
+          "service/persistence_store.py",
+          "service/service.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "context_tokens": 3750,
+        "selected_files": 8,
+        "compression_ratio": 0.06414176077868594,
+        "duplicate_lines_removed": 29
+      },
+      {
+        "case_id": "knowledge-graph-paths",
+        "selected_paths": [
+          "agent/knowledge_graph.py",
+          "agent/graph_rag.py",
+          "agent/research_assistant.py",
+          "agent/grounding.py",
+          "agent/local_rag.py",
+          "agent/evidence_quality.py",
+          "service/service.py",
+          "scripts/ingestion/generate_synthetic_graph_pdfs.py"
+        ],
+        "relevant_paths": [
+          "agent/knowledge_graph.py",
+          "agent/graph_rag.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "context_tokens": 4096,
+        "selected_files": 8,
+        "compression_ratio": 0.021792345811690206,
+        "duplicate_lines_removed": 11
+      }
+    ]
+  },
+  "learned": {
+    "schema_version": "2.0",
+    "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
+    "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
+    "strategy": "hybrid_rerank",
+    "embedding_backend": "hashing-semantic-384",
+    "reranker_backend": "query-facet-reranker-v1",
+    "fusion_backend": "pairwise-logistic:72caabadefb1",
+    "parser_backends": {
+      "tree-sitter": 82,
+      "lexical-only": 6
+    },
+    "top_k": 8,
+    "max_tokens": 4096,
+    "total": 5,
+    "recall_at_k": 1.0,
+    "mrr": 1.0,
+    "ndcg_at_k": 0.9593872208972474,
+    "mean_context_tokens": 3835.0,
+    "mean_selected_files": 8.0,
+    "mean_compression_ratio": 0.041093635432201084,
+    "mean_duplicate_lines_removed": 21.0,
+    "outcomes": [
+      {
+        "case_id": "durable-worker-leases",
+        "selected_paths": [
+          "code_agent/execution.py",
+          "code_agent/api.py",
+          "code_agent/job_models.py",
+          "code_agent/worker.py",
+          "code_agent/retrieval_backends.py",
+          "agent/prospective_validation.py",
+          "code_agent/agent.py",
+          "agent/execution_replay.py"
+        ],
+        "relevant_paths": [
+          "code_agent/execution.py",
+          "code_agent/worker.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 0.8772153153380493,
+        "context_tokens": 3949,
+        "selected_files": 8,
+        "compression_ratio": 0.04832489756567848,
+        "duplicate_lines_removed": 28
+      },
+      {
+        "case_id": "verified-pr-review",
+        "selected_paths": [
+          "code_agent/verified_pr.py",
+          "code_agent/verification.py",
+          "code_agent/repair_tournament.py",
+          "code_agent/models.py",
+          "code_agent/worker.py",
+          "code_agent/api.py",
+          "code_agent/evaluation.py",
+          "code_agent/benchmark_release.py"
+        ],
+        "relevant_paths": [
+          "code_agent/verified_pr.py",
+          "code_agent/verification.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "context_tokens": 4085,
+        "selected_files": 8,
+        "compression_ratio": 0.049511286944379784,
+        "duplicate_lines_removed": 23
+      },
+      {
+        "case_id": "swebench-sanitization",
+        "selected_paths": [
+          "code_agent/swebench.py",
+          "code_agent/evaluation_models.py",
+          "code_agent/repair_tournament.py",
+          "code_agent/benchmark_release.py",
+          "code_agent/verification.py",
+          "code_agent/workspace.py",
+          "code_agent/api.py",
+          "code_agent/regression_challenges.py"
+        ],
+        "relevant_paths": [
+          "code_agent/swebench.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "context_tokens": 3332,
+        "selected_files": 8,
+        "compression_ratio": 0.03525664229349168,
+        "duplicate_lines_removed": 18
+      },
+      {
+        "case_id": "conversation-isolation",
+        "selected_paths": [
+          "service/persistence_store.py",
+          "code_agent/api.py",
+          "service/service.py",
+          "scripts/ingestion/generate_synthetic_graph_pdfs.py",
+          "schema/schema.py",
+          "post_training/models.py",
+          "agent/knowledge_graph.py",
+          "agent/memory.py"
+        ],
+        "relevant_paths": [
+          "service/persistence_store.py",
+          "service/service.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 0.9197207891481876,
+        "context_tokens": 3713,
+        "selected_files": 8,
+        "compression_ratio": 0.039953452288595814,
+        "duplicate_lines_removed": 25
+      },
+      {
+        "case_id": "knowledge-graph-paths",
+        "selected_paths": [
+          "agent/knowledge_graph.py",
+          "agent/graph_rag.py",
+          "agent/grounding.py",
+          "agent/local_rag.py",
+          "agent/research_assistant.py",
+          "scripts/ingestion/generate_synthetic_graph_pdfs.py",
+          "code_agent/retrieval_learning.py",
+          "service/service.py"
+        ],
+        "relevant_paths": [
+          "agent/knowledge_graph.py",
+          "agent/graph_rag.py"
+        ],
+        "recall_at_k": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "context_tokens": 4096,
+        "selected_files": 8,
+        "compression_ratio": 0.032421898068859645,
+        "duplicate_lines_removed": 11
+      }
+    ]
+  },
+  "recall_delta": 0.0,
+  "mrr_delta": 0.0,
+  "ndcg_delta": 0.0,
+  "promotion_approved": true,
+  "promotion_reasons": []
+}

@@ -1,0 +1,11 @@
+{
+  "baseline": "lexical_graph",
+  "candidate": "hybrid_rerank",
+  "top_k": 4,
+  "token_budgets": [256, 512, 1024],
+  "primary_budget": 512,
+  "minimum_families": 6,
+  "minimum_span_recall": 0.8,
+  "maximum_slice_regression": 0.05,
+  "bootstrap_samples": 2000
+}

@@ -50,6 +50,17 @@ jobs:
       - name: Build coding sandbox image
         run: docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
 
+      - name: Run reference-oracle and mutation controls (authored, no provider)
+        run: python -m evals.oracle_calibration_evaluation --output data/evaluations/oracle-calibration/ci.json
+
+      - name: Upload oracle-calibration controls
+        if: always() && hashFiles('data/evaluations/oracle-calibration/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: oracle-calibration-controls
+          path: data/evaluations/oracle-calibration/ci.*
+          if-no-files-found: error
+
       - name: Run unit and integration tests
         env:
           CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
@@ -62,6 +73,77 @@ jobs:
       - name: Annotate pytest failures
         if: failure() && hashFiles('test-results.xml') != ''
         run: python scripts/ci/report_junit_failures.py test-results.xml
+
+      - name: Verify retrieval artifact reproducibility
+        run: python -m code_agent.retrieval_learning train-fusion evals/datasets/code_context_learning.jsonl --repository-root . --negatives-per-positive 4 --epochs 400 --check evals/experiments/code_context_fusion.json
+
+      - name: Report experimental retrieval candidate (no activation)
+        run: |
+          python -m code_agent.retrieval_learning validate-fusion evals/datasets/code_context_smoke.jsonl --repository-root . --artifact evals/experiments/code_context_fusion.json --top-k 8 --max-tokens 4096 --output data/evaluations/code-context/fusion-ci.json
+          python scripts/ci/report_retrieval_candidate.py data/evaluations/code-context/fusion-ci.json --artifact evals/experiments/code_context_fusion.json
+
+      - name: Upload experimental retrieval decision
+        if: always() && hashFiles('data/evaluations/code-context/fusion-ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: experimental-retrieval-decision
+          path: data/evaluations/code-context/fusion-ci.json
+          if-no-files-found: error
+
+      - name: Run evidence-span retrieval stress benchmark (no activation)
+        run: python -m evals.retrieval_span_evaluation --plan evals/experiments/retrieval_span_plan.json --output data/evaluations/retrieval-spans/ci.json
+
+      - name: Upload evidence-span comparison
+        if: always() && hashFiles('data/evaluations/retrieval-spans/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-span-retrieval-comparison
+          path: data/evaluations/retrieval-spans/ci.*
+          if-no-files-found: error
+
+      - name: Compare opt-in context packing (no activation)
+        run: python -m evals.retrieval_span_evaluation --plan evals/experiments/context_packing_plan.json --output data/evaluations/context-packing/ci.json
+
+      - name: Upload context-packing comparison
+        if: always() && hashFiles('data/evaluations/context-packing/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: context-packing-comparison
+          path: data/evaluations/context-packing/ci.*
+          if-no-files-found: error
+
+      - name: Compare retrieval query robustness (no activation)
+        run: python -m evals.retrieval_robustness --output data/evaluations/retrieval-robustness/ci.json
+
+      - name: Upload retrieval robustness comparison
+        if: always() && hashFiles('data/evaluations/retrieval-robustness/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-robustness-comparison
+          path: data/evaluations/retrieval-robustness/ci.*
+          if-no-files-found: error
+
+      - name: Run repair-tournament orchestration controls (no provider or activation)
+        run: python -m evals.repair_tournament_evaluation --output data/evaluations/repair-tournament/ci.json
+
+      - name: Upload repair-tournament controls
+        if: always() && hashFiles('data/evaluations/repair-tournament/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: repair-tournament-controls
+          path: data/evaluations/repair-tournament/ci.*
+          if-no-files-found: error
+
+      - name: Run sandboxed regression-probe ablation (authored controls, no provider)
+        run: python -m evals.regression_challenge_evaluation --output data/evaluations/regression-challenges/ci.json
+
+      - name: Upload regression-probe ablation
+        if: always() && hashFiles('data/evaluations/regression-challenges/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-challenge-controls
+          path: data/evaluations/regression-challenges/ci.*
+          if-no-files-found: error
 
       - name: Run offline AI evaluation gates
         env:
@@ -89,6 +171,22 @@ jobs:
           python -m evals.uncertainty_evaluation --output data/evaluations/uncertainty/ci.json --artifact data/evaluations/uncertainty/calibrator.json --target-error-rate 0.2 --min-selective-accuracy 1 --max-empirical-error 0 --min-incorrect-abstention 1 --require-drift-detection
           python -m evals.adaptive_compute_evaluation --output data/evaluations/adaptive-compute/ci.json --min-pass-rate 1 --min-recovery-rate 1 --max-unsafe-release-rate 0 --max-budget-violation-rate 0
           python -m evals.evidence_quality_evaluation --output data/evaluations/evidence-quality/ci.json --min-pass-rate 1 --min-benign-utility 1 --max-unsafe-release-rate 0
+          python -m evals.contextual_bandit evals/datasets/contextual_bandit_feedback.jsonl --artifact data/evaluations/bandit/policy.json --report data/evaluations/bandit/report.json --check evals/experiments/contextual_bandit_policy.json --require-promotion
+          python -m evals.process_reward_evaluation evals/datasets/process_reward_trajectories.jsonl --artifact data/evaluations/process-reward/model.json --output data/evaluations/process-reward/report.json --check evals/experiments/process_reward_model.json --require-promotion
+          python -m evals.search_planning_evaluation --process-reward-artifact evals/experiments/process_reward_model.json --output data/evaluations/search-planning/ci.json --check evals/experiments/search_planning.report.json --require-promotion
+          python -m evals.verifier_uncertainty_evaluation --artifact data/evaluations/verifier-uncertainty/ensemble.json --output data/evaluations/verifier-uncertainty/report.json --check-artifact evals/experiments/process_reward_ensemble.json --check-report evals/experiments/verifier_uncertainty.report.json --require-promotion
+          python -m evals.world_model_evaluation --artifact data/evaluations/world-model/world-model.json --output data/evaluations/world-model/report.json --require-promotion
+          python -m evals.offline_rl_evaluation --artifact data/evaluations/offline-rl/offline-rl-policy.json --output data/evaluations/offline-rl/report.json --require-promotion
+          python -m evals.distillation_evaluation --require-promotion
+          python -m evals.replay_calibration --drill --require-gate
+          python -m evals.prospective_evaluation drill --require-gate
+          python -m evals.preference_evaluation drill --require-gate
+          python -m evals.preference_shadow_evaluation drill --require-gate
+          python -m evals.preference_deployment_evaluation drill --require-gate
+          python -m evals.process_supervision_evaluation drill --require-gate
+          python -m evals.verifier_shadow_evaluation drill --require-gate
+          python -m evals.reviewed_verifier_uncertainty_evaluation drill --require-gate
+          python -m evals.ensemble_outcome_evaluation drill --require-gate
           python -m evals.flywheel --help
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
@@ -203,6 +301,118 @@ jobs:
         with:
           name: evidence-intelligence
           path: data/evaluations/evidence-quality/
+          if-no-files-found: error
+
+      - name: Upload learned world-model evaluation
+        uses: actions/upload-artifact@v4
+        with:
+          name: learned-world-model-evaluation
+          path: data/evaluations/world-model/report.json
+          if-no-files-found: error
+
+      - name: Upload conservative offline-RL evaluation
+        uses: actions/upload-artifact@v4
+        with:
+          name: conservative-offline-rl-evaluation
+          path: data/evaluations/offline-rl/report.json
+          if-no-files-found: error
+
+      - name: Upload distilled planning compute curves
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-policy-distillation
+          path: data/evaluations/distillation/
+          if-no-files-found: error
+
+      - name: Upload execution-feedback control drill
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-feedback-calibration
+          path: data/evaluations/execution-replay/report.json
+          if-no-files-found: error
+
+      - name: Upload forward-time AI-validation control drill
+        uses: actions/upload-artifact@v4
+        with:
+          name: prospective-ai-validation
+          path: data/evaluations/prospective/drill.json
+          if-no-files-found: error
+
+      - name: Upload reviewed preference-learning control drill
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-preference-reranking
+          path: data/evaluations/preferences/drill.json
+          if-no-files-found: error
+
+      - name: Upload non-serving preference shadow controls
+        uses: actions/upload-artifact@v4
+        with:
+          name: preference-shadow-validation
+          path: data/evaluations/preference-shadow/drill.json
+          if-no-files-found: error
+
+      - name: Upload preference deployment sentinel
+        uses: actions/upload-artifact@v4
+        with:
+          name: preference-deployment-sentinel
+          path: data/evaluations/preference-deployment/drill.json
+          if-no-files-found: error
+
+      - name: Upload verifier-guided search ablation
+        uses: actions/upload-artifact@v4
+        with:
+          name: verifier-guided-search-ablation
+          path: data/evaluations/search-planning/ci.json
+          if-no-files-found: error
+
+      - name: Upload independently reviewed process controls
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-process-supervision
+          path: data/evaluations/process-supervision/drill.json
+          if-no-files-found: error
+
+      - name: Upload verifier uncertainty ablation
+        uses: actions/upload-artifact@v4
+        with:
+          name: verifier-uncertainty-ablation
+          path: data/evaluations/verifier-uncertainty/
+          if-no-files-found: error
+
+      - name: Upload verifier final-outcome shadow controls
+        uses: actions/upload-artifact@v4
+        with:
+          name: verifier-shadow-validation
+          path: data/evaluations/verifier-shadow/drill.json
+          if-no-files-found: error
+
+      - name: Upload reviewed step uncertainty controls
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-verifier-uncertainty
+          path: data/evaluations/reviewed-verifier-uncertainty/drill.json
+          if-no-files-found: error
+
+      - name: Upload step-ensemble final-outcome controls
+        uses: actions/upload-artifact@v4
+        with:
+          name: ensemble-final-outcome-validation
+          path: data/evaluations/ensemble-outcomes/drill.json
+          if-no-files-found: error
+
+      - name: Upload contextual-bandit policy evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: contextual-bandit-policy-evidence
+          path: data/evaluations/bandit/
+          if-no-files-found: error
+
+      - name: Upload process-reward verification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: process-reward-verification-evidence
+          path: data/evaluations/process-reward/
           if-no-files-found: error
 
   docker-build-check:

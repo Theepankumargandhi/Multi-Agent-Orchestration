@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from code_agent.evaluation import dataset_fingerprint, load_code_cases, run_benchmark
 from code_agent.evaluation_models import CodeBenchmarkCase, CodeBenchmarkReport
-from code_agent.models import SandboxPolicy
+from code_agent.models import RepairTournamentPolicy, SandboxPolicy
 
 ContextStrategy = Literal["lexical", "lexical_graph", "hybrid", "hybrid_rerank"]
 
@@ -50,10 +50,17 @@ class DatasetLock(BaseModel):
 class BenchmarkVariant(BaseModel):
     name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
     model: str = Field(min_length=1, max_length=100)
-    workflow: Literal["single_agent", "verified_pr"] = "verified_pr"
+    workflow: Literal["single_agent", "verified_pr", "repair_tournament"] = "verified_pr"
+    tournament_policy: RepairTournamentPolicy | None = None
     context_strategy: ContextStrategy = "hybrid_rerank"
     input_cost_per_million: float = Field(default=0.0, ge=0)
     output_cost_per_million: float = Field(default=0.0, ge=0)
+
+    @model_validator(mode="after")
+    def explicit_tournament_policy(self):
+        if (self.workflow == "repair_tournament") != (self.tournament_policy is not None):
+            raise ValueError("tournament variants require an explicit policy; other workflows must omit it")
+        return self
 
 
 class BenchmarkMatrix(BaseModel):
@@ -494,6 +501,7 @@ async def execute_matrix(path: Path) -> tuple[BenchmarkRelease, Path]:
             image_by_repository=image_map,
             workflow=variant.workflow,
             context_strategy=variant.context_strategy,
+            tournament_policy=variant.tournament_policy,
         )
         named_reports.append((variant.name, run_root / report.run_id / "report.json", report))
     release = build_release(

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from langgraph.types import Interrupt
 
 from evals.adaptive_router import CostAwareRouter
+from evals.contextual_bandit import default_actions, load_events, train_policy
 from service.service import _resolve_native_resume, _select_runtime_model
 
 
@@ -62,3 +63,35 @@ def test_adaptive_model_router_is_opt_in_and_risk_aware(tmp_path, monkeypatch):
     explicit, metadata = _select_runtime_model("chosen-model", "anything")
     assert explicit == "chosen-model"
     assert metadata["policy"] == "explicit"
+
+
+def test_contextual_bandit_router_is_integrity_checked_and_emits_learning_metadata(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from service import service
+
+    artifact_path = tmp_path / "bandit.json"
+    train_policy(
+        load_events(Path("evals/datasets/contextual_bandit_feedback.jsonl")), default_actions()
+    ).save(artifact_path)
+    monkeypatch.setattr(service, "ADAPTIVE_MODEL_ROUTER_ENABLED", True)
+    monkeypatch.setattr(service, "CONTEXTUAL_BANDIT_ROUTER_ENABLED", True)
+    monkeypatch.setattr(service, "CONTEXTUAL_BANDIT_POLICY_PATH", artifact_path)
+    monkeypatch.setattr(service, "CONTEXTUAL_BANDIT_EPSILON", 0.0)
+    monkeypatch.setattr(service, "_contextual_bandit_cache", None)
+
+    selected, metadata = _select_runtime_model(
+        "adaptive", "write a brief greeting message", "request-1"
+    )
+    assert selected == "gpt-4o-mini"
+    assert metadata["policy"] == "safety_constrained_contextual_bandit"
+    assert metadata["propensity"] == 1
+    assert metadata["policy_fingerprint"]
+
+    _, risky = _select_runtime_model(
+        "adaptive", "delete production credentials", "request-2"
+    )
+    assert "economy" not in risky["feasible_actions"]
+    assert risky["high_risk_override"] is True

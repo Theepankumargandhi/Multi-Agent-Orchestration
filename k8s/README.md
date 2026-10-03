@@ -1,143 +1,124 @@
-# Kubernetes Deployment 
+# Local Kubernetes deployment
 
-This folder deploys your project to local Kubernetes (Docker Desktop Kubernetes) with:
+These manifests run the research API, Streamlit UI, Prometheus, and Grafana in the `agent-platform` namespace. They are a local reference deployment, not a complete production cluster configuration. Run the commands below from the repository root.
 
-- `agent-service` (FastAPI backend)
-- `streamlit-app` (UI)
-- `prometheus` (metrics collector)
-- `grafana` (dashboard UI)
+Unlike [Docker Compose](../compose.yaml), this stack uses one API replica with SQLite-backed checkpoints/store and embedded retrieval persistence. It does not deploy PostgreSQL, Redis, a coding worker, or evaluation dashboards. Advanced AI controls and coding execution remain disabled in the supplied ConfigMap; no trained model or calibration artifact is installed by deployment.
 
-## What Each File Does
+```mermaid
+flowchart LR
+    Browser[Local browser] --> UI[Streamlit NodePort 30501]
+    UI --> API[Internal agent-service port 8000]
+    Config[ConfigMap and private Secret] --> API
+    API --> Data[(Agent data PVC)]
+    Prom[Prometheus NodePort 30900] -->|scrape metrics| API
+    Grafana[Grafana NodePort 30300] --> Prom
+    Grafana --> GrafanaData[(Grafana data PVC)]
+```
 
-- `namespace.yaml`
-  - Creates namespace `agent-platform` to keep all resources together.
+## Before deploying
 
-- `agent-configmap.yaml`
-  - Non-secret backend settings (ports, sqlite paths, monitoring flags).
-
-- `streamlit-configmap.yaml`
-  - Sets `AGENT_URL` so Streamlit talks to `agent-service` inside cluster.
-
-- `agent-secret.example.yaml`
-  - Template for secrets (API keys and `USER_AUTH_SECRET`).
-  - Do not commit real secrets.
-
-- `agent-deployment.yaml`
-  - Runs backend container and adds health probes (`/healthz`, `/readyz`).
-
-- `agent-service.yaml`
-  - Internal Kubernetes service for backend on port `8000`.
-
-- `streamlit-deployment.yaml`
-  - Runs Streamlit container with health probe.
-
-- `streamlit-service.yaml`
-  - Exposes Streamlit via NodePort `30501`.
-
-- `prometheus-configmap.yaml`
-  - Prometheus scrape config for `agent-service:8000/metrics`.
-
-- `prometheus-deployment.yaml`
-  - Runs Prometheus pod.
-
-- `prometheus-service.yaml`
-  - Exposes Prometheus UI via NodePort `30900`.
-
-- `grafana-datasource-configmap.yaml`
-  - Auto-configures Grafana to use Prometheus as default data source.
-
-- `grafana-deployment.yaml`
-  - Runs Grafana with persistent storage and secret-backed admin credentials.
-
-- `grafana-service.yaml`
-  - Exposes Grafana UI via NodePort `30300`.
-
-- `kustomization.yaml`
-  - Lets you apply all manifests in one command.
-
-## 1) Prerequisites
-
-- Docker Desktop with Kubernetes enabled.
-- `kubectl` installed and pointing to Docker Desktop cluster.
-
-Verify:
+Use Docker Desktop with Kubernetes enabled, or a local cluster where you can load the built images. Check the target context before making changes:
 
 ```bash
 kubectl config current-context
 kubectl get nodes
+kubectl get storageclass
 ```
 
-## 2) Build Local Images
+The agent requests a 5 GiB `ReadWriteOnce` PVC and Grafana a 2 GiB PVC. A working default storage class is required. Keep the API at one replica for this shared SQLite reference setup; increasing replicas is not a distributed-storage upgrade.
 
-Run from repo root:
+Build the exact image tags referenced by the Deployments:
 
 ```bash
 docker build -f docker/Dockerfile.service -t agent-service-toolkit/agent-service:local .
 docker build -f docker/Dockerfile.app -t agent-service-toolkit/streamlit-app:local .
 ```
 
-## 3) Create Secret
+Docker Desktop can use local images when its cluster shares the image store. Other clusters may require an image import or a registry plus updated Deployment image references. `imagePullPolicy: IfNotPresent` can reuse an old local tag; use new tags for repeatable deployments rather than assuming a rebuild changed an existing pod.
 
-Use your real values:
+## Create the private Secret
+
+The committed [agent-secret.example.yaml](agent-secret.example.yaml) documents the expected names. It contains placeholders, is not included in Kustomize, and must not be edited to contain real values.
+
+Create a private `.env.k8s` file at the repository root, using plain `NAME=value` lines. At minimum, supply a long random `USER_AUTH_SECRET`, at least one usable provider key (`OPENAI_API_KEY` or `GROQ_API_KEY`), and `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`. Do not leave placeholder signing secrets or passwords. The configured OpenAI embedding path separately needs OpenAI credentials if you ingest into it.
+
+Verify the file is ignored before adding any secrets, and restrict access to it:
 
 ```bash
-kubectl create namespace agent-platform
-kubectl -n agent-platform create secret generic agent-secrets \
-  --from-literal=USER_AUTH_SECRET=replace-with-long-random-secret \
-  --from-literal=OPENAI_API_KEY=replace-if-used \
-  --from-literal=GROQ_API_KEY=replace-if-used \
-  --from-literal=MODEL_GATEWAY_FINGERPRINT_KEY=replace-with-a-dedicated-random-secret \
-  --from-literal=ONLINE_EVAL_INTEGRITY_KEY=replace-with-a-separate-random-secret \
-  --from-literal=AGENT_MEMORY_INTEGRITY_KEY=replace-with-a-dedicated-random-secret \
-  --from-literal=GROUNDING_INTEGRITY_KEY=replace-with-a-separate-random-secret \
-  --from-literal=UNCERTAINTY_INTEGRITY_KEY=replace-with-another-random-secret \
-  --from-literal=ADAPTIVE_COMPUTE_INTEGRITY_KEY=replace-with-an-independent-random-secret \
-  --from-literal=EVIDENCE_QUALITY_INTEGRITY_KEY=replace-with-another-independent-random-secret \
-  --from-literal=LANGSMITH_API_KEY=replace-if-used \
-  --from-literal=GRAFANA_ADMIN_USER=admin \
-  --from-literal=GRAFANA_ADMIN_PASSWORD=replace-with-a-strong-password
+git check-ignore .env.k8s
+kubectl apply -f k8s/namespace.yaml
+kubectl -n agent-platform create secret generic agent-secrets --from-env-file=.env.k8s
 ```
 
-If the namespace already exists, ignore that message.
+This avoids putting secret values directly into command history. A Kubernetes Secret is not encryption by itself; cluster RBAC, encryption at rest, and a managed secret store are separate operational responsibilities. Do not print, commit, or upload the private file or Secret YAML.
 
-## 4) Deploy Everything
+`create secret` is the first-install command. If the Secret already exists, use your deliberate secret-rotation process instead of deleting it or replaying placeholder values. Pods consume these values as environment variables and need restarting after an intentional change.
+
+Optional controls need their own independent keys and artifact mounts. The Secret template covers only a subset of current keys; consult [../.env.example](../.env.example) and the relevant subsystem guide before enabling replay, reviewed learning, or a shadow study. Their artifacts live under persistent private paths, not in ConfigMaps. Never enable all AI flags without satisfying their dependencies and mode restrictions.
+
+## Apply and verify
 
 ```bash
+kubectl kustomize k8s
 kubectl apply -k k8s
+kubectl -n agent-platform rollout status deployment/agent-service
+kubectl -n agent-platform rollout status deployment/streamlit-app
+kubectl -n agent-platform rollout status deployment/prometheus
+kubectl -n agent-platform rollout status deployment/grafana
+kubectl -n agent-platform get pods,svc,pvc
 ```
 
-Check status:
+Rendering first helps catch configuration mistakes without deploying. The API probes `/healthz` and `/readyz`; Streamlit has its own health probe. Pod readiness is not evidence that model credentials work, a corpus exists, or an AI quality gate passed. Check those separately with an authenticated request and the relevant evaluation workflow.
+
+| Local service | Address |
+|---|---|
+| Research UI | `http://localhost:30501` |
+| Prometheus | `http://localhost:30900` |
+| Grafana | `http://localhost:30300` |
+
+Use the Grafana credentials from your private Secret. NodePort access depends on the cluster/node network; `localhost` is the Docker Desktop case. The API service is internal, not exposed through a NodePort. For local diagnostics you can use:
 
 ```bash
-kubectl -n agent-platform get pods
-kubectl -n agent-platform get svc
+kubectl -n agent-platform port-forward service/agent-service 8000:8000
 ```
 
-## 5) Access URLs
+Then visit `http://localhost:8000/docs`. Port-forward reachability can depend on cluster networking and policy implementation.
 
-- Streamlit: `http://localhost:30501`
-- Prometheus: `http://localhost:30900`
-- Grafana: `http://localhost:30300`
-  - use the credentials stored in `agent-secrets`
+## What the manifests configure
 
-## 6) Useful Commands
+| Files | Responsibility |
+|---|---|
+| `namespace.yaml`, `kustomization.yaml` | Namespace and resource assembly; the real Secret is created separately |
+| `agent-configmap.yaml`, `streamlit-configmap.yaml` | Non-secret API defaults and the in-cluster `AGENT_URL` |
+| `agent-pvc.yaml`, `agent-deployment.yaml`, `agent-service.yaml` | API persistence, single-replica container, health probes, resources, and internal service |
+| `streamlit-deployment.yaml`, `streamlit-service.yaml` | UI container, health probe, and NodePort |
+| `prometheus-configmap.yaml`, `prometheus-deployment.yaml`, `prometheus-service.yaml` | API metrics scraping and Prometheus NodePort; no persistent Prometheus volume |
+| `grafana-datasource-configmap.yaml`, `grafana-deployment.yaml`, `grafana-service.yaml` | Prometheus datasource, Secret-backed login, Grafana PVC, and NodePort |
+| `network-policy.yaml` | API ingress from UI and Prometheus pods on port 8000 |
 
-See recent logs:
+NetworkPolicy requires a supporting CNI. This policy is not an egress restriction or a sandbox network boundary. The API runs as a non-root user with dropped capabilities and no service-account token, but its root filesystem is writable in the current manifest. Do not describe this as the coding sandbox's read-only isolation.
+
+For logs:
 
 ```bash
-kubectl -n agent-platform logs deploy/agent-service --tail=200
-kubectl -n agent-platform logs deploy/prometheus --tail=200
-kubectl -n agent-platform logs deploy/grafana --tail=200
+kubectl -n agent-platform logs deployment/agent-service --tail=200
+kubectl -n agent-platform logs deployment/prometheus --tail=200
+kubectl -n agent-platform logs deployment/grafana --tail=200
 ```
 
-Delete stack:
+Keep logs private when diagnosing provider or user-data issues.
+
+## Deployment boundaries and cleanup
+
+The manifests do not mount the Docker socket. Coding tasks need a separately isolated worker with explicitly shared job/artifact storage and access to authorized repositories; setting `CODE_AGENT_ENABLED=true` alone does not provision one. See [the coding-agent guide](../docs/code-agent.md).
+
+For a public deployment, plan ingress/TLS, reviewed network policies, managed secrets, backups, external PostgreSQL/Redis where needed, distributed limits, signed/scanned images, and stronger isolation for untrusted execution. The current stack does not provide these automatically.
+
+Back up data and understand the storage class's reclaim policy before removing resources. Both commands below are destructive: the Kustomize deletion includes PVCs, and namespace deletion also removes the Secret and any other resources in that namespace. Depending on storage policy, persisted conversations, retrieval indexes, or Grafana data may be permanently lost.
 
 ```bash
+# Only when intentionally discarding or after backing up this deployment:
 kubectl delete -k k8s
+# Optional final cleanup of the namespace and anything remaining inside it:
 kubectl delete namespace agent-platform
 ```
-
-## Notes
-
-- Agent and Grafana data use persistent volume claims; the default storage class must support dynamic provisioning.
-- For a public deployment, use an external PostgreSQL/Redis service, managed secrets, ingress/TLS, distributed rate limiting, backups, and signed/scanned images.

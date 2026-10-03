@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from code_agent.context_dashboard import curve_rows, load_ablation_reports
+from code_agent.context_dashboard import curve_rows, load_ablation_reports, load_fusion_reports
 from code_agent.context_evaluation import AblationPoint, ContextAblationReport
+from code_agent.retrieval_learning import FusionValidationReport
 
 
 def test_context_dashboard_loads_valid_reports_and_builds_curve_rows(tmp_path):
@@ -49,3 +50,34 @@ def test_context_dashboard_loads_valid_reports_and_builds_curve_rows(tmp_path):
             "deduplicated lines": 3.0,
         }
     ]
+
+
+def test_context_dashboard_loads_learned_fusion_reports(tmp_path):
+    context = {
+        "dataset_fingerprint": "dataset",
+        "index_fingerprint": "index",
+        "top_k": 3,
+        "total": 1,
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "outcomes": [],
+    }
+    report = FusionValidationReport(
+        artifact_fingerprint="a" * 64,
+        dataset_fingerprint="dataset",
+        index_fingerprint="index",
+        base=context,
+        learned={**context, "fusion_backend": "pairwise-logistic:aaaaaaaaaaaa"},
+        recall_delta=0.0,
+        mrr_delta=0.0,
+        ndcg_delta=0.0,
+        promotion_approved=True,
+        promotion_reasons=[],
+    )
+    (tmp_path / "fusion.json").write_text(report.model_dump_json(), encoding="utf-8")
+    (tmp_path / "other.json").write_text("{}", encoding="utf-8")
+
+    loaded = load_fusion_reports(tmp_path)
+    assert len(loaded) == 1
+    assert loaded[0][1].promotion_approved is True

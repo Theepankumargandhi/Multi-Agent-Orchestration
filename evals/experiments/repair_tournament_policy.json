@@ -1,0 +1,8 @@
+{
+  "candidates": 3,
+  "max_parallel": 2,
+  "max_model_calls": 64,
+  "max_estimated_prompt_tokens": 100000,
+  "candidate_timeout_seconds": 300,
+  "challenge_timeout_seconds": 60
+}

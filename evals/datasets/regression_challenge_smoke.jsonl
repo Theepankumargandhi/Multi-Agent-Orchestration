@@ -1,0 +1,1 @@
+{"id":"clamp-boundaries","repository":"regression_challenges","issue":"Fix app.clamp so that numbers below lower return lower, numbers above upper return upper, and in-range values stay unchanged. Preserve the existing inclusive numeric contract and add boundary regression tests.","test_command":["python","-m","pytest","-q"]}

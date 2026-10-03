@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_]{1,80}")
@@ -35,6 +37,7 @@ _SEMANTIC_EXPANSIONS = {
     "test": ("pytest", "spec", "assert", "regression"),
     "worker": ("job", "queue", "lease", "heartbeat"),
 }
+FUSION_FEATURES = ("lexical", "semantic", "graph", "rerank")
 
 
 def tokenize(value: str) -> list[str]:
@@ -144,7 +147,7 @@ class HashingSemanticEmbedder:
             position = int.from_bytes(digest[:4], "big") % self.dimensions
             sign = 1.0 if digest[4] & 1 else -1.0
             vector[position] += sign
-        norm = math.sqrt(sum(item * item for item in vector)) or 1.0
+        norm = math.sqrt(math.fsum(item * item for item in vector)) or 1.0
         return tuple(item / norm for item in vector)
 
 
@@ -223,18 +226,69 @@ class CrossEncoderReranker:
 
 
 @dataclass(frozen=True)
+class LearnedFusionScorer:
+    """Integrity-checked pairwise learning-to-rank artifact used at retrieval time."""
+
+    weights: tuple[float, ...]
+    artifact_fingerprint: str
+    source: str
+
+    @property
+    def name(self) -> str:
+        return f"pairwise-logistic:{self.artifact_fingerprint[:12]}"
+
+    def score(self, features: dict[str, float]) -> float:
+        logit = math.fsum(
+            weight * float(features.get(feature, 0.0))
+            for feature, weight in zip(FUSION_FEATURES, self.weights, strict=True)
+        )
+        if logit >= 0:
+            return 1.0 / (1.0 + math.exp(-min(logit, 60.0)))
+        exp_logit = math.exp(max(logit, -60.0))
+        return exp_logit / (1.0 + exp_logit)
+
+    @classmethod
+    def load(cls, path: Path) -> "LearnedFusionScorer":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != "1.0":
+            raise ValueError("unsupported fusion artifact schema version")
+        if payload.get("model_type") != "pairwise-logistic-fusion":
+            raise ValueError("unsupported fusion artifact model type")
+        if tuple(payload.get("feature_names") or ()) != FUSION_FEATURES:
+            raise ValueError("fusion artifact feature schema does not match this runtime")
+        fingerprint = str(payload.get("artifact_fingerprint") or "")
+        unsigned = {key: value for key, value in payload.items() if key != "artifact_fingerprint"}
+        expected = hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if not fingerprint or fingerprint != expected:
+            raise ValueError("fusion artifact fingerprint is invalid")
+        raw_weights = payload.get("weights") or {}
+        weights = tuple(float(raw_weights[name]) for name in FUSION_FEATURES)
+        if any(not math.isfinite(value) or abs(value) > 100 for value in weights):
+            raise ValueError("fusion artifact contains unsafe weights")
+        return cls(weights=weights, artifact_fingerprint=fingerprint, source=path.as_posix())
+
+
+@dataclass(frozen=True)
 class RetrievalConfig:
     embedding_backend: str = "hashing"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     reranker_backend: str = "feature"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    fusion_artifact: str = ""
     lexical_weight: float = 0.50
     semantic_weight: float = 0.30
     graph_weight: float = 0.20
     rerank_weight: float = 0.25
     candidate_multiplier: int = 4
     prefer_tree_sitter: bool = True
+    packing_policy: str = "legacy"
     fallbacks: list[str] = field(default_factory=list, compare=False)
+
+    def __post_init__(self):
+        if self.packing_policy not in {"legacy", "balanced_v1"}:
+            raise ValueError("unknown code-context packing policy")
 
     @classmethod
     def from_environment(cls) -> "RetrievalConfig":
@@ -247,8 +301,10 @@ class RetrievalConfig:
             reranker_model=os.getenv(
                 "CODE_CONTEXT_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
             ),
+            fusion_artifact=os.getenv("CODE_CONTEXT_FUSION_ARTIFACT", "").strip(),
             prefer_tree_sitter=os.getenv("CODE_CONTEXT_TREE_SITTER", "true").lower()
             not in {"0", "false", "off"},
+            packing_policy=os.getenv("CODE_CONTEXT_PACKING_POLICY", "legacy").strip().lower(),
         )
 
 
@@ -274,10 +330,20 @@ def build_reranker(config: RetrievalConfig) -> Reranker | None:
     return FeatureReranker()
 
 
+def build_fusion_scorer(config: RetrievalConfig) -> LearnedFusionScorer | None:
+    if not config.fusion_artifact:
+        return None
+    try:
+        return LearnedFusionScorer.load(Path(config.fusion_artifact))
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        config.fallbacks.append(f"fusion artifact failure: {type(exc).__name__}: {exc}")
+        return None
+
+
 def cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0
-    return sum(a * b for a, b in zip(left, right))
+    return math.fsum(a * b for a, b in zip(left, right))
 
 
 def _minmax(values: list[float]) -> list[float]:

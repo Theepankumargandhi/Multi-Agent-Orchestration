@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "dataset_fingerprint": "7d7e9da06482c5e2c096efdb8fced4bd2b7016ede03d928bdb356e06a247bfaf",
+  "policy_fingerprint": "6709729e7a28026714d0b459b9d11e784fb8edb5836a06a57702cc13d2851026",
+  "events": 12,
+  "matched_events": 4,
+  "support_violations": 0,
+  "effective_sample_size": 4.0,
+  "behavior_utility": 0.5374583333333333,
+  "ips_utility": 0.8360625,
+  "snips_utility": 0.8360625,
+  "doubly_robust_utility": 0.8360625,
+  "confidence_low": 0.754161286600869,
+  "confidence_high": 0.9179637133991311,
+  "estimated_lift": 0.2986041666666668,
+  "target_safety_violations": 0,
+  "promoted": true,
+  "reasons": []
+}

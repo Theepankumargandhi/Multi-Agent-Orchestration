@@ -1,0 +1,8 @@
+{"id":"worker-lease-training","query":"Find the implementation that claims queued coding work with lease ownership and heartbeat renewal.","relevant_paths":["code_agent/execution.py","code_agent/worker.py"],"tags":["train","execution"]}
+{"id":"verified-repair-training","query":"Locate the bounded repair loop and the independent verification gates for generated patches.","relevant_paths":["code_agent/verified_pr.py","code_agent/verification.py"],"tags":["train","verification"]}
+{"id":"retrieval-ranking-training","query":"Find hybrid code ranking with lexical semantic dependency graph and reranker signals.","relevant_paths":["code_agent/intelligence.py","code_agent/retrieval_backends.py"],"tags":["train","retrieval"]}
+{"id":"security-policy-training","query":"Where are code agent path traversal secret exfiltration and unsafe workflow writes blocked?","relevant_paths":["code_agent/security_policy.py"],"tags":["train","security"]}
+{"id":"telemetry-training","query":"Locate privacy safe GenAI spans trace fingerprints and OTLP export.","relevant_paths":["code_agent/observability.py"],"tags":["train","observability"]}
+{"id":"grounding-training","query":"Find claim citation entailment checks and unsupported answer withholding.","relevant_paths":["agent/grounding.py"],"tags":["train","grounding"]}
+{"id":"uncertainty-training","query":"Where is conformal calibration selective answering and drift detection implemented?","relevant_paths":["agent/uncertainty.py"],"tags":["train","calibration"]}
+{"id":"memory-training","query":"Find tenant isolated memory poisoning defenses deletion receipts and consolidation.","relevant_paths":["agent/memory.py"],"tags":["train","memory"]}

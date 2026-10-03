@@ -2,6 +2,12 @@
 
 This subsystem measures whether the sandboxed coding agent resolves repository failures, not whether its response sounds plausible. Each completed run is content-addressed by dataset and configuration fingerprints and produces a portable artifact directory.
 
+## Regression-challenge ablation
+
+The [regression designer](regression-challenge-agent.md) has a Docker-backed baseline/weak-patch/full-fix control: `python -m evals.regression_challenge_evaluation --output data/evaluations/regression-challenges/my-review-v1.json`. Existing happy-path tests cannot distinguish the authored variants; a common behavioral suite is expected to reject the example-specific weak patch. This is one synthetic fixture, not generated-oracle accuracy or live-model resolution lift. Docker absence returns unavailable rather than executing on the host. CI uploads JSON/Markdown without activation.
+
+The [oracle-calibration controls](oracle-calibration.md) distinguish correct-reference agreement, insufficient fault sensitivity, and wrong expectations. `python -m evals.oracle_calibration_evaluation --output data/evaluations/oracle-calibration/my-review-v1.json` uses the Docker sandbox and no provider. The four authored faults and greedy probe-cover diagnostic are not general test adequacy or live-model quality measurements.
+
 ## Metrics
 
 The report records pass@1 with a deterministic bootstrap 95% confidence interval, final-test pass rate, verification pass rate, repair rounds, blocking findings, regression rate, timeout rate, sandbox-policy rejection rate, p50/p95 duration, average iterations/tool calls/changed files, provider-reported input/output tokens, estimated cost, cost per resolved task, failure categories, and repository/tag slices.
@@ -108,3 +114,16 @@ The container runs as UID 10001 with a read-only root filesystem, dropped capabi
 - Report the model identifier, sandbox image digest, dataset fingerprint, configuration fingerprint, sample size, confidence interval, prices used, and run date.
 - Keep validation cases for iteration and publish test-split results only after configuration choices are frozen.
 - Report failed infrastructure cases and zero-token runs; do not silently remove them from the denominator.
+## Multi-team repair experiments
+
+The [repair tournament](multi-agent-repair-tournament.md) is supported by the real coding
+benchmark harness as `--workflow repair_tournament`. Use
+`--tournament-policy evals/experiments/repair_tournament_policy.json` to freeze its budgets.
+The `repair_tournament_matrix.json` comparison registers verified-team, one-team challenge,
+and three-team challenge arms using the existing smoke dataset lock. No live run is implied.
+Reported provider usage includes losing teams and challenge calls when callbacks supply it.
+Unreported usage must not be interpreted as zero cost.
+
+Credential-free `evals.repair_tournament_evaluation` controls use scripted model responses
+and authored command outcomes. They test orchestration, not model accuracy or patch success
+on unseen repositories. CI runs only these controls, not the billable live matrix.

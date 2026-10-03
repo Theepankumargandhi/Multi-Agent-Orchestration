@@ -48,6 +48,8 @@ flowchart LR
 - Judge accuracy is calculated only on human-reviewed preferences.
 - Private holdout labels remain outside the repository.
 - Adaptive-router thresholds are fitted on validation data and reported separately on the held-out test split.
+- The successor router logs action propensities and is promoted only after IPS, SNIPS, doubly robust, effective-sample-size, confidence, and safety gates pass on held-out feedback.
+- Adaptive best-of-N generation can use a learned process verifier rather than trusting self-reported confidence; step rewards, early pruning, counterfactual credit, receipt integrity, success lift, and unsafe-selection rate are gated separately.
 
 ## Coding-agent reliability controls
 
@@ -65,11 +67,15 @@ The verified PR workflow adds a second evidence layer: typed repository analysis
 
 This separation matters: model-quality scores cannot establish that a long-running agent is operationally safe, and reliable queue behavior cannot establish that its patches are correct. Both evidence layers are required.
 
+The optional [repair tournament](multi-agent-repair-tournament.md) adds isolated specialist teams and a common [pre-patch regression designer](regression-challenge-agent.md). The designer emits bounded JSON behavior probes against operator-selected functions before seeing any patch. Baseline discrimination and repeated candidate executions provide an additional veto; exact expectations remain reviewable because generated oracles can be wrong. The authored weak-patch ablation and failure controls demonstrate the engineering contract, not an unmeasured live-model resolution gain.
+
+The optional [reference-calibration stage](oracle-calibration.md) tests that evaluator before any repair team starts. A private, source-pinned reference checks expectation agreement; deterministic AST faults measure bounded mutation sensitivity. The controller records a probe-to-fault kill matrix without releasing reference code to models or candidate workspaces. Reference revocation, unstable runs, weak sensitivity, or cleanup failures withhold the patch. The new runtime/control suite passed 27 tests with one Docker skip on Python 3.11 and 3.13, with 95.7% focused statement/branch coverage. The broader affected run passed 238 tests with five platform/Docker skips. Real Docker controls and live-model oracle quality remain unverified locally; the feature is off by default.
+
 ## Code-context retrieval evidence
 
 The verified PR agent now performs a separate code-intelligence step before analysis and implementation. Six-language Tree-sitter metadata, decomposed query facets, BM25 relevance, semantic embeddings, dependency propagation, and optional cross-encoder reranking produce a compressed token-bounded context pack. Each selection records backend identities, ranks, score components, reasons, file/snippet digests, compression statistics, and an overall fingerprint in the final dossier.
 
-The checked-in five-case source-only regression set currently measures Recall@8 `1.00`, MRR `1.00`, and NDCG@8 `0.9433` for the hybrid reranked baseline. A 20-point strategy/token-budget ablation shows all strategies retaining Recall@8 `1.00` at 512 tokens, while lexical-plus-graph has the best NDCG@8 (`0.9754`). At that budget, hybrid-reranked packs use about 479 tokens, reduce their selected raw windows by 25.8%, and remove 5.4 duplicate lines per query. This result is retained even though the simpler method wins. The first V1 experimental run was rejected because the relevance-label dataset itself entered the index; the final harness excludes labels, tests, documentation, generated metadata, runtime data, infrastructure, and root prose. These numbers describe only this small repository-specific regression set and are not presented as general code-retrieval performance.
+The original five-case source-only regression study measured Recall@8 `1.00`, MRR `1.00`, and NDCG@8 `0.9433` for the hybrid reranked baseline. Its 20-point strategy/token-budget ablation retained Recall@8 `1.00` at 512 tokens for all strategies, while lexical-plus-graph had the best NDCG@8 (`0.9754`). At that budget, hybrid-reranked packs used about 479 tokens, reduced their selected raw windows by 25.8%, and removed 5.4 duplicate lines per query. This historical result is retained even though the simpler method won. The first V1 experimental run was rejected because the relevance-label dataset itself entered the index. The current harness additionally uses tracked source/configuration and normalized offline line endings, excluding private local repositories and local-only files. After the latest source refresh, the learned fusion candidate matches the fixed baseline (NDCG `0.9594`, recall/MRR `1.00`) on the five-query regression set. Its non-regression gate accepts it for review, but there is no measured gain and serving remains on the fixed baseline. The earlier `0.9295` regression belongs to the preceding source snapshot. See [code intelligence](code-intelligence.md) for the current protocol. These small repository-specific checks are not general retrieval-performance evidence.
 
 ## Agent security evidence
 
@@ -174,6 +180,67 @@ and uses 59.0% fewer candidate calls than an always-deliberate three-candidate p
 gates and integrity checks pass. These figures validate allocation, stopping, and evidence-consensus
 mechanics over simulated candidate outcomes; they do not establish live-model quality, cost savings,
 or latency improvements.
+
+The next layer turns the learned process verifier into a reasoning-time search value function. A
+bounded MCTS controller explores typed retrieve, reason, verify, answer, and abstain actions while
+enforcing evidence, risk, token, depth, node, and iteration constraints. Runtime plans operate over
+the evidence already in the research graph; each selected path is attached to adaptive compute with
+policy, request, model, and plan fingerprints.
+
+On a separate checked-in ten-scenario synthetic holdout, a fixed confidence policy succeeds on 30%
+of scenarios and releases unsafe answers on 30%. Verifier-guided search succeeds on all scenarios,
+recovers all authored recoverable cases, records zero unsafe releases and budget violations, and
+verifies every plan receipt. CI reproduces the exact report. This demonstrates deterministic search
+and safety mechanics, not general reasoning improvement; live-model transitions and human-reviewed
+private traces remain necessary before making that claim.
+
+The planner can also run against a five-member bootstrapped process-reward ensemble. Validation
+temperature-scales its mean score, while member disagreement estimates epistemic uncertainty. MCTS
+optimizes a risk-adjusted lower confidence bound and abstains when the verifier itself is out of
+distribution. Uncertain plans enter a deduplicated SQLite review queue containing fingerprints and
+typed metadata, never prompts, answers, retrieved content, or hidden reasoning.
+
+In a ten-scenario synthetic corruption drill, a behaviorally inverted single verifier selects an
+unsafe trajectory in every shifted case. The ensemble preserves all five clean selections, detects
+and contains all five shifts with zero unsafe selections, and queues every shifted case for review.
+This is a narrow control-plane test, not evidence that five small models cover real production drift.
+
+The latest layer also learns the planner's action dynamics instead of assuming that retrieval,
+reasoning, and verification always produce fixed confidence gains. A three-member bootstrapped world
+model predicts next-state confidence, evidence change, and transition success from route, risk,
+action, and current planning state. MCTS rolls forward with conservative lower bounds; unsupported
+routes or excessive member disagreement remove answer branches and lead to abstention. Artifacts and
+plan receipts carry fingerprints so a changed dynamics model is visible and tampering fails closed.
+
+On a ten-transition synthetic holdout, confidence-delta MAE falls from `0.01000` for the fixed rules
+to `0.00574` for learned dynamics, while transition-success Brier score falls from `0.10000` to
+`0.02867`. All unseen-route and injected member-shift probes are detected, the supported planning
+scenario completes, and both shifted scenarios abstain. The 42.6% and 71.3% improvements are narrow offline ablations over
+authored data; they establish the training, uncertainty, promotion, and fallback pipeline, not a
+claim that the model represents arbitrary real environments.
+
+The planner now has a third learned component: a Conservative Q-Learning policy trained entirely
+from logged typed-action trajectories. A bootstrapped Q ensemble produces risk-adjusted action
+priors for PUCT, while the existing planner still owns evidence, verification, safety, and compute
+constraints. Unknown routes and high ensemble disagreement fall back to uniform priors rather than
+turning an uncertain acceleration policy into an availability dependency.
+
+The promotion gate uses sequential off-policy evaluation instead of replaying only the actions the
+candidate already prefers. It accumulates per-decision importance ratios and reports IPS, SNIPS, a
+doubly robust return, effective sample size, and a whole-episode bootstrap interval. On the authored
+eight-episode holdout, mean behavior return is `0.2825`; estimated target return is `0.8071` with a
+95% interval of `[0.6183, 1.0186]`, effective sample size `4.39`, positive-action accuracy `100%`,
+zero behavior-support violations, and zero actions outside the safety mask. These are deterministic integration results with synthetic
+propensities, not evidence of real-traffic policy improvement.
+
+Search policy distillation adds a smaller prior model trained from the planner's own visit counts.
+Training and validation states are generated independently of the frozen ten-case test suite.
+Validation KL drops from `0.1809` for uniform priors to `0.0142`. Both uniform and distilled search
+solve every scenario at 8, 16, 32 and 96 iterations. At 32 iterations the distilled policy reduces
+distinct reward evaluations from 4.2 to 3.6 per case and expanded nodes from 7.0 to 6.2, with no
+safety or token-budget failures. At eight iterations the baseline already matches teacher quality,
+so this study records no iteration-budget advantage. The compute curve makes this limitation
+visible instead of turning a narrow score-evaluation reduction into a latency or live-model claim.
 
 ## Evidence-intelligence and conflict-control evidence
 

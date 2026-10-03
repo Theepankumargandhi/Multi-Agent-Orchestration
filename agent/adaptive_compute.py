@@ -5,9 +5,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
+
+from agent.search_planner import SearchPlan
+
+if TYPE_CHECKING:
+    from agent.preference_ranking import PreferenceRanker
 
 
 def _canonical(value: object) -> bytes:
@@ -27,7 +32,7 @@ class ComputePolicy(BaseModel):
     version: str = "adaptive-compute-v1"
     max_candidates: int = Field(default=3, ge=2, le=5)
     max_extra_tokens: int = Field(default=1800, ge=128, le=8192)
-    max_latency_ms: float = Field(default=15000, ge=100, le=120000)
+    max_latency_ms: float = Field(default=15000.0, ge=100, le=120000)
     min_confidence_gain: float = Field(default=0.04, ge=0, le=1)
     min_consensus: float = Field(default=0.5, ge=0, le=1)
     high_risk_min_consensus: float = Field(default=0.67, ge=0, le=1)
@@ -54,6 +59,10 @@ class ComputePlan(BaseModel):
     initial_confidence: float
     high_risk: bool
     reason: str
+    reasoning_strategy: Literal["policy", "verifier_mcts"] = "policy"
+    planned_actions: list[str] = Field(default_factory=list, max_length=12)
+    search_plan_fingerprint: str = ""
+    search_plan: SearchPlan | None = None
     plan_fingerprint: str = ""
 
 
@@ -66,6 +75,7 @@ class CandidateAssessment(BaseModel):
     token_count: int = Field(ge=0)
     latency_ms: float = Field(ge=0)
     answer_fingerprint: str
+    process_reward: float | None = Field(default=None, ge=0, le=1)
 
 
 class CandidateSummary(BaseModel):
@@ -78,6 +88,7 @@ class CandidateSummary(BaseModel):
     consensus: float
     eligible: bool
     answer_fingerprint: str
+    process_reward: float | None = None
 
 
 class DeliberationReceipt(BaseModel):
@@ -95,7 +106,16 @@ class DeliberationReceipt(BaseModel):
     selected_consensus: float = 0
     reason: str
     candidate_summaries: list[CandidateSummary]
+    preference_ranking: dict | None = None
     receipt_fingerprint: str = ""
+
+
+def _receipt_payload(receipt: DeliberationReceipt) -> dict:
+    # Preserve verification of pre-upgrade receipts with no ranking extension.
+    excluded = {"receipt_fingerprint"}
+    if receipt.preference_ranking is None:
+        excluded.add("preference_ranking")
+    return receipt.model_dump(mode="json", exclude=excluded)
 
 
 def plan_compute(
@@ -143,7 +163,55 @@ def verify_plan(plan: ComputePlan, integrity_key: bytes | None = None) -> bool:
     expected = _fingerprint(
         plan.model_dump(mode="json", exclude={"plan_fingerprint"}), integrity_key
     )
-    return hmac.compare_digest(plan.plan_fingerprint, expected)
+    if not hmac.compare_digest(plan.plan_fingerprint, expected):
+        return False
+    if plan.reasoning_strategy == "verifier_mcts":
+        return bool(
+            plan.search_plan
+            and plan.search_plan.verify()
+            and plan.search_plan_fingerprint == plan.search_plan.plan_fingerprint
+            and plan.planned_actions == plan.search_plan.planned_actions
+        )
+    return (
+        plan.search_plan is None
+        and not plan.search_plan_fingerprint
+        and not plan.planned_actions
+    )
+
+
+def seal_plan(plan: ComputePlan, integrity_key: bytes | None = None) -> ComputePlan:
+    """Return a copy with an integrity fingerprint covering every planning field."""
+    sealed = plan.model_copy(deep=True)
+    sealed.plan_fingerprint = _fingerprint(
+        sealed.model_dump(mode="json", exclude={"plan_fingerprint"}), integrity_key
+    )
+    return sealed
+
+
+def attach_search_plan(
+    plan: ComputePlan,
+    search_plan: SearchPlan,
+    integrity_key: bytes | None = None,
+) -> ComputePlan:
+    """Attach a verified search receipt and fail closed when search chooses abstention."""
+    if not verify_plan(plan, integrity_key):
+        raise ValueError("adaptive compute plan integrity verification failed")
+    if not search_plan.verify():
+        raise ValueError("reasoning search plan integrity verification failed")
+    updated = plan.model_copy(deep=True)
+    updated.reasoning_strategy = "verifier_mcts"
+    updated.planned_actions = list(search_plan.planned_actions)
+    updated.search_plan_fingerprint = search_plan.plan_fingerprint
+    updated.search_plan = search_plan.model_copy(deep=True)
+    if search_plan.terminal_action == "abstain":
+        updated.action = "abstain"
+        updated.candidate_budget = 0
+        updated.token_budget = 0
+        updated.latency_budget_ms = 0
+        updated.reason = "verifier_guided_search_abstained"
+    else:
+        updated.reason = "verifier_guided_search_selected_deliberation"
+    return seal_plan(updated, integrity_key)
 
 
 def candidate_assessment(
@@ -156,6 +224,7 @@ def candidate_assessment(
     claim_keys: list[str],
     token_count: int,
     latency_ms: float,
+    process_reward: float | None = None,
 ) -> CandidateAssessment:
     return CandidateAssessment(
         candidate_id=candidate_id,
@@ -166,6 +235,7 @@ def candidate_assessment(
         token_count=token_count,
         latency_ms=round(latency_ms, 3),
         answer_fingerprint=_fingerprint(answer),
+        process_reward=process_reward,
     )
 
 
@@ -182,12 +252,16 @@ def select_candidate(
     policy: ComputePolicy | None = None,
     integrity_key: bytes | None = None,
     attempted_candidates: int | None = None,
+    preference_ranker: PreferenceRanker | None = None,
+    preference_unavailable: bool = False,
 ) -> DeliberationReceipt:
     policy = policy or ComputePolicy()
     if not verify_plan(plan, integrity_key):
         raise ValueError("adaptive compute plan integrity verification failed")
     if plan.action != "deliberate":
         raise ValueError("candidate selection requires a deliberation plan")
+    if len({item.candidate_id for item in candidates}) != len(candidates):
+        raise ValueError("duplicate candidate IDs")
 
     evaluated: list[CandidateAssessment] = []
     extra_tokens = 0
@@ -230,6 +304,7 @@ def select_candidate(
     selected = max(
         releasable,
         key=lambda item: (
+            item.process_reward if item.process_reward is not None else item.confidence,
             item.confidence,
             consensus[item.candidate_id],
             -item.token_count,
@@ -237,6 +312,37 @@ def select_candidate(
         ),
         default=None,
     )
+    ranking = None
+    if selected is not None and preference_ranker is not None:
+        from agent.preference_ranking import RankingCandidate
+
+        try:
+            decision = preference_ranker.rank(
+                [
+                    RankingCandidate(
+                        candidate_id=item.candidate_id,
+                        confidence=item.confidence,
+                        token_count=item.token_count,
+                        latency_ms=item.latency_ms,
+                    )
+                    for item in releasable
+                ],
+                selected.candidate_id,
+                route=plan.route,
+                high_risk=plan.high_risk,
+            )
+            # Recheck membership: a ranker can never add an ineligible candidate.
+            selected = next(item for item in releasable if item.candidate_id == decision.selected_candidate_id)
+            ranking = decision.model_dump(mode="json")
+        except (ValueError, StopIteration):
+            preference_unavailable = True
+    if selected is not None and preference_unavailable:
+        ranking = {
+            "status": "fallback",
+            "reason": "preference_ranker_unavailable",
+            "baseline_candidate_id": selected.candidate_id,
+            "selected_candidate_id": selected.candidate_id,
+        }
     if selected is not None:
         status, reason = "released", "grounded_conformal_consensus_reached"
     elif exhausted:
@@ -255,6 +361,7 @@ def select_candidate(
             consensus=round(consensus[item.candidate_id], 6),
             eligible=item in eligible,
             answer_fingerprint=item.answer_fingerprint,
+            process_reward=item.process_reward,
         )
         for item in evaluated
     ]
@@ -272,15 +379,16 @@ def select_candidate(
         selected_consensus=round(consensus[selected.candidate_id], 6) if selected else 0,
         reason=reason,
         candidate_summaries=summaries,
+        preference_ranking=ranking,
     )
     receipt.receipt_fingerprint = _fingerprint(
-        receipt.model_dump(mode="json", exclude={"receipt_fingerprint"}), integrity_key
+        _receipt_payload(receipt), integrity_key
     )
     return receipt
 
 
 def verify_receipt(receipt: DeliberationReceipt, integrity_key: bytes | None = None) -> bool:
     expected = _fingerprint(
-        receipt.model_dump(mode="json", exclude={"receipt_fingerprint"}), integrity_key
+        _receipt_payload(receipt), integrity_key
     )
     return hmac.compare_digest(receipt.receipt_fingerprint, expected)

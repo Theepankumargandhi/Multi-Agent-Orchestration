@@ -6,10 +6,12 @@ import argparse
 import hashlib
 import json
 import math
+import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from code_agent.code_parsing import LANGUAGE_BY_SUFFIX
 from code_agent.intelligence import STRATEGIES, CodeIntelligenceIndex
 from code_agent.retrieval_backends import RetrievalConfig
 
@@ -41,6 +43,7 @@ class ContextEvalReport(BaseModel):
     strategy: str = "hybrid_rerank"
     embedding_backend: str = "none"
     reranker_backend: str = "none"
+    fusion_backend: str = "fixed-weight-v1"
     parser_backends: dict[str, int] = Field(default_factory=dict)
     top_k: int
     max_tokens: int | None = None
@@ -77,12 +80,13 @@ class ContextAblationReport(BaseModel):
     token_budgets: list[int]
     embedding_backend: str
     reranker_backend: str
+    fusion_backend: str = "fixed-weight-v1"
     parser_backends: dict[str, int]
     points: list[AblationPoint]
 
 
 class DirectoryWorkspace:
-    """Read-only bounded workspace adapter for local evaluation."""
+    """Read-only evaluation corpus; Git roots use tracked, LF-normalized source."""
 
     EXCLUDED = {
         ".git", ".venv", "venv", "env", "node_modules", "data", "__pycache__",
@@ -90,7 +94,10 @@ class DirectoryWorkspace:
         "chroma_db", "graph_chroma_db",
     }
     EVALUATION_ONLY_ROOTS = {
-        "tests", "evals", "docs", "media", ".github", "k8s", "docker",
+        "tests", "evals", "docs", "media", ".github", "k8s", "docker", "repositories",
+    }
+    SOURCE_SUFFIXES = frozenset(LANGUAGE_BY_SUFFIX) | {
+        ".sh", ".ps1", ".html", ".css", ".json", ".toml", ".yaml", ".yml", ".ini", ".cfg",
     }
 
     def __init__(self, root: Path, *, source_only: bool = True):
@@ -99,10 +106,27 @@ class DirectoryWorkspace:
 
     def list_files(self, limit: int = 500) -> list[str]:
         files = []
-        for path in self.root.rglob("*"):
+        if self.source_only and (self.root / ".git").exists():
+            try:
+                tracked = subprocess.run(
+                    ["git", "-C", str(self.root), "ls-files", "-z", "--cached"],
+                    check=True, capture_output=True, timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ValueError("cannot enumerate tracked evaluation source files") from exc
+            candidates = (
+                self.root / name
+                for name in tracked.stdout.decode("utf-8").split("\0") if name
+            )
+        else:
+            candidates = self.root.rglob("*")
+        for path in candidates:
             if path.is_symlink() or not path.is_file():
                 continue
             relative = path.relative_to(self.root)
+            # A tracked file can still be beneath a replaced/symlinked directory.
+            if not path.resolve().is_relative_to(self.root):
+                continue
             if any(part in self.EXCLUDED or part.endswith(".egg-info") for part in relative.parts):
                 continue
             if (
@@ -111,7 +135,12 @@ class DirectoryWorkspace:
                 and relative.parts[0] in self.EVALUATION_ONLY_ROOTS
             ):
                 continue
+            if self.source_only and relative.parts[:2] == ("scripts", "ci"):
+                continue
             if self.source_only and len(relative.parts) == 1:
+                continue
+            is_dependency_list = relative.name.lower().startswith("requirements") and relative.suffix.lower() == ".txt"
+            if self.source_only and relative.suffix.lower() not in self.SOURCE_SUFFIXES and not is_dependency_list:
                 continue
             if self.source_only and (
                 relative.name.startswith("test_") or relative.name.endswith("_test.py")
@@ -128,7 +157,8 @@ class DirectoryWorkspace:
         data = path.read_bytes()
         if b"\0" in data[:4096]:
             raise ValueError("binary file")
-        return data.decode("utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace")
+        return text.replace("\r\n", "\n").replace("\r", "\n") if self.source_only else text
 
 
 def load_cases(path: Path) -> list[ContextEvalCase]:
@@ -216,6 +246,7 @@ def evaluate_context(
         strategy=strategy,
         embedding_backend=index.embedder.name if index.embedder else "none",
         reranker_backend=index.reranker.name if index.reranker else "none",
+        fusion_backend=(index.fusion_scorer.name if index.fusion_scorer else "fixed-weight-v1"),
         parser_backends=dict(index.stats.parser_backends),
         top_k=top_k,
         max_tokens=max_tokens,
@@ -277,6 +308,7 @@ def run_ablation(
         token_budgets=token_budgets,
         embedding_backend=index.embedder.name if index.embedder else "none",
         reranker_backend=index.reranker.name if index.reranker else "none",
+        fusion_backend=(index.fusion_scorer.name if index.fusion_scorer else "fixed-weight-v1"),
         parser_backends=dict(index.stats.parser_backends),
         points=points,
     )
@@ -305,6 +337,7 @@ def main() -> None:
     parser.add_argument("--strategy", choices=STRATEGIES, default="hybrid_rerank")
     parser.add_argument("--embedding-backend", default="hashing")
     parser.add_argument("--reranker-backend", default="feature")
+    parser.add_argument("--fusion-artifact", default="")
     parser.add_argument("--no-tree-sitter", action="store_true")
     parser.add_argument("--ablation", action="store_true")
     parser.add_argument("--strategies", default=",".join(STRATEGIES))
@@ -325,6 +358,7 @@ def main() -> None:
     config = RetrievalConfig(
         embedding_backend=args.embedding_backend,
         reranker_backend=args.reranker_backend,
+        fusion_artifact=args.fusion_artifact,
         prefer_tree_sitter=not args.no_tree_sitter,
     )
     workspace = DirectoryWorkspace(args.repository_root, source_only=True)

@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "name": "Verified Repair Teams versus Execution-Gated Tournament",
+  "dataset": "../datasets/code_agent_smoke.jsonl",
+  "dataset_name": "agentforge-code-smoke-v1",
+  "dataset_lock": "code_agent_smoke.lock.json",
+  "repository_root": "../../tests/fixtures/code_repositories",
+  "output_dir": "../../data/evaluations/repair-tournament-live",
+  "image": "agentforge-code-sandbox:local",
+  "max_cases": 5,
+  "score_source": "local_harness",
+  "variants": [
+    {"name": "verified-team", "model": "gpt-4o-mini", "workflow": "verified_pr", "context_strategy": "hybrid_rerank"},
+    {"name": "one-team-challenge", "model": "gpt-4o-mini", "workflow": "repair_tournament", "context_strategy": "hybrid_rerank",
+      "tournament_policy": {"candidates": 1, "max_parallel": 1, "max_model_calls": 64, "max_estimated_prompt_tokens": 100000,
+                            "candidate_timeout_seconds": 300, "challenge_timeout_seconds": 60}},
+    {"name": "three-team-challenge", "model": "gpt-4o-mini", "workflow": "repair_tournament", "context_strategy": "hybrid_rerank",
+      "tournament_policy": {"candidates": 3, "max_parallel": 2, "max_model_calls": 64, "max_estimated_prompt_tokens": 100000,
+                            "candidate_timeout_seconds": 300, "challenge_timeout_seconds": 60}}
+  ]
+}
