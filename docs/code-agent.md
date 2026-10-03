@@ -21,6 +21,12 @@ Every transition is appended to `code_job_events`. Transient worker failures use
 
 ## Hybrid code-context selection
 
+An optional [multi-agent repair tournament](multi-agent-repair-tournament.md) runs several
+verified specialist teams from one frozen source snapshot, challenges eligible patches, and
+reruns execution gates before selecting a winner. It integrates with the same queue,
+worker, approval API, and evidence dossiers. `verified_pr` remains the default; the tournament
+requires explicit operator selection and can multiply sandbox and inference resource use.
+
 Before analyst and implementation calls, the worker creates a non-executing code index from the filtered workspace. Tree-sitter extracts symbols, imports, calls, and syntax spans for Python, TypeScript, JavaScript, Java, Go, and Rust. Query decomposition separates symbols, paths, test intent, dependency intent, and concepts. BM25, embedding similarity, and dependency propagation generate candidates, which an auditable feature model or optional cross-encoder reranks. Syntax-aware windows are compressed, deduplicated, and limited by an approximate token budget.
 
 The verification result and PR dossier retain a context receipt—not raw source snippets or embeddings—with the query plan, backend identities, selected paths, rank and score components, reasons, file/snippet hashes, compression statistics, candidate counts, and a fingerprint. See [code-intelligence.md](code-intelligence.md) for incremental parse-tree updates, learned adapters, and the strategy/token-budget ablation dashboard.
@@ -102,6 +108,12 @@ python -m code_agent.evaluation evals/datasets/code_agent_smoke.jsonl --validate
 ```
 
 Live runs record pass@1 with confidence intervals, final-test and regression rates, sandbox violations, latency, iterations, tool/model calls, changed files, provider token usage, estimated cost, failure categories, and slices. They produce separate integrity-bound patches, full replay trajectories, a manifest, and SWE-bench-compatible predictions. See [coding-agent-evaluation.md](coding-agent-evaluation.md) for dataset import, multi-model comparison, repository-specific images, artifact contracts, and honest reporting rules.
+
+## Independent behavioral regression probes
+
+The optional tournament supports a [pre-patch regression-design agent](regression-challenge-agent.md). Its output is JSON calls to operator-allowlisted Python functions, not executable model-generated tests. A frozen suite runs against the baseline and candidates in Docker; repeated outcomes, workspace integrity, fresh owner tests, and human approval remain required. Exact expectations are retained for review because incorrect model oracles can cause false holds. The default workflow does not change.
+
+The optional [reference and mutation gate](oracle-calibration.md) additionally checks generated expectations against a pinned, separate operator implementation and measures which controlled code faults the suite detects. It produces a kill matrix and redundancy diagnostics without exposing reference code to repair models. Source revocation, invalid executions, and insufficient sensitivity hold the tournament.
 
 ## Deliberate limitations
 

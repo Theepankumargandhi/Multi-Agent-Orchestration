@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +17,7 @@ from agent.verifier_ensemble import (
     ProcessRewardEnsembleArtifact,
     train_process_reward_ensemble,
 )
+from evals.process_reward_evaluation import compare_process_artifacts
 
 DEFAULT_TRACES = Path(__file__).parent / "datasets" / "process_reward_trajectories.jsonl"
 DEFAULT_SCENARIOS = Path(__file__).parent / "datasets" / "verifier_uncertainty_scenarios.jsonl"
@@ -221,6 +223,51 @@ def verify_report(report: VerifierUncertaintyReport) -> bool:
     )
 
 
+def compare_ensemble_artifacts(actual: ProcessRewardEnsembleArtifact, expected: ProcessRewardEnsembleArtifact) -> dict:
+    if not actual.verify() or not expected.verify():
+        raise ValueError("verifier ensemble integrity verification failed")
+    exclude = {"members", "artifact_fingerprint"}
+    if (actual.model_dump(mode="json", exclude=exclude) != expected.model_dump(mode="json", exclude=exclude)
+            or len(actual.members) != len(expected.members)):
+        raise ValueError("verifier ensemble lineage or calibration configuration changed")
+    members = [compare_process_artifacts(member, frozen)
+        for member, frozen in zip(actual.members, expected.members, strict=True)]
+    return {"reproducible": True, "absolute_tolerance": 1e-12,
+        "maximum_weight_delta": max((member["maximum_weight_delta"] for member in members), default=0.0),
+        "exact_match": actual.artifact_fingerprint == expected.artifact_fingerprint,
+        "reference_fingerprint": expected.artifact_fingerprint,
+        "generated_fingerprint": actual.artifact_fingerprint}
+
+
+def compare_uncertainty_reports(actual: VerifierUncertaintyReport, expected: VerifierUncertaintyReport,
+                                artifact: ProcessRewardEnsembleArtifact,
+                                reference: ProcessRewardEnsembleArtifact | None = None) -> dict:
+    """Bind each exact report digest to its verified artifact before numerical comparison."""
+    reference = reference or artifact
+    compare_ensemble_artifacts(artifact, reference)
+    if (not verify_report(actual) or not verify_report(expected)
+            or actual.ensemble_fingerprint != artifact.artifact_fingerprint
+            or expected.ensemble_fingerprint != reference.artifact_fingerprint):
+        raise ValueError("verifier report integrity or artifact binding failed")
+    exclude = {"outcomes", "ensemble_fingerprint", "report_fingerprint"}
+    if (actual.model_dump(mode="json", exclude=exclude) != expected.model_dump(mode="json", exclude=exclude)
+            or len(actual.outcomes) != len(expected.outcomes)):
+        raise ValueError("verifier report dataset, metrics or promotion decision changed")
+    maximum_delta = 0.0
+    for row, frozen in zip(actual.outcomes, expected.outcomes, strict=True):
+        if row.model_dump(exclude={"selected_uncertainty"}) != frozen.model_dump(exclude={"selected_uncertainty"}):
+            raise ValueError("verifier report behavioral outcome changed")
+        value, baseline = row.selected_uncertainty, frozen.selected_uncertainty
+        if (not math.isfinite(value) or not math.isfinite(baseline)
+                or not math.isclose(value, baseline, rel_tol=0.0, abs_tol=1e-12)):
+            raise ValueError("verifier report uncertainty changed beyond roundoff tolerance")
+        maximum_delta = max(maximum_delta, abs(value - baseline))
+    return {"reproducible": True, "absolute_tolerance": 1e-12,
+        "maximum_uncertainty_delta": maximum_delta,
+        "reference_fingerprint": expected.report_fingerprint,
+        "generated_fingerprint": actual.report_fingerprint}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate uncertainty-aware verification.")
     parser.add_argument("--traces", type=Path, default=DEFAULT_TRACES)
@@ -241,11 +288,14 @@ def main() -> int:
     args = parser.parse_args()
     traces = load_traces(args.traces)
     artifact = train_process_reward_ensemble(traces)
+    expected = None
     if args.check_artifact:
         expected = ProcessRewardEnsembleArtifact.load(args.check_artifact)
-        if artifact.model_dump(mode="json") != expected.model_dump(mode="json"):
-            raise SystemExit("verifier ensemble differs from checked baseline")
-    artifact.save(args.artifact)
+        try:
+            comparison = compare_ensemble_artifacts(artifact, expected)
+        except ValueError as exc:
+            raise SystemExit(f"verifier ensemble differs from checked baseline: {exc}") from exc
+        print(json.dumps({"artifact_reproducibility": comparison}))
     report = evaluate_verifier_uncertainty(
         artifact, traces, load_scenarios(args.scenarios)
     )
@@ -253,8 +303,12 @@ def main() -> int:
         expected_report = VerifierUncertaintyReport.model_validate_json(
             args.check_report.read_text(encoding="utf-8")
         )
-        if report.model_dump(mode="json") != expected_report.model_dump(mode="json"):
-            raise SystemExit("verifier uncertainty report differs from checked baseline")
+        try:
+            comparison = compare_uncertainty_reports(report, expected_report, artifact, expected)
+        except ValueError as exc:
+            raise SystemExit(f"verifier uncertainty report differs from checked baseline: {exc}") from exc
+        print(json.dumps({"report_reproducibility": comparison}))
+    artifact.save(args.artifact)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
     print(

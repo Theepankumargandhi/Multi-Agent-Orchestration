@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ActionKind = Literal["list", "read", "search", "write", "delete", "test", "finish"]
 
@@ -229,6 +229,9 @@ class CodeContextReceipt(BaseModel):
     duplicate_lines_removed: int = Field(default=0, ge=0)
     query_plan: dict[str, Any] = Field(default_factory=dict)
     strategy: str = "lexical_graph"
+    packing_policy: Literal["legacy", "balanced_v1"] = "legacy"
+    source_line_ranges: dict[str, list[list[int]]] = Field(default_factory=dict)
+    packing_diagnostics: dict[str, int] = Field(default_factory=dict)
     embedding_backend: str = "none"
     reranker_backend: str = "none"
     fusion_backend: str = "fixed-weight-v1"
@@ -257,6 +260,144 @@ class VerificationReport(BaseModel):
     blocking_reasons: list[str] = Field(default_factory=list)
 
 
+class OracleCalibrationPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    reference_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    max_mutants: int = Field(default=4, ge=1, le=8)
+    min_mutants: int = Field(default=2, ge=1, le=8)
+    min_mutation_score: float = Field(default=1.0, ge=0, le=1)
+    timeout_seconds: float = Field(default=180, gt=0, le=900)
+
+    @model_validator(mode="after")
+    def feasible_minimum(self):
+        if self.min_mutants > self.max_mutants:
+            raise ValueError("minimum mutants cannot exceed the cap")
+        return self
+
+
+class RegressionChallengePolicy(BaseModel):
+    """Operator-owned Python call targets; never accepted from a task's model output."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    allowed_targets: list[str] = Field(min_length=1, max_length=8)
+    max_probes: int = Field(default=8, ge=1, le=16)
+    generation_timeout_seconds: float = Field(default=60, gt=0, le=300)
+    oracle_calibration: OracleCalibrationPolicy | None = None
+
+    @field_validator("allowed_targets")
+    @classmethod
+    def explicit_public_targets(cls, value):
+        if len(value) != len(set(value)) or any(
+            not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", target)
+            or len(target) > 200 for target in value
+        ):
+            raise ValueError("targets must be unique public module.function names")
+        return value
+
+
+class RegressionProbeEvidence(BaseModel):
+    suite_sha256: str = ""
+    execution_sha256: str = ""
+    statuses: list[Literal["matched", "mismatched", "error"]] = Field(default_factory=list, max_length=16)
+    repeated: bool = False
+    stable: bool = False
+    workspace_unchanged: bool = False
+
+
+class MutationProbeEvidence(BaseModel):
+    mutant_id: str
+    path: str
+    line: int = Field(ge=1)
+    operator: Literal["comparison_flip", "guard_removal", "min_max_swap", "arithmetic_swap"]
+    source_sha256: str
+    status: Literal["killed", "survived", "invalid"] = "invalid"
+    killing_probe_indices: list[int] = Field(default_factory=list)
+    execution: RegressionProbeEvidence | None = None
+
+
+class OracleCalibrationReport(BaseModel):
+    schema_version: str = "1.0"
+    policy: OracleCalibrationPolicy
+    suite_sha256: str
+    probe_count: int = Field(ge=1, le=16)
+    reference_sha256: str = ""
+    reference_unchanged: bool = False
+    overlay_sha256: dict[str, str] = Field(default_factory=dict)
+    reference_owner_tests_passed: bool = False
+    reference_execution: RegressionProbeEvidence | None = None
+    mutants: list[MutationProbeEvidence] = Field(default_factory=list)
+    killed_mutants: int = 0
+    mutation_score: float = 0.0
+    minimal_cover_indices: list[int] = Field(default_factory=list)
+    command_runs: int = 0
+    eligible: bool = False
+    blocking_reasons: list[str] = Field(default_factory=list)
+    fingerprint: str = ""
+
+
+class RepairTournamentPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    candidates: int = Field(default=3, ge=1, le=4)
+    max_parallel: int = Field(default=2, ge=1, le=2)
+    max_model_calls: int = Field(default=64, ge=1, le=1000)
+    max_estimated_prompt_tokens: int = Field(default=100_000, ge=64, le=1_000_000)
+    candidate_timeout_seconds: float = Field(default=300, gt=0, le=3600)
+    challenge_timeout_seconds: float = Field(default=60, gt=0, le=300)
+    regression_challenges: RegressionChallengePolicy | None = None
+
+    @model_validator(mode="after")
+    def bounded_parallelism(self):
+        if self.max_parallel > self.candidates:
+            raise ValueError("parallelism cannot exceed candidate count")
+        return self
+
+
+class RepairCandidateEvidence(BaseModel):
+    candidate_id: str
+    perspective: str
+    status: Literal["completed", "failed", "timed_out", "errored"] = "failed"
+    eligible: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    patch_sha256: str = ""
+    verification_sha256: str = ""
+    changed_files: int = 0
+    changed_lines: int = 0
+    patch_chars: int = 0
+    allocated_writes: int = 0
+    reported_writes: int = 0
+    model_calls: int = 0
+    challenge_sha256: str = ""
+    challenge_approved: bool = False
+    challenge_blocking_findings: int = 0
+    final_gate_statuses: dict[str, str] = Field(default_factory=dict)
+    regression_probes: RegressionProbeEvidence | None = None
+
+
+class RepairTournamentReport(BaseModel):
+    schema_version: str = "1.0"
+    workflow: str = "repair_tournament_v1"
+    policy: RepairTournamentPolicy
+    task_sha256: str
+    source_sha256: str
+    snapshot_sha256: str = ""
+    source_unchanged: bool = False
+    candidates: list[RepairCandidateEvidence] = Field(default_factory=list)
+    winner_id: str = ""
+    unique_eligible_patches: int = 0
+    selection_rule: str = "fewest-files_then_changed-lines_then-patch-chars_then-candidate-id"
+    model_calls: int = 0
+    shared_model_calls: int = 0
+    regression_suite_sha256: str = ""
+    regression_suite: dict[str, Any] | None = None
+    regression_baseline: RegressionProbeEvidence | None = None
+    oracle_calibration: OracleCalibrationReport | None = None
+    denied_model_calls: int = 0
+    estimated_prompt_tokens_reserved: int = 0
+    usage_accounting_complete: bool = True
+    blocking_reasons: list[str] = Field(default_factory=list)
+    fingerprint: str = ""
+
+
 class CodeAgentResult(BaseModel):
     status: Literal["completed", "failed", "budget_exhausted"]
     summary: str
@@ -278,3 +419,4 @@ class CodeAgentResult(BaseModel):
     verification: VerificationReport | None = None
     security: SecuritySummary | None = None
     telemetry: TelemetryTrace | None = None
+    tournament: RepairTournamentReport | None = None

@@ -1,0 +1,20 @@
+{
+  "candidates": 3,
+  "max_parallel": 2,
+  "max_model_calls": 64,
+  "max_estimated_prompt_tokens": 100000,
+  "candidate_timeout_seconds": 300,
+  "challenge_timeout_seconds": 60,
+  "regression_challenges": {
+    "allowed_targets": ["app.clamp"],
+    "max_probes": 8,
+    "generation_timeout_seconds": 60,
+    "oracle_calibration": {
+      "reference_sha256": "4f471362a4a8429cbb3242e3b2f1a0ce61812652dc2c19122cf60c0b406e44de",
+      "max_mutants": 4,
+      "min_mutants": 2,
+      "min_mutation_score": 1.0,
+      "timeout_seconds": 180
+    }
+  }
+}

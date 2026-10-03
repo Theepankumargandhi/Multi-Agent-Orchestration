@@ -79,6 +79,72 @@ jobs:
           path: data/evaluations/code-context/fusion-ci.json
           if-no-files-found: error
 
+      - name: Run evidence-span retrieval stress benchmark (no activation)
+        run: python -m evals.retrieval_span_evaluation --plan evals/experiments/retrieval_span_plan.json --output data/evaluations/retrieval-spans/ci.json
+
+      - name: Upload evidence-span comparison
+        if: always() && hashFiles('data/evaluations/retrieval-spans/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-span-retrieval-comparison
+          path: data/evaluations/retrieval-spans/ci.*
+          if-no-files-found: error
+
+      - name: Compare opt-in context packing (no activation)
+        run: python -m evals.retrieval_span_evaluation --plan evals/experiments/context_packing_plan.json --output data/evaluations/context-packing/ci.json
+
+      - name: Upload context-packing comparison
+        if: always() && hashFiles('data/evaluations/context-packing/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: context-packing-comparison
+          path: data/evaluations/context-packing/ci.*
+          if-no-files-found: error
+
+      - name: Compare retrieval query robustness (no activation)
+        run: python -m evals.retrieval_robustness --output data/evaluations/retrieval-robustness/ci.json
+
+      - name: Upload retrieval robustness comparison
+        if: always() && hashFiles('data/evaluations/retrieval-robustness/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-robustness-comparison
+          path: data/evaluations/retrieval-robustness/ci.*
+          if-no-files-found: error
+
+      - name: Run repair-tournament orchestration controls (no provider or activation)
+        run: python -m evals.repair_tournament_evaluation --output data/evaluations/repair-tournament/ci.json
+
+      - name: Upload repair-tournament controls
+        if: always() && hashFiles('data/evaluations/repair-tournament/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: repair-tournament-controls
+          path: data/evaluations/repair-tournament/ci.*
+          if-no-files-found: error
+
+      - name: Run sandboxed regression-probe ablation (authored controls, no provider)
+        run: python -m evals.regression_challenge_evaluation --output data/evaluations/regression-challenges/ci.json
+
+      - name: Upload regression-probe ablation
+        if: always() && hashFiles('data/evaluations/regression-challenges/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-challenge-controls
+          path: data/evaluations/regression-challenges/ci.*
+          if-no-files-found: error
+
+      - name: Run reference-oracle and mutation controls (authored, no provider)
+        run: python -m evals.oracle_calibration_evaluation --output data/evaluations/oracle-calibration/ci.json
+
+      - name: Upload oracle-calibration controls
+        if: always() && hashFiles('data/evaluations/oracle-calibration/ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: oracle-calibration-controls
+          path: data/evaluations/oracle-calibration/ci.*
+          if-no-files-found: error
+
       - name: Run offline AI evaluation gates
         env:
           CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db

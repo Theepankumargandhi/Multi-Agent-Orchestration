@@ -109,7 +109,7 @@ python -m code_agent.retrieval_learning fine-tune \
 
 Every neural run writes an `agentforge_training_manifest.json` tying the output to its base model, dataset fingerprint, index fingerprint, pair count, epochs, and batch size.
 
-The refreshed deterministic fusion artifact uses 44 hard-negative pairs and has 93.18% pairwise training accuracy. On the current five-query regression set, both baseline and learned fusion retain Recall@8 `1.00` and MRR `1.00`, but baseline NDCG@8 is `0.9754` versus learned `0.9594`. The candidate is therefore **held for NDCG regression**, not promoted. Reproducing its weights does not establish quality or authorize activation. The default empty `CODE_CONTEXT_FUSION_ARTIFACT` keeps the fixed-weight baseline; do not point serving at this candidate merely because a reproducibility check passed.
+The refreshed deterministic fusion artifact uses 44 hard-negative pairs and has 88.64% pairwise training accuracy. On the current five-query regression set, baseline and learned fusion both retain Recall@8 `1.00`, MRR `1.00`, and NDCG@8 `0.9594`. The evaluator's small non-regression gate accepts this candidate for review; equality is not evidence of improvement or authorization to activate it. The default empty `CODE_CONTEXT_FUSION_ARTIFACT` still keeps the fixed-weight baseline. A previous source-corpus snapshot regressed to `0.9295` and was held; changing code changes the deterministic training corpus, so current decisions must use the refreshed artifact and matching report.
 
 The `--check` command compares the complete parsed artifact, including its fingerprints, rather than JSON whitespace. A dataset, source-index, feature, hyperparameter, or weight change requires retraining and explicit review. A stale-artifact error now identifies the changed fields. Embedding dot products, fusion logits, and training margins use explicit `math.fsum` rather than Python's version-dependent built-in floating-point summation; the exact check is not replaced with a tolerance or rounded weights. `validate-fusion --require-promotion` separately returns a nonzero status for a rejected model; keep that gate when deciding whether to activate one.
 
@@ -124,6 +124,14 @@ At a Git working-tree root (including a `.git` worktree file), the offline corpu
 CI reporting helpers under `scripts/ci` are also excluded: evaluator logic and reporting code are not retrieval targets. Legitimate indexed-source edits still change the corpus fingerprint. Retrain only after the source fix is final, review changed weights and lineage, run the separate regression gate, and publish the actual hold/pass decision. Never remove a real regression reason or tune a metric threshold just to make CI green. Stage new intended source files before retraining; otherwise Git-based evaluation deliberately ignores them.
 
 ## Compression, budgets, and provenance
+
+File-level retrieval scores can hide evidence loss during context packing. The separate
+[evidence-span evaluator](evidence-span-retrieval.md) verifies source-hashed line ranges in the
+actual compressed context, reports complete-span coverage and missing lines, and compares
+strategies with paired task-family confidence intervals. It uses a fixed primary token budget,
+query-variant slices, and synthetic-label holds without changing the production retriever or
+the learned fusion artifact. Its fixture shows file recall `1.00` versus complete-span recall
+`0.8333`—a compression gap, not evidence of a better model.
 
 The context builder prefers complete matching syntax spans, adds small line windows around other matches, collapses repeated blanks, and removes duplicate substantive lines across selected files. It then enforces a hard approximate token budget. Every included file has a snippet hash so the persisted receipt binds the exact compressed evidence without storing raw source.
 
@@ -168,6 +176,13 @@ The original five-case source-only study measured Recall@8 `1.00`, MRR `1.00`, a
 These figures are repository-specific regression evidence, not general code-retrieval performance. A credible external claim requires human relevance labels from additional private repositories and downstream patch-quality experiments.
 
 ## Security and operating limits
+
+Context packing defaults to the existing `legacy` policy. The opt-in
+`CODE_CONTEXT_PACKING_POLICY=balanced_v1` adds query-aware declaration/guard/exit windows,
+whole-line budgeting, and audited source ranges without changing ranking. It preserves
+identical lines from different files instead of erasing their provenance. See
+[query-aware context packing](query-aware-context-packing.md) for the isolated synthetic
+comparison and its limits; no numerical benchmark result automatically enables it.
 
 - Indexing reads through the secret-filtered, symlink-rejecting workspace boundary.
 - Tree-sitter parsing does not execute build scripts or imports.

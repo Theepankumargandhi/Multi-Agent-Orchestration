@@ -147,6 +147,44 @@ class ActionEstimate(BaseModel):
     score: float
 
 
+def check_policy_reproducibility(artifact: BanditArtifact, reference_path: Path) -> dict:
+    """Strict source/configuration identity; allow only bounded coefficient roundoff.
+
+    Each artifact must independently verify its exact digest. The reference hash
+    is never assigned to regenerated weights, and promotion is checked separately.
+    """
+    reference = BanditArtifact.load(reference_path)
+    if not artifact.verify():
+        raise ValueError("contextual-bandit artifact integrity check failed")
+    exclude = {"models", "artifact_fingerprint"}
+    if (artifact.model_dump(mode="json", exclude=exclude) != reference.model_dump(mode="json", exclude=exclude)
+            or set(artifact.models) != set(reference.models)):
+        raise ValueError("contextual-bandit training identity or configuration changed")
+    maximum_delta = 0.0
+    for name, model in artifact.models.items():
+        expected = reference.models[name]
+        if (model.model_dump(exclude={"theta", "covariance"}) != expected.model_dump(exclude={"theta", "covariance"})
+                or len(model.theta) != len(expected.theta) or len(model.covariance) != len(expected.covariance)
+                or any(len(row) != len(other) for row, other in zip(model.covariance, expected.covariance, strict=True))):
+            raise ValueError("contextual-bandit model structure changed")
+        values = model.theta + [value for row in model.covariance for value in row]
+        expected_values = expected.theta + [value for row in expected.covariance for value in row]
+        for actual, frozen in zip(values, expected_values, strict=True):
+            if (not math.isfinite(actual) or not math.isfinite(frozen)
+                    or not math.isclose(actual, frozen, rel_tol=0.0, abs_tol=1e-12)):
+                raise ValueError("contextual-bandit learned coefficients changed beyond roundoff tolerance")
+            maximum_delta = max(maximum_delta, abs(actual - frozen))
+    return {
+        "reproducible": True,
+        "comparison": "strict-metadata-absolute-coefficient-tolerance",
+        "absolute_tolerance": 1e-12,
+        "maximum_coefficient_delta": maximum_delta,
+        "exact_match": artifact.artifact_fingerprint == reference.artifact_fingerprint,
+        "reference_fingerprint": reference.artifact_fingerprint,
+        "generated_fingerprint": artifact.artifact_fingerprint,
+    }
+
+
 class BanditDecision(BaseModel):
     action: str
     model: str
@@ -518,9 +556,11 @@ def main() -> int:
     events = load_events(args.dataset)
     artifact = train_policy(events, default_actions())
     if args.check:
-        expected = BanditArtifact.load(args.check)
-        if artifact.model_dump(mode="json") != expected.model_dump(mode="json"):
-            raise SystemExit("contextual-bandit artifact is not reproducible")
+        try:
+            comparison = check_policy_reproducibility(artifact, args.check)
+        except ValueError as exc:
+            raise SystemExit(f"contextual-bandit artifact is not reproducible: {exc}") from exc
+        print(json.dumps({"reproducibility": comparison}))
     artifact.save(args.artifact)
     report = evaluate_policy(artifact, events)
     args.report.parent.mkdir(parents=True, exist_ok=True)

@@ -195,8 +195,8 @@ class DurableCodeTaskManager:
         self.execution_mode = execution_mode
         self.max_attempts = max(1, min(max_attempts, 20))
         self.lease_seconds = max(15, lease_seconds)
-        if workflow not in {"verified_pr", "single_agent"}:
-            raise ValueError("CODE_AGENT_WORKFLOW must be verified_pr or single_agent")
+        if workflow not in {"verified_pr", "single_agent", "repair_tournament"}:
+            raise ValueError("CODE_AGENT_WORKFLOW must be verified_pr, single_agent, or repair_tournament")
         self.workflow = workflow
         self.max_concurrency = max(1, min(max_concurrency, 4))
         self.semaphore = asyncio.Semaphore(self.max_concurrency)

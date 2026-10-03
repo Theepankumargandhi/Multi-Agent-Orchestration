@@ -77,7 +77,8 @@ The line-by-line graph description lives in [the runtime flow](docs/architecture
 | Area | What the implementation demonstrates |
 |---|---|
 | Agent orchestration | Typed LangGraph state, structured routing, clarification, bounded repair, native interrupts, and route-scoped evidence |
-| Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, hard-negative learning-to-rank, caching, and retrieval ablations |
+| Coding validation | Isolated specialist repair teams, pre-patch behavioral probe generation, metamorphic comparisons, shared inference budgets, fresh execution gates, and human-reviewed diffs |
+| Retrieval | Semantic chunking, deterministic document IDs, vector + BM25 fusion, reranking, graph predicates, multi-hop retrieval, hard-negative learning-to-rank, caching, evidence-span coverage, and family-aware retrieval ablations |
 | Evidence intelligence | Prompt-injection quarantine, source-independence checks, cross-domain duplicate detection, freshness policy, and numeric/negation conflict graphs |
 | Trustworthy generation | Claim-to-evidence alignment, citation allowlisting, high-risk thresholds, conformal selective answering, and fail-closed abstention |
 | Test-time compute | Confidence-aware early exit, offline-RL or search-distilled PUCT priors, learned action-conditioned world-model rollouts, calibrated PRM ensembles, uncertainty penalties, OOD fallback/abstention, active learning, and measured quality/compute curves |
@@ -102,7 +103,7 @@ When enabled, evidence adjudication filters suspicious or redundant material bef
 
 The basic application provides research routing, retrieval, web approval, and API/UI serving. Memory, the inference gateway, evidence/grounding gates, uncertainty calibration, adaptive compute, learned planning, coding execution, and learning observers are opt-in. Artifact-dependent controls also need the matching model/calibrator and private integrity keys. See [.env.example](.env.example) for the complete configuration.
 
-The latest work closes the gap between predicting a reviewed workflow step and selecting a good final answer:
+The reviewed workflow-supervision stack closes the gap between predicting a reviewed step and selecting a good final answer:
 
 ```mermaid
 flowchart TD
@@ -157,9 +158,21 @@ The worker never edits the original repository. It operates on a filtered tempor
 
 See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code-intelligence.md), and [coding-agent evaluation](docs/coding-agent-evaluation.md).
 
+The [evidence-span evaluator](docs/evidence-span-retrieval.md) asks a more practical retrieval question: did the code needed to solve the task survive compression? It checks source-hashed line ranges against the actual context, compares strategies with paired task-family intervals, and reports missing evidence across fixed token budgets. In its authored 12-query/six-family fixture, both strategies retrieve every relevant file but retain only 83.3% of required spans. That is a useful compression failure, not a claimed model improvement. Synthetic studies stay held and cannot activate a model.
+
+The opt-in [query-aware context packer](docs/query-aware-context-packing.md) prioritizes declarations, guards, and exits, emits complete source lines, and preserves provenance across files. Holding the ranker constant, its authored-fixture span recall is 100% versus the legacy packer's 83.3% across three budgets. The paired family interval includes zero; this is a regression control, not proof of general coding-quality improvement. The default remains `legacy` and no serving policy is automatically changed.
+
 ## Evaluation evidence
 
-There are 497 collected test cases. The full local regression during this CI repair finished with 494 passed and three skips: two Docker-dependent checks and one Windows directory-symlink check. After the final cross-version summation fix, the affected retrieval/planner suite passed 41 tests with one symlink skip, and the downstream coding-agent suite passed 45 tests with two Docker skips. Exact retrieval artifact reproduction was also verified on Python 3.11 and 3.13. The expanded suite adds 19 CI/corpus regression cases.
+The optional [multi-agent repair tournament](docs/multi-agent-repair-tournament.md) explores fixes with three specialist teams in isolated sandboxes, adds a separate challenge review, and selects only from patches that pass fresh execution gates. Teams share bounded inference budgets and branch from one frozen source snapshot. The winner's diff remains behind owner approval; competing patches are never combined. The default workflow is still `verified_pr`.
+
+Its seven authored one-team/three-team controls test fallback, veto, timeout, and budget behavior. The focused runtime/control suite passed 33 tests with 96.3% combined statement/branch coverage. These are orchestration checks, not real-world coding-quality results. A frozen live benchmark matrix is provided but has not been run with providers or Docker locally.
+
+The optional [regression-challenge agent](docs/regression-challenge-agent.md) designs a common behavioral suite before seeing any candidate patch. It emits bounded JSON calls to operator-selected Python functions, not executable test code. Baseline discrimination, repeated execution, metamorphic comparisons, workspace integrity, and fresh owner tests control candidate eligibility. Exact expectations remain available for review because a generated oracle can be wrong. The authored weak-patch/full-fix ablation runs in Docker in CI; it has not been executed locally and no live-model gain is claimed.
+
+The optional [reference-calibration gate](docs/oracle-calibration.md) evaluates the generated tests themselves. Before teams start, their expectations must agree with a pinned, operator-approved reference in a private verification workspace. Bounded AST mutations then measure which controlled faults the suite catches. Wrong expectations, weak sensitivity, unstable execution, reference changes, and cleanup failures hold the job. Reference and mutant source never enter model prompts or candidate patches. The kill matrix and greedy probe-cover diagnostic appear in the owner dossier; they do not establish general correctness or automatically reduce the suite.
+
+The reference-calibration iteration's affected Python 3.13 regression passed **238 tests with five skips across 243 cases**: four Docker-dependent tests and one Windows directory-symlink check. Its runtime and evaluator separately passed **27 tests with one Docker skip** on both Python 3.11 and 3.13, with **95.7% combined statement/branch coverage**. The preceding full Python 3.13 run passed 607 tests with four skips across 611 cases. These counts describe those specific validation runs, not a test-count or coverage claim for every later change. Repository-wide Ruff and collection passed. Exact retrieval artifact reproduction passed on Python 3.11; it remains separate from promotion or serving activation. The refreshed candidate only matches the fixed baseline on the five-query holdout, with no measured gain.
 
 These are local test results, not a completed GitHub run. The host dependency check reported missing or mismatched optional service packages, and local Docker builds were unavailable; dependency installation/auditing and container checks still need the CI runner. No live-provider quality result is implied.
 
@@ -212,9 +225,19 @@ python -m pip check
 
 The full command list and artifact uploads are in [.github/workflows/ci.yml](.github/workflows/ci.yml). These drills use authored/synthetic controls and do not activate models. Real reviewed studies require private signed inputs and fresh task families; reusing an exposed holdout with a new policy is rejected. Some output paths are immutable, so use a new output path for a genuinely different experiment rather than overwriting its evidence.
 
-Retrieval artifact reproducibility and model promotion are different checks. Offline evaluation at a Git root now uses tracked source/configuration, excludes private repositories and prose, and normalizes checkout line endings. The refreshed fusion candidate is reproducible but currently held for NDCG regression (`0.9594` versus baseline `0.9754`, both recall/MRR `1.00`). Keep the default fixed-weight baseline; see [code intelligence](docs/code-intelligence.md) before treating an artifact as approved for serving.
+Retrieval artifact reproducibility and model promotion are different checks. Offline evaluation at a Git root uses tracked source/configuration, excludes private repositories and prose, and normalizes checkout line endings. After this source refresh, the fusion candidate is reproducible and matches the fixed baseline on the five-query check (NDCG `0.9594`, recall/MRR `1.00`). It meets that small check's non-regression thresholds but demonstrates no measured gain. Serving still uses the fixed baseline; see [code intelligence](docs/code-intelligence.md) before considering activation.
 
 Ordinary CI requires exact artifact reproducibility and publishes the experimental retrieval decision as a job summary and downloadable report. A valid quality hold does not fail code CI; missing, tampered, or inconsistent evidence does. The separate manual **Retrieval Candidate Promotion** workflow retains `--require-promotion` and fails for this held candidate. Neither workflow activates a model. A green code check is not model approval.
+
+The contextual-bandit check uses a different numerical contract: exact integrity and training/configuration identity, with at most `1e-12` absolute roundoff in learned coefficients. It records both independently verified fingerprints rather than rewriting the reference artifact. The previously failing routing step passed locally on Python 3.11 and 3.13, with 22 regression tests on each. Process-reward and verifier-ensemble checks follow the same bounded-weight contract; their report comparisons still require exact lineage, behavioral outcomes, safety metrics, and promotion decisions. Promotion thresholds remain unchanged; see [the evaluation protocol](docs/evaluation.md) for the distinction and local-environment limits. Inspect the PR's current GitHub checks before merging.
+
+Generate an evidence-span comparison and a readable review card with a fresh output name:
+
+```bash
+python -m evals.retrieval_span_evaluation --plan evals/experiments/retrieval_span_plan.json --output data/evaluations/retrieval-spans/my-study-v1.json
+```
+
+CI uploads the same synthetic study as `evidence-span-retrieval-comparison`. The strict `--require-gate` option still fails a held study; the default synthetic labels are intentionally ineligible for owner-review readiness. Reports are source/protocol fingerprinted and are not overwritten by a second run.
 
 Run the reliability command center locally:
 
@@ -406,7 +429,7 @@ These boundaries are intentional. Good AI engineering includes knowing what the 
 
 ## Resume summary
 
-> Built an evaluation-driven AI agent platform with an 18-node LangGraph research workflow, hybrid retrieval, durable human approval, configurable grounding and uncertainty gates, and a sandboxed coding agent that produces tested, owner-approved diffs. Implemented signed replay, independently reviewed step learning, and prospective same-pool outcome studies with task-family holdout governance. Verified the implementation with 476 passing local tests; two Docker-dependent tests were skipped.
+> Built an evaluation-driven AI agent platform with LangGraph research orchestration, hybrid retrieval, and sandboxed coding teams. Implemented shared inference budgets, challenge review, execution-gated patch selection, and human-approved diffs; validated recovery and fail-closed behavior with controlled ablations. Live coding-quality gains remain unmeasured.
 
 When using this project in a resume or interview, lead with one measurable workflow rather than listing every subsystem. A strong walkthrough is: retrieve evidence, detect a conflict, withhold an unsupported answer, show the trace and evaluation result, then explain the trade-off between answer coverage, accuracy, latency, and cost.
 
@@ -440,6 +463,12 @@ When using this project in a resume or interview, lead with one measurable workf
 - [Online AI governance](docs/online-ai-governance.md)
 - [Code agent](docs/code-agent.md)
 - [Code intelligence](docs/code-intelligence.md)
+- [Evidence-span retrieval evaluation](docs/evidence-span-retrieval.md)
+- [Query-aware context packing](docs/query-aware-context-packing.md)
+- [Multi-agent repair tournament](docs/multi-agent-repair-tournament.md)
+- [Independent regression-challenge agent](docs/regression-challenge-agent.md)
+- [Private-reference calibration and mutation sensitivity](docs/oracle-calibration.md)
+- [Retrieval query robustness](docs/retrieval-robustness.md)
 - [Security threat model](docs/security/threat-model.md)
 - [GenAI observability](docs/genai-observability.md)
 - [Self-improvement flywheel](docs/self-improvement-flywheel.md)

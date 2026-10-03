@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -158,6 +159,27 @@ def verify_report(report: ProcessRewardReport) -> bool:
     )
 
 
+def compare_process_artifacts(actual: ProcessRewardArtifact, expected: ProcessRewardArtifact) -> dict:
+    """Allow bounded weight roundoff only; digests and all metadata remain strict."""
+    if not actual.verify() or not expected.verify():
+        raise ValueError("process-reward artifact integrity verification failed")
+    exclude = {"weights", "artifact_fingerprint"}
+    if (actual.model_dump(mode="json", exclude=exclude) != expected.model_dump(mode="json", exclude=exclude)
+            or len(actual.weights) != len(expected.weights)):
+        raise ValueError("process-reward training identity or configuration changed")
+    differences = []
+    for value, frozen in zip(actual.weights, expected.weights, strict=True):
+        if (not math.isfinite(value) or not math.isfinite(frozen)
+                or not math.isclose(value, frozen, rel_tol=0.0, abs_tol=1e-12)):
+            raise ValueError("process-reward weights changed beyond roundoff tolerance")
+        differences.append(abs(value - frozen))
+    return {"reproducible": True, "absolute_tolerance": 1e-12,
+        "maximum_weight_delta": max(differences, default=0.0),
+        "exact_match": actual.artifact_fingerprint == expected.artifact_fingerprint,
+        "reference_fingerprint": expected.artifact_fingerprint,
+        "generated_fingerprint": actual.artifact_fingerprint}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train and evaluate process reward modeling.")
     parser.add_argument("dataset", nargs="?", type=Path, default=DEFAULT_DATASET)
@@ -174,8 +196,11 @@ def main() -> int:
     artifact = train_process_reward_model(traces)
     if args.check:
         expected = ProcessRewardArtifact.load(args.check)
-        if artifact.model_dump(mode="json") != expected.model_dump(mode="json"):
-            raise SystemExit("process-reward artifact is not reproducible")
+        try:
+            comparison = compare_process_artifacts(artifact, expected)
+        except ValueError as exc:
+            raise SystemExit(f"process-reward artifact is not reproducible: {exc}") from exc
+        print(json.dumps({"reproducibility": comparison}))
     artifact.save(args.artifact)
     report = evaluate_process_reward(artifact, traces)
     args.output.parent.mkdir(parents=True, exist_ok=True)

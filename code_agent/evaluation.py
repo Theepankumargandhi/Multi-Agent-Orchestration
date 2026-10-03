@@ -26,7 +26,7 @@ from code_agent.evaluation_models import (
     CodeTaskScore,
 )
 from code_agent.intelligence import STRATEGIES
-from code_agent.models import CodeAgentResult, CodeTask, SandboxPolicy
+from code_agent.models import CodeAgentResult, CodeTask, RepairTournamentPolicy, SandboxPolicy
 from code_agent.sandbox import DockerSandbox
 from code_agent.verified_pr import build_verified_pr_agent
 
@@ -225,13 +225,18 @@ async def run_benchmark(
     image_by_repository: dict[str, str] | None = None,
     workflow: str = "single_agent",
     context_strategy: str = "hybrid_rerank",
+    tournament_policy: RepairTournamentPolicy | None = None,
 ) -> CodeBenchmarkReport:
-    if workflow not in {"single_agent", "verified_pr"}:
-        raise ValueError("workflow must be single_agent or verified_pr")
+    if workflow not in {"single_agent", "verified_pr", "repair_tournament"}:
+        raise ValueError("workflow must be single_agent, verified_pr, or repair_tournament")
+    if workflow == "repair_tournament" and tournament_policy is None:
+        from code_agent.repair_tournament import tournament_policy_from_environment
+
+        tournament_policy = tournament_policy_from_environment()
     if context_strategy not in STRATEGIES:
         raise ValueError(f"context strategy must be one of: {', '.join(STRATEGIES)}")
     effective_context_strategy = (
-        context_strategy if workflow == "verified_pr" else "repository_map"
+        context_strategy if workflow != "single_agent" else "repository_map"
     )
     outcomes: list[CodeBenchmarkOutcome] = []
     predictions: list[dict[str, str]] = []
@@ -251,6 +256,7 @@ async def run_benchmark(
             "image_by_repository": repository_images,
             "workflow": workflow,
             "context_strategy": effective_context_strategy,
+            "tournament_policy": tournament_policy.model_dump(mode="json") if tournament_policy else None,
         }
     )
     run_id = f"code-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
@@ -278,17 +284,25 @@ async def run_benchmark(
             repository.relative_to(root)
             if not repository.is_dir():
                 raise ValueError("benchmark repository does not exist below repository root")
-            sandbox = DockerSandbox(repository, case_policy)
-            await asyncio.to_thread(sandbox.start)
-            agent = (
-                build_verified_pr_agent(task.model, context_strategy=effective_context_strategy)
-                if workflow == "verified_pr"
-                else CodingAgent(build_coding_model(task.model))
-            )
-            result = await asyncio.wait_for(
-                agent.solve(task, sandbox),
-                timeout=policy.task_timeout_seconds + 30,
-            )
+            if workflow == "repair_tournament":
+                from code_agent.repair_tournament import build_repair_tournament
+
+                agent = build_repair_tournament(task.model, policy=tournament_policy,
+                    context_strategy=effective_context_strategy, input_cost_per_million=input_cost_per_million,
+                    output_cost_per_million=output_cost_per_million)
+                result = await agent.solve(task, repository)
+            else:
+                sandbox = DockerSandbox(repository, case_policy)
+                await asyncio.to_thread(sandbox.start)
+                agent = (
+                    build_verified_pr_agent(task.model, context_strategy=effective_context_strategy)
+                    if workflow == "verified_pr"
+                    else CodingAgent(build_coding_model(task.model))
+                )
+                result = await asyncio.wait_for(
+                    agent.solve(task, sandbox),
+                    timeout=policy.task_timeout_seconds + 30,
+                )
             score = score_code_result(
                 result,
                 input_cost_per_million=input_cost_per_million,
@@ -354,7 +368,8 @@ async def run_benchmark(
         model=default_model,
         workflow=workflow,
         context_strategy=effective_context_strategy,
-        sandbox_policy={**policy_payload, "image_by_repository": repository_images},
+        sandbox_policy={**policy_payload, "image_by_repository": repository_images,
+                        "tournament_policy": tournament_policy.model_dump(mode="json") if tournament_policy else None},
         total=total,
         resolved=resolved,
         pass_at_1=resolved / total if total else 0.0,
@@ -437,11 +452,12 @@ def main() -> None:
     parser.add_argument("--model", action="append", dest="models")
     parser.add_argument(
         "--workflow",
-        choices=["verified_pr", "single_agent"],
+        choices=["verified_pr", "single_agent", "repair_tournament"],
         default="verified_pr",
         help="Agent workflow evaluated for each case",
     )
     parser.add_argument("--image", default="agentforge-code-sandbox:local")
+    parser.add_argument("--tournament-policy", type=Path, help="Explicit repair-tournament policy JSON for preregistered runs")
     parser.add_argument(
         "--image-map",
         type=Path,
@@ -461,6 +477,11 @@ def main() -> None:
         help="Code-context retrieval strategy for verified_pr runs",
     )
     args = parser.parse_args()
+    tournament_policy = None
+    if args.tournament_policy:
+        if args.workflow != "repair_tournament":
+            parser.error("--tournament-policy requires --workflow repair_tournament")
+        tournament_policy = RepairTournamentPolicy.model_validate_json(args.tournament_policy.read_text(encoding="utf-8"))
     cases = load_code_cases(args.dataset)
     if args.max_cases > 0:
         cases = cases[: args.max_cases]
@@ -501,6 +522,7 @@ def main() -> None:
                 image_by_repository=image_map,
                 workflow=args.workflow,
                 context_strategy=args.context_strategy,
+                tournament_policy=tournament_policy,
             )
         )
         reports.append(report)

@@ -283,7 +283,12 @@ class RetrievalConfig:
     rerank_weight: float = 0.25
     candidate_multiplier: int = 4
     prefer_tree_sitter: bool = True
+    packing_policy: str = "legacy"
     fallbacks: list[str] = field(default_factory=list, compare=False)
+
+    def __post_init__(self):
+        if self.packing_policy not in {"legacy", "balanced_v1"}:
+            raise ValueError("unknown code-context packing policy")
 
     @classmethod
     def from_environment(cls) -> "RetrievalConfig":
@@ -299,6 +304,7 @@ class RetrievalConfig:
             fusion_artifact=os.getenv("CODE_CONTEXT_FUSION_ARTIFACT", "").strip(),
             prefer_tree_sitter=os.getenv("CODE_CONTEXT_TREE_SITTER", "true").lower()
             not in {"0", "false", "off"},
+            packing_policy=os.getenv("CODE_CONTEXT_PACKING_POLICY", "legacy").strip().lower(),
         )
 
 

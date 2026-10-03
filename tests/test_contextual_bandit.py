@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -6,9 +7,11 @@ import pytest
 from evals.contextual_bandit import (
     BanditArtifact,
     ContextualBanditPolicy,
+    check_policy_reproducibility,
     default_actions,
     evaluate_policy,
     load_events,
+    main,
     train_policy,
 )
 
@@ -83,3 +86,123 @@ def test_gate_rejects_insufficient_action_support():
     )
     assert report.promoted is False
     assert any("sample size" in reason for reason in report.reasons)
+
+
+def test_checked_in_policy_reproduces_with_strict_lineage_and_bounded_roundoff():
+    artifact = _artifact()
+    before = artifact.model_dump()
+    comparison = check_policy_reproducibility(artifact, Path("evals/experiments/contextual_bandit_policy.json"))
+    assert comparison["reproducible"] and comparison["absolute_tolerance"] == 1e-12
+    assert comparison["maximum_coefficient_delta"] <= 1e-12
+    assert comparison["generated_fingerprint"] == artifact.artifact_fingerprint
+    assert artifact.model_dump() == before
+
+
+@pytest.mark.parametrize("component", ["theta", "covariance"])
+def test_roundoff_acceptance_keeps_independent_exact_digests(tmp_path, component):
+    expected = _artifact()
+    target = tmp_path / "reference.json"
+    expected.save(target)
+    actual = expected.model_copy(deep=True)
+    if component == "theta":
+        actual.models["economy"].theta[0] += 5e-13
+    else:
+        actual.models["economy"].covariance[0][0] += 5e-13
+    actual.seal()
+    comparison = check_policy_reproducibility(actual, target)
+    assert not comparison["exact_match"] and 0 < comparison["maximum_coefficient_delta"] <= 1e-12
+    assert actual.verify() and expected.verify()
+    assert comparison["generated_fingerprint"] != comparison["reference_fingerprint"]
+    assert BanditArtifact.load(target) == expected
+
+
+@pytest.mark.parametrize("component,value", [
+    ("theta", 1e-9), ("covariance", 1e-9), ("theta", float("nan")),
+    ("theta", float("inf")), ("covariance", float("inf")),
+])
+def test_real_coefficient_drift_or_nonfinite_values_fail_closed(tmp_path, component, value):
+    expected = _artifact()
+    target = tmp_path / "reference.json"
+    expected.save(target)
+    actual = expected.model_copy(deep=True)
+    if component == "theta":
+        actual.models["economy"].theta[0] += value
+    else:
+        actual.models["economy"].covariance[0][0] += value
+    actual.seal()
+    with pytest.raises(ValueError, match="coefficients"):
+        check_policy_reproducibility(actual, target)
+
+
+@pytest.mark.parametrize("field", ["training_fingerprint", "cost_weight", "actions", "observations", "shape"])
+def test_even_resealed_lineage_configuration_and_structure_changes_fail(tmp_path, field):
+    expected = _artifact()
+    target = tmp_path / "reference.json"
+    expected.save(target)
+    actual = expected.model_copy(deep=True)
+    if field == "training_fingerprint":
+        actual.training_fingerprint = "changed-dataset"
+    elif field == "cost_weight":
+        actual.cost_weight += 5e-13  # Configuration has no numerical tolerance.
+    elif field == "actions":
+        actual.actions[0].allow_high_risk = not actual.actions[0].allow_high_risk
+    elif field == "observations":
+        actual.models["economy"].observations += 1
+    else:
+        actual.models["economy"].covariance.pop()
+    actual.seal()
+    with pytest.raises(ValueError, match="identity|structure"):
+        check_policy_reproducibility(actual, target)
+
+
+@pytest.mark.parametrize("which", ["generated", "reference"])
+def test_unsealed_tiny_changes_still_fail_exact_integrity(tmp_path, which):
+    expected = _artifact()
+    target = tmp_path / "reference.json"
+    expected.save(target)
+    actual = expected.model_copy(deep=True)
+    if which == "generated":
+        actual.models["economy"].theta[0] += 5e-13
+    else:
+        payload = json.loads(target.read_text())
+        payload["models"]["economy"]["theta"][0] += 5e-13
+        target.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="integrity"):
+        check_policy_reproducibility(actual, target)
+
+
+def test_cli_reports_roundoff_without_rebinding_hashes_or_skipping_promotion(tmp_path, monkeypatch, capsys):
+    expected = _artifact()
+    reference = tmp_path / "reference.json"
+    expected.save(reference)
+    actual = expected.model_copy(deep=True)
+    actual.models["economy"].theta[0] += 5e-13
+    actual.seal()
+    monkeypatch.setattr("evals.contextual_bandit.train_policy", lambda *args: actual)
+    output, report = tmp_path / "actual.json", tmp_path / "report.json"
+    monkeypatch.setattr(sys, "argv", ["bandit", str(DATASET), "--check", str(reference),
+        "--artifact", str(output), "--report", str(report), "--require-promotion"])
+    assert main() == 0
+    comparison = json.loads(capsys.readouterr().out.splitlines()[0])["reproducibility"]
+    assert not comparison["exact_match"]
+    assert BanditArtifact.load(output).artifact_fingerprint == actual.artifact_fingerprint != expected.artifact_fingerprint
+    assert json.loads(report.read_text())["policy_fingerprint"] == actual.artifact_fingerprint
+    monkeypatch.setattr("evals.contextual_bandit.evaluate_policy", lambda *args: evaluate_policy(
+        actual, load_events(DATASET), minimum_effective_sample_size=100))
+    assert main() == 2  # Numerical reproducibility is not policy promotion.
+
+
+def test_cli_rejects_real_drift_before_writing_outputs(tmp_path, monkeypatch):
+    expected = _artifact()
+    reference = tmp_path / "reference.json"
+    expected.save(reference)
+    actual = expected.model_copy(deep=True)
+    actual.models["economy"].theta[0] += 1e-6
+    actual.seal()
+    monkeypatch.setattr("evals.contextual_bandit.train_policy", lambda *args: actual)
+    output, report = tmp_path / "actual.json", tmp_path / "report.json"
+    monkeypatch.setattr(sys, "argv", ["bandit", str(DATASET), "--check", str(reference),
+        "--artifact", str(output), "--report", str(report)])
+    with pytest.raises(SystemExit, match="not reproducible.*coefficients"):
+        main()
+    assert not output.exists() and not report.exists()
