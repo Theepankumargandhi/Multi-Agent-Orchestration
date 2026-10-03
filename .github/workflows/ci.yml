@@ -63,6 +63,22 @@ jobs:
         if: failure() && hashFiles('test-results.xml') != ''
         run: python scripts/ci/report_junit_failures.py test-results.xml
 
+      - name: Verify retrieval artifact reproducibility
+        run: python -m code_agent.retrieval_learning train-fusion evals/datasets/code_context_learning.jsonl --repository-root . --negatives-per-positive 4 --epochs 400 --check evals/experiments/code_context_fusion.json
+
+      - name: Report experimental retrieval candidate (no activation)
+        run: |
+          python -m code_agent.retrieval_learning validate-fusion evals/datasets/code_context_smoke.jsonl --repository-root . --artifact evals/experiments/code_context_fusion.json --top-k 8 --max-tokens 4096 --output data/evaluations/code-context/fusion-ci.json
+          python scripts/ci/report_retrieval_candidate.py data/evaluations/code-context/fusion-ci.json --artifact evals/experiments/code_context_fusion.json
+
+      - name: Upload experimental retrieval decision
+        if: always() && hashFiles('data/evaluations/code-context/fusion-ci.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: experimental-retrieval-decision
+          path: data/evaluations/code-context/fusion-ci.json
+          if-no-files-found: error
+
       - name: Run offline AI evaluation gates
         env:
           CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
@@ -77,8 +93,6 @@ jobs:
           python -m code_agent.evaluation evals/datasets/code_agent_smoke.jsonl --validate-only
           python -m code_agent.context_evaluation --repository-root . --top-k 8 --min-recall 0.90
           python -m code_agent.context_evaluation --repository-root . --top-k 8 --ablation --token-budgets 256,512,1024,2048 --output data/evaluations/code-context/ci.json
-          python -m code_agent.retrieval_learning train-fusion evals/datasets/code_context_learning.jsonl --repository-root . --negatives-per-positive 4 --epochs 400 --check evals/experiments/code_context_fusion.json
-          python -m code_agent.retrieval_learning validate-fusion evals/datasets/code_context_smoke.jsonl --repository-root . --artifact evals/experiments/code_context_fusion.json --top-k 8 --max-tokens 4096 --require-promotion --output data/evaluations/code-context/fusion-ci.json
           python -m code_agent.security_evaluation --max-asr 0.05 --min-benign-pass-rate 0.95 --output data/evaluations/security/ci.json
           python -m code_agent.benchmark_release validate evals/experiments/code_agent_release_matrix.json
           python -m code_agent.observability evals/datasets/genai_telemetry_smoke.jsonl --output data/evaluations/telemetry/ci.json

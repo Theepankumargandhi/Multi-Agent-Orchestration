@@ -159,7 +159,9 @@ See [the coding-agent design](docs/code-agent.md), [code intelligence](docs/code
 
 ## Evaluation evidence
 
-There are 478 collected test cases. The last full local regression run for implementation commit `504b712` finished with 476 passed and two Docker-dependent tests skipped because the local engine/image was unavailable. Collection was rechecked during this documentation update; that is not a new full execution result.
+There are 497 collected test cases. The full local regression during this CI repair finished with 494 passed and three skips: two Docker-dependent checks and one Windows directory-symlink check. After the final cross-version summation fix, the affected retrieval/planner suite passed 41 tests with one symlink skip, and the downstream coding-agent suite passed 45 tests with two Docker skips. Exact retrieval artifact reproduction was also verified on Python 3.11 and 3.13. The expanded suite adds 19 CI/corpus regression cases.
+
+These are local test results, not a completed GitHub run. The host dependency check reported missing or mismatched optional service packages, and local Docker builds were unavailable; dependency installation/auditing and container checks still need the CI runner. No live-provider quality result is implied.
 
 CI runs on Python 3.11, builds the coding sandbox, executes pytest with coverage, and runs offline control gates, Ruff, dependency auditing, and container build checks. The configured coverage minimum is 30%, not a test-count floor. CI uploads coverage and evaluation artifacts; inspect the run before claiming those checks passed on a particular commit.
 
@@ -209,6 +211,10 @@ python -m pip check
 ```
 
 The full command list and artifact uploads are in [.github/workflows/ci.yml](.github/workflows/ci.yml). These drills use authored/synthetic controls and do not activate models. Real reviewed studies require private signed inputs and fresh task families; reusing an exposed holdout with a new policy is rejected. Some output paths are immutable, so use a new output path for a genuinely different experiment rather than overwriting its evidence.
+
+Retrieval artifact reproducibility and model promotion are different checks. Offline evaluation at a Git root now uses tracked source/configuration, excludes private repositories and prose, and normalizes checkout line endings. The refreshed fusion candidate is reproducible but currently held for NDCG regression (`0.9594` versus baseline `0.9754`, both recall/MRR `1.00`). Keep the default fixed-weight baseline; see [code intelligence](docs/code-intelligence.md) before treating an artifact as approved for serving.
+
+Ordinary CI requires exact artifact reproducibility and publishes the experimental retrieval decision as a job summary and downloadable report. A valid quality hold does not fail code CI; missing, tampered, or inconsistent evidence does. The separate manual **Retrieval Candidate Promotion** workflow retains `--require-promotion` and fails for this held candidate. Neither workflow activates a model. A green code check is not model approval.
 
 Run the reliability command center locally:
 

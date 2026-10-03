@@ -13,6 +13,7 @@ from agent.adaptive_compute import (
 from agent.process_reward import ProcessRewardScorer
 from agent.search_planner import SearchPolicy, SearchRequest, VerifierGuidedMCTS
 from evals.search_planning_evaluation import (
+    SearchEvaluationReport,
     evaluate_search_planning,
     load_scenarios,
     verify_report,
@@ -129,6 +130,11 @@ def test_held_out_ablation_promotes_search_only_with_safety_and_integrity():
     assert report.plan_integrity_rate == 1
     assert report.promoted
     assert verify_report(report)
+    baseline = SearchEvaluationReport.model_validate_json(
+        Path("evals/experiments/search_planning.report.json").read_text(encoding="utf-8")
+    )
+    assert verify_report(baseline)
+    assert report == baseline
 
 
 def test_runtime_adaptive_compute_uses_search_and_fails_closed(monkeypatch, tmp_path):

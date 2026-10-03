@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from code_agent.context_evaluation import (
     ContextEvalCase,
     DirectoryWorkspace,
     evaluate_context,
+    index_fingerprint,
     load_cases,
     run_ablation,
 )
@@ -295,3 +297,80 @@ def test_directory_workspace_and_dataset_validation_are_confined(tmp_path: Path)
     dataset.write_text(case.model_dump_json() + "\n" + case.model_dump_json() + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unique"):
         load_cases(dataset)
+
+
+def test_source_corpus_keeps_configuration_but_excludes_prose_and_private_repositories(tmp_path: Path):
+    paths = {
+        "service/api.py": "def api(): pass\n",
+        "service/config.json": '{"port": 8000}',
+        "service/requirements.txt": "fastapi\n",
+        "service/notes.txt": "unrelated local prose",
+        "service/README.md": "find every answer here",
+        "repositories/private/api.py": "def private_api(): pass\n",
+        "service/test_api.py": "def test_api(): pass\n",
+        "evals/candidate.py": "def candidate(): pass\n",
+        "scripts/ci/report.py": "def benchmark_answer(): pass\n",
+    }
+    for name, content in paths.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    assert DirectoryWorkspace(tmp_path).list_files() == [
+        "service/api.py", "service/config.json", "service/requirements.txt",
+    ]
+    assert "service/README.md" in DirectoryWorkspace(tmp_path, source_only=False).list_files()
+
+
+def test_git_source_corpus_ignores_untracked_files_but_reads_tracked_edits(tmp_path: Path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, capture_output=True)
+    source = tmp_path / "service" / "api.py"
+    source.parent.mkdir()
+    source.write_text("def api(): pass\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "service/api.py"], check=True, capture_output=True)
+    (source.parent / "local_only.py").write_text("def local_secret(): pass\n", encoding="utf-8")
+    workspace = DirectoryWorkspace(tmp_path)
+    assert workspace.list_files() == ["service/api.py"]
+    source.write_text("def api(): return True\n", encoding="utf-8")
+    assert workspace.read_file("service/api.py") == "def api(): return True\n"
+    source.unlink()
+    assert workspace.list_files() == []
+
+
+def test_git_enumeration_failure_does_not_fall_back_to_local_files(tmp_path: Path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+
+    def unavailable(*args, **kwargs):
+        raise subprocess.TimeoutExpired("git", 10)
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    with pytest.raises(ValueError, match="cannot enumerate tracked"):
+        DirectoryWorkspace(tmp_path).list_files()
+
+
+def test_source_corpus_normalizes_checkout_line_endings(tmp_path: Path):
+    source = tmp_path / "service" / "api.py"
+    source.parent.mkdir()
+    source.write_bytes(b"def api():\r\n    return True\r\n")
+    config = RetrievalConfig(prefer_tree_sitter=False)
+    windows_index = CodeIntelligenceIndex.build(DirectoryWorkspace(tmp_path), config=config)
+    source.write_bytes(b"def api():\n    return True\n")
+    linux_index = CodeIntelligenceIndex.build(DirectoryWorkspace(tmp_path), config=config)
+    assert index_fingerprint(windows_index) == index_fingerprint(linux_index)
+    assert windows_index.files["service/api.py"].retrieval_text == linux_index.files["service/api.py"].retrieval_text
+    source.write_bytes(b"def api():\r\n    return False\r\n")
+    changed_index = CodeIntelligenceIndex.build(DirectoryWorkspace(tmp_path), config=config)
+    assert index_fingerprint(changed_index) != index_fingerprint(linux_index)
+    assert "\r\n" in DirectoryWorkspace(tmp_path, source_only=False).read_file("service/api.py")
+
+
+def test_source_listing_confines_symlinked_parent_directories(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("def secret(): pass\n", encoding="utf-8")
+    try:
+        (root / "service").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable on this platform")
+    assert DirectoryWorkspace(root).list_files() == []

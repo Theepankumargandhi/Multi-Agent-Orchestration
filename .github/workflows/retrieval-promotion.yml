@@ -1,0 +1,36 @@
+name: Retrieval Candidate Promotion
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promotion:
+    name: Strict retrieval quality gate (no activation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install evaluation dependencies
+        run: |
+          python -m pip install -r requirements-service.txt
+          python -m pip install --no-deps --editable .
+      - name: Check artifact reproducibility
+        run: python -m code_agent.retrieval_learning train-fusion evals/datasets/code_context_learning.jsonl --repository-root . --negatives-per-positive 4 --epochs 400 --check evals/experiments/code_context_fusion.json
+      - name: Require model promotion
+        run: python -m code_agent.retrieval_learning validate-fusion evals/datasets/code_context_smoke.jsonl --repository-root . --artifact evals/experiments/code_context_fusion.json --top-k 8 --max-tokens 4096 --require-promotion --output data/evaluations/code-context/promotion.json
+      - name: Publish decision even when held
+        if: always() && hashFiles('data/evaluations/code-context/promotion.json') != ''
+        run: python scripts/ci/report_retrieval_candidate.py data/evaluations/code-context/promotion.json --artifact evals/experiments/code_context_fusion.json
+      - name: Upload promotion evidence
+        if: always() && hashFiles('data/evaluations/code-context/promotion.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-promotion-evidence
+          path: data/evaluations/code-context/promotion.json
+          if-no-files-found: error

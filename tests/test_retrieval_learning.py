@@ -7,10 +7,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from code_agent.context_evaluation import ContextEvalCase
+from code_agent.context_evaluation import ContextEvalCase, DirectoryWorkspace
 from code_agent.intelligence import CodeIntelligenceIndex
 from code_agent.retrieval_backends import LearnedFusionScorer, RetrievalConfig
 from code_agent.retrieval_learning import (
+    FusionArtifact,
     check_artifact_reproducibility,
     fine_tune_neural_ranker,
     mine_hard_negatives,
@@ -67,10 +68,21 @@ def test_hard_negative_mining_never_persists_source_content():
     assert "LeaseWorker" not in report.model_dump_json()
 
 
-def test_pairwise_fusion_artifact_is_deterministic_and_integrity_checked(tmp_path: Path):
+def test_pairwise_fusion_artifact_is_deterministic_and_integrity_checked(tmp_path: Path, monkeypatch):
     index = CodeIntelligenceIndex.build(MemoryWorkspace())
     mined = mine_hard_negatives(index, _cases(), negatives_per_positive=2)
     first = train_pairwise_fusion(mined, negatives_per_positive=2, epochs=80)
+
+    def legacy_sum(items, start=0):
+        for item in items:
+            start += item
+        return start
+
+    # Exercise the older summation behavior without requiring two Python installs.
+    monkeypatch.setattr("code_agent.retrieval_learning.sum", legacy_sum, raising=False)
+    monkeypatch.setattr("code_agent.retrieval_backends.sum", legacy_sum, raising=False)
+    legacy_index = CodeIntelligenceIndex.build(MemoryWorkspace())
+    assert mine_hard_negatives(legacy_index, _cases(), negatives_per_positive=2) == mined
     second = train_pairwise_fusion(mined, negatives_per_positive=2, epochs=80)
 
     assert first == second
@@ -89,6 +101,67 @@ def test_pairwise_fusion_artifact_is_deterministic_and_integrity_checked(tmp_pat
         LearnedFusionScorer.load(artifact_path)
     with pytest.raises(ValueError):
         check_artifact_reproducibility(first, artifact_path)
+
+
+def test_stale_artifact_diagnostic_identifies_corpus_and_weight_changes(tmp_path: Path):
+    index = CodeIntelligenceIndex.build(MemoryWorkspace())
+    report = mine_hard_negatives(index, _cases(), negatives_per_positive=2)
+    artifact = train_pairwise_fusion(report, negatives_per_positive=2, epochs=10)
+    destination = tmp_path / "fusion.json"
+    destination.write_text(artifact.model_dump_json(), encoding="utf-8")
+    changed = artifact.model_copy(deep=True)
+    changed.index_fingerprint = "new-corpus"
+    changed.weights["lexical"] += 0.01
+    changed.seal()
+    with pytest.raises(ValueError, match="changed fields: weights, index_fingerprint"):
+        check_artifact_reproducibility(changed, destination)
+
+
+def test_fusion_training_is_independent_of_checkout_newlines_and_prose(tmp_path: Path):
+    fixture = MemoryWorkspace()
+    for name, content in fixture.files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content.replace("\n", "\r\n").encode("utf-8"))
+    config = RetrievalConfig(prefer_tree_sitter=False)
+    first_index = CodeIntelligenceIndex.build(DirectoryWorkspace(tmp_path), config=config)
+    first = train_pairwise_fusion(
+        mine_hard_negatives(first_index, _cases(), negatives_per_positive=2),
+        negatives_per_positive=2, epochs=10,
+    )
+    for name, content in fixture.files.items():
+        (tmp_path / name).write_bytes(content.encode("utf-8"))
+    (tmp_path / "code" / "README.md").write_text("lease secret heartbeat " * 1000, encoding="utf-8")
+    second_index = CodeIntelligenceIndex.build(DirectoryWorkspace(tmp_path), config=config)
+    second = train_pairwise_fusion(
+        mine_hard_negatives(second_index, _cases(), negatives_per_positive=2),
+        negatives_per_positive=2, epochs=10,
+    )
+    assert first == second
+
+
+def test_checked_in_fusion_matches_current_tracked_source_and_regression_gate():
+    root = Path(__file__).resolve().parents[1]
+    from code_agent.context_evaluation import load_cases
+
+    index = CodeIntelligenceIndex.build(
+        DirectoryWorkspace(root),
+        config=RetrievalConfig(embedding_backend="hashing", reranker_backend="feature"),
+    )
+    artifact_path = root / "evals/experiments/code_context_fusion.json"
+    expected = FusionArtifact.model_validate_json(artifact_path.read_text(encoding="utf-8"))
+    generated = train_pairwise_fusion(
+        mine_hard_negatives(index, load_cases(root / "evals/datasets/code_context_learning.jsonl"),
+                            negatives_per_positive=4, candidate_limit=30),
+        negatives_per_positive=4, epochs=400,
+    )
+    assert check_artifact_reproducibility(generated, artifact_path) == expected.artifact_fingerprint
+    regression = validate_fusion(index, load_cases(root / "evals/datasets/code_context_smoke.jsonl"), generated)
+    assert regression.base.recall_at_k >= 0.90
+    # Reproducibility is not approval: an experimental model can still regress.
+    if regression.ndcg_delta < -1e-12:
+        assert not regression.promotion_approved
+        assert "NDCG regressed" in regression.promotion_reasons
 
 
 def test_learned_fusion_is_loaded_into_context_receipts(tmp_path: Path):

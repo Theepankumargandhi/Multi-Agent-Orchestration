@@ -147,7 +147,7 @@ class HashingSemanticEmbedder:
             position = int.from_bytes(digest[:4], "big") % self.dimensions
             sign = 1.0 if digest[4] & 1 else -1.0
             vector[position] += sign
-        norm = math.sqrt(sum(item * item for item in vector)) or 1.0
+        norm = math.sqrt(math.fsum(item * item for item in vector)) or 1.0
         return tuple(item / norm for item in vector)
 
 
@@ -238,7 +238,7 @@ class LearnedFusionScorer:
         return f"pairwise-logistic:{self.artifact_fingerprint[:12]}"
 
     def score(self, features: dict[str, float]) -> float:
-        logit = sum(
+        logit = math.fsum(
             weight * float(features.get(feature, 0.0))
             for feature, weight in zip(FUSION_FEATURES, self.weights, strict=True)
         )
@@ -337,7 +337,7 @@ def build_fusion_scorer(config: RetrievalConfig) -> LearnedFusionScorer | None:
 def cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0
-    return sum(a * b for a, b in zip(left, right))
+    return math.fsum(a * b for a, b in zip(left, right))
 
 
 def _minmax(values: list[float]) -> list[float]:

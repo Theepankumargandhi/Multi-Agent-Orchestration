@@ -12,7 +12,7 @@
   "recovery_rate": 1.0,
   "budget_violation_rate": 0.0,
   "plan_integrity_rate": 1.0,
-  "mean_nodes_expanded": 7.9,
+  "mean_nodes_expanded": 7.8,
   "mean_unique_states": 7.9,
   "unsafe_branches_pruned": 29,
   "promoted": true,
@@ -66,7 +66,7 @@
       "recovered": true,
       "tokens_planned": 480,
       "budget_violation": false,
-      "nodes_expanded": 21,
+      "nodes_expanded": 20,
       "unique_states": 21,
       "unsafe_branches_pruned": 8,
       "plan_integrity": true,
@@ -199,5 +199,5 @@
       "planned_actions": ["reason", "verify", "answer"]
     }
   ],
-  "report_fingerprint": "e9500f9d57aab5b8ef4e597527bf564c2b586218748c3bba02fb98fc093ce79d"
+  "report_fingerprint": "c033a0cc688d73fb314997d1a95dfd960dbc4a8c7f345f804f54a027ad1610ad"
 }

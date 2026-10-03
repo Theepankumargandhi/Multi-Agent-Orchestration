@@ -203,7 +203,8 @@ def train_pairwise_fusion(
     for epoch in range(epochs):
         gradient = [0.0] * len(FUSION_FEATURES)
         for difference in differences:
-            margin = sum(weight * value for weight, value in zip(weights, difference, strict=True))
+            # Python's built-in float sum changed in 3.12; artifacts must also reproduce on 3.11 CI.
+            margin = math.fsum(weight * value for weight, value in zip(weights, difference, strict=True))
             factor = -1.0 / (1.0 + math.exp(max(-60.0, min(margin, 60.0))))
             for index, value in enumerate(difference):
                 gradient[index] += factor * value
@@ -213,7 +214,7 @@ def train_pairwise_fusion(
             weights[index] -= step * gradient[index]
 
     margins = [
-        sum(weight * value for weight, value in zip(weights, difference, strict=True))
+        math.fsum(weight * value for weight, value in zip(weights, difference, strict=True))
         for difference in differences
     ]
     return FusionArtifact(
@@ -226,7 +227,7 @@ def train_pairwise_fusion(
         learning_rate=learning_rate,
         l2=l2,
         pairwise_accuracy=sum(margin > 0 for margin in margins) / len(margins),
-        mean_pairwise_margin=sum(margins) / len(margins),
+        mean_pairwise_margin=math.fsum(margins) / len(margins),
     ).seal()
 
 
@@ -234,8 +235,31 @@ def check_artifact_reproducibility(generated: FusionArtifact, expected_path: Pat
     expected = FusionArtifact.model_validate_json(expected_path.read_text(encoding="utf-8"))
     LearnedFusionScorer.load(expected_path)
     if generated != expected:
-        raise ValueError("fusion artifact is stale; retrain and review the changed weights")
+        changed = [
+            name for name in FusionArtifact.model_fields
+            if name != "artifact_fingerprint" and getattr(generated, name) != getattr(expected, name)
+        ]
+        raise ValueError(
+            f"fusion artifact is stale; changed fields: {', '.join(changed)}; "
+            "retrain and review the changed weights"
+        )
     return expected.artifact_fingerprint
+
+
+def fusion_promotion_reasons(
+    base: ContextEvalReport,
+    learned: ContextEvalReport,
+    pairwise_accuracy: float,
+) -> list[str]:
+    """The quality gate is independent of artifact reproducibility and code CI."""
+    reasons = []
+    if learned.recall_at_k < base.recall_at_k:
+        reasons.append("recall regressed")
+    if learned.ndcg_at_k + 1e-12 < base.ndcg_at_k:
+        reasons.append("NDCG regressed")
+    if pairwise_accuracy < 0.5:
+        reasons.append("pairwise training accuracy is below 0.5")
+    return reasons
 
 
 def validate_fusion(
@@ -263,13 +287,7 @@ def validate_fusion(
     )
     base = evaluate_context(index, cases, top_k=top_k, max_tokens=max_tokens)
     learned = evaluate_context(learned_index, cases, top_k=top_k, max_tokens=max_tokens)
-    reasons = []
-    if learned.recall_at_k < base.recall_at_k:
-        reasons.append("recall regressed")
-    if learned.ndcg_at_k + 1e-12 < base.ndcg_at_k:
-        reasons.append("NDCG regressed")
-    if artifact.pairwise_accuracy < 0.5:
-        reasons.append("pairwise training accuracy is below 0.5")
+    reasons = fusion_promotion_reasons(base, learned, artifact.pairwise_accuracy)
     return FusionValidationReport(
         artifact_fingerprint=artifact.artifact_fingerprint,
         dataset_fingerprint=dataset_fingerprint(cases),

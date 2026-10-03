@@ -67,7 +67,9 @@ python -m evals.search_planning_evaluation \
 The checked-in ten-scenario holdout compares a fixed confidence threshold with verifier-guided
 search. On this synthetic control-plane drill, baseline success is 30% and search success is 100%;
 unsafe releases fall from 30% to 0%, all four recoverable failures are recovered, and no path exceeds
-its token budget. CI reproduces the exact report and rejects metric or fingerprint drift.
+its token budget. The refreshed report expands 7.8 nodes on average; the older 7.9-node
+snapshot predated later planner changes. The scenario actions, safety, success, and budget
+results are unchanged. CI reproduces the exact report and rejects metric or fingerprint drift.
 
 These results validate planner mechanics, safety constraints, accounting, and reproducibility. They
 do not show that the PRM or action model generalizes to real model failures. A production claim needs
