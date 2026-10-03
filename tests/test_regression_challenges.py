@@ -307,7 +307,13 @@ async def test_real_docker_harness_executes_exact_and_metamorphic_probes(tmp_pat
         # Warm bytecode in Docker, then preserve source size and mtime while editing.
         # -B alone disables writes but can still read this timestamp-valid stale cache.
         original = sandbox.workspace.resolve("app.py").stat()
-        warmed = sandbox.run(["python", "-I", "-c", "import app; assert app.value(3) == 6"])
+        # Isolated Python excludes cwd; explicitly add the Docker workspace just
+        # as the trusted probe harness does, while still allowing cache writes.
+        warmed = sandbox.run([
+            "python", "-I", "-c",
+            "import sys; from pathlib import Path; sys.path.insert(0, str(Path.cwd())); "
+            "import app; assert app.value(3) == 6",
+        ])
         assert warmed.exit_code == 0 and not warmed.timed_out
         assert any((sandbox.workspace.root / "__pycache__").glob("app.*.pyc"))
         sandbox.workspace.write_file("app.py", "def value(x):\n    return x * 3\n")
