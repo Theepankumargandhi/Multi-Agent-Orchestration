@@ -683,8 +683,12 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install --no-deps --editable .
 
-      - name: Build pinned session sandbox
-        run: docker build -f docker/Dockerfile.upgradepilot -t agentforge-upgradepilot-sessions:local .
+      - name: Build pinned migration and session sandbox
+        run: docker build -f docker/Dockerfile.upgradepilot -t agentforge-upgradepilot:local -t agentforge-upgradepilot-sessions:local .
+
+      - name: Verify migration sandbox aliases
+        run: |
+          python -c "from code_agent.upgrade_runner import resolve_image; migration = resolve_image('agentforge-upgradepilot:local'); sessions = resolve_image('agentforge-upgradepilot-sessions:local'); assert migration == sessions, 'migration sandbox aliases differ'; print(migration)"
 
       - name: Check generated laws, overfitting and invalid-source-oracle controls
         run: python -m evals.upgrade_relation_evaluation --output data/evaluations/upgrade-relations/ci.json

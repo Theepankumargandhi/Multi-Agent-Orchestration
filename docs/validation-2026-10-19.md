@@ -76,11 +76,38 @@ also covered by the host selection. The controller confirmed that `dotenv`,
 LangChain, LangGraph and model-provider packages were absent. No application
 dependencies were added to make the document job pass.
 
+## Migration-recovery CI image setup
+
+The metamorphic job built only `agentforge-upgradepilot-sessions:local`, while
+the recovery fixture inherits `agentforge-upgradepilot:local`. A fresh runner
+therefore failed at image inspection before the study could be frozen.
+
+The job now gives one pinned build both aliases and checks that they resolve to
+the same immutable image ID before either evaluation starts. A three-case
+workflow regression test checks the required aliases for the metamorphic,
+main-test and portable-patch jobs. Image pinning, local-only resolution and
+recovery admission rules are unchanged.
+
+The workflow regression and existing study/recovery selection passed **36
+tests**. The unchanged strict retrieval-artifact check also passed; this CI-only
+change did not require retraining or activate a model.
+
+The corrected build and alias preflight were then executed locally. The actual
+Docker recovery evaluator passed **all six controls** in 175.87 seconds:
+explicit interrupted-run recovery, retaining uncertain usage, reusing completed
+results, detecting receipt tampering, adopting a saved receipt, and withholding a
+retry when its budget was exhausted. It used twelve scripted specialist calls
+and zero live provider requests. Some storage fault windows deliberately replay
+existing controller receipts; they are not additional model executions.
+
 ## Remaining merge gates
 
-The full backend coverage run was still in progress when this PR snapshot was
-prepared. Its completed result and remote CI status must be reviewed before
-merging. The integration selection above is not a substitute for that full run.
+The earlier broad backend coverage run finished with **2,191 passed, 36 skipped
+and two failures**. It overlapped working-tree updates rather than testing one
+frozen final commit. Its source-bound retrieval failure was followed by an
+artifact refresh and passing strict reruns. The Docker-output UTF-8 regression
+test still needs review. These targeted fixes are not a clean full-suite pass;
+the remaining test and remote CI results must be resolved before merging.
 
 The unwaived service dependency audit reported 12 entries across two packages,
 representing eight distinct advisories after duplicate IDs were collapsed:
