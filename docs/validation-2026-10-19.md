@@ -153,6 +153,39 @@ the low-rank training smoke test, and local model registration. These commands
 made no live provider requests. Fresh CI must confirm the new scheduling and
 budgets on a hosted runner.
 
+## Cryptography dependency remediation
+
+The service audit on commit `cf48aa6` reported seven entries for `cryptography`
+46.0.7, representing four distinct advisories. Both dependency declarations still
+required `>=46,<47`, excluding the patched releases. The application metadata and
+service requirements now agree on `cryptography>=50.0.2,<51`. The selected release
+includes the upstream security fixes and the newer bundled OpenSSL wheels; see
+the [upstream changelog](https://cryptography.io/en/latest/changelog/#v50-0-2).
+
+An isolated Linux controller installed 50.0.2 and passed `pip check`. The focused
+selection passed **72 tests**, covering encrypted incident storage, tenant
+isolation, authenticated-metadata and ciphertext tampering, runtime capture,
+workers, HTTP authorization and workflow contracts. A separate Windows run
+passed **20 constraint and workflow tests** without changing the shared Python
+installation. A separate Python 3.11.16 controller installed the patched wheel,
+passed `pip check` and **10 constraint tests**, and verified AES-GCM round trips
+with rejection of modified ciphertext and authenticated metadata. The unchanged
+strict retrieval-artifact check also passed.
+
+An authored encrypted record was written with 46.0.7 and then opened with 50.0.2.
+Its payload was unchanged, while unrelated-tenant access and tampered ciphertext
+were rejected. The runtime-fingerprint gate also rejected a new replay of that
+old capture. Existing records remain readable; the dependency upgrade does not
+silently authorize reusing old execution evidence under a different runtime.
+
+A fresh Python 3.11 audit resolved the complete service requirements with 50.0.2.
+The exact existing CI policy passed with **no unignored findings** in 59.92 seconds;
+no new vulnerability exceptions were added. The companion unwaived scan reported
+no `cryptography` findings but still failed with five ChromaDB entries, representing
+four distinct advisories. That distinction remains a deployment/release concern,
+not a reason to suppress another finding. Detailed reports and authored fixtures
+remain in ignored local storage.
+
 ## Remaining merge gates
 
 The earlier broad backend coverage run finished with **2,191 passed, 36 skipped
@@ -165,20 +198,14 @@ selections. The later Python 3.11 run completed its full test suite, as recorded
 above, but did not finish all CI gates. Remote CI on the final commit must finish
 successfully before merging.
 
-The unwaived service dependency audit reported 12 entries across two packages,
-representing eight distinct advisories after duplicate IDs were collapsed:
-
-- `cryptography` 46.0.7: four distinct advisories. The declared `<47` upper bound
-  prevents installing the currently reported fixes. For example, the
-  [PKCS#7 decryption advisory](https://github.com/advisories/GHSA-g6cj-pr64-35w5)
-  lists 50.0.0 as patched, and the
-  [wheel OpenSSL advisory](https://github.com/advisories/GHSA-537c-gmf6-5ccf)
-  covers the bundled-library issue.
-- ChromaDB 1.5.9: four distinct advisories, with no fixed version listed in this
-  audit. The existing embedded-only deployment constraint and overdue exception
-  review remain relevant; they are not a clean audit result. See the
-  [ChromaDB code-injection advisory](https://github.com/advisories/GHSA-36p7-vc44-83pf)
-  and the [exception record](security/audit-exceptions.md).
+The earlier unwaived service audit reported 12 entries across two packages. The
+cryptography upgrade above resolves its four distinct advisories in the fresh
+scan. ChromaDB 1.5.9 still has four distinct advisories, with no fixed version
+listed in that audit. The existing embedded-only deployment constraint and
+overdue exception review remain relevant; a pass under the current CI policy is
+not an unqualified security clearance. See the
+[ChromaDB code-injection advisory](https://github.com/advisories/GHSA-36p7-vc44-83pf)
+and the [exception record](security/audit-exceptions.md).
 
 No vulnerability ignores, quality thresholds or serving defaults were relaxed.
 These dependency findings are separate from the

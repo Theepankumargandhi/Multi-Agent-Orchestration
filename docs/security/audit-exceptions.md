@@ -1,10 +1,12 @@
 # Dependency audit exceptions
 
-The October 19, 2026 unwaived scan also reports advisories affecting
-`cryptography` 46.0.7. Those findings are not covered by the ChromaDB exceptions
-below. The current dependency bound blocks the reported patched releases;
-the [validation record](../validation-2026-10-19.md) keeps this as a merge gate.
-No exception was added or renewed during this check.
+The October 19, 2026 follow-up raised both application and service constraints to
+`cryptography>=50.0.2,<51`. The fresh Python 3.11 service-requirements audit reports
+no findings for `cryptography` 50.0.2. The existing CI policy passes; its five
+ignored entries still correspond to the four ChromaDB advisories below. The
+unwaived companion scan still fails on those ChromaDB findings. See the
+[validation record](../validation-2026-10-19.md) for compatibility checks and scope.
+No exception was added or renewed during this upgrade.
 
 Reviewed: 2026-09-06. Re-review by: 2026-10-06.
 
