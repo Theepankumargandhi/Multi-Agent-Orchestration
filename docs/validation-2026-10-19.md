@@ -100,14 +100,40 @@ retry when its budget was exhausted. It used twelve scripted specialist calls
 and zero live provider requests. Some storage fault windows deliberately replay
 existing controller receipts; they are not additional model executions.
 
+## Bounded-output UTF-8 regression
+
+The main CI log reported two failures, not a coverage-threshold failure. The
+claim-bundle fixture was already corrected by the document-controller fix above.
+The remaining test patched `subprocess.run`, but sandbox execution had moved to
+the bounded runner's binary `Popen` path. Its mock no longer intercepted the
+Docker command, so the test tried to execute an authored, nonexistent container.
+
+The regression now replaces only process creation and exercises the real bounded
+reader. It checks UTF-8 decoding under a simulated Windows code page, replacement
+of invalid bytes, output limits, timeout forwarding, non-root command construction,
+exit-code propagation and stream cleanup. Three additional cases launch actual
+child processes and verify Unicode output, invalid bytes and byte counts at
+different character budgets. The bounded production implementation is unchanged.
+
+The focused selection passed **64 tests on Windows**, including both actual
+Docker sandbox integrations, and **62 tests in Linux**, with those two host
+integrations deselected. A separate minimal Python 3.11 controller passed **34
+tests**, covering the claim bundle and bounded subprocess runner without optional
+parser dependencies. The first Linux command completed its tests but could not
+write JUnit output to a shared folder; a fresh report path passed with exit code
+zero. The unchanged strict retrieval-artifact regression and repository-wide
+Ruff check also passed. These are separate commands, not a full-suite rerun.
+
 ## Remaining merge gates
 
 The earlier broad backend coverage run finished with **2,191 passed, 36 skipped
 and two failures**. It overlapped working-tree updates rather than testing one
 frozen final commit. Its source-bound retrieval failure was followed by an
 artifact refresh and passing strict reruns. The Docker-output UTF-8 regression
-test still needs review. These targeted fixes are not a clean full-suite pass;
-the remaining test and remote CI results must be resolved before merging.
+now passes in the focused Windows and Linux selections described above. Both
+failures in the supplied main-job CI log also pass in the relevant follow-up
+selections. These targeted fixes are not a clean full-suite pass; remote CI on
+the final commit must finish successfully before merging.
 
 The unwaived service dependency audit reported 12 entries across two packages,
 representing eight distinct advisories after duplicate IDs were collapsed:

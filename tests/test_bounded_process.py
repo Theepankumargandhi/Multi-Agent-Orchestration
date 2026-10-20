@@ -1,8 +1,28 @@
+import locale
 import sys
 
 import pytest
 
 from code_agent.bounded_process import run_bounded
+
+
+@pytest.mark.parametrize("max_chars", [1, 7, 128])
+def test_real_child_utf8_output_ignores_locale_and_replaces_invalid_bytes(monkeypatch, max_chars):
+    monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda _do_setlocale=True: "cp1252")
+    stdout = b"x" * 20_000 + "é\u20ac\u6f22\U0001f642".encode("utf-8") + b"\xff"
+    stderr = b"\xff" + "\u6f22\u20ac\U0001f642é".encode("utf-8")
+
+    result = run_bounded(
+        [sys.executable, "-I", "-c", f"import os; os.write(1, {stdout!r}); os.write(2, {stderr!r})"],
+        timeout=10,
+        max_chars=max_chars,
+    )
+
+    assert result.returncode == 0 and not result.timed_out
+    assert result.stdout == stdout.decode("utf-8", errors="replace")[-max_chars:]
+    assert result.stderr == stderr.decode("utf-8", errors="replace")[-max_chars:]
+    assert result.stdout_bytes == len(stdout) and result.stderr_bytes == len(stderr)
 
 
 def test_large_stdout_and_stderr_are_drained_but_only_bounded_tails_retained():

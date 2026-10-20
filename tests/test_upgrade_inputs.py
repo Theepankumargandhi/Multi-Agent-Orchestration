@@ -137,22 +137,44 @@ async def test_settled_execution_does_not_race_cleanup_on_cancellation():
 
 
 def test_docker_output_is_decoded_as_utf8_not_the_windows_locale(monkeypatch, tmp_path):
+    import locale
+    import subprocess
+    from io import BytesIO
     from types import SimpleNamespace
 
     from code_agent.models import SandboxPolicy
     from code_agent.sandbox import DockerSandbox
 
-    options = []
+    policy = SandboxPolicy(command_timeout_seconds=17, max_output_chars=1000)
+    calls = []
+    stdout = BytesIO(b"x" * 4100 + b"\xc3\xa9")
+    stderr = BytesIO(b"\xe2\x82\xac\xff")
 
-    def fake_run(_command, **kwargs):
-        options.append(kwargs)
-        return SimpleNamespace(returncode=0, stdout="é", stderr="")
+    def wait(*, timeout):
+        assert timeout == policy.command_timeout_seconds
+        return 5
 
-    monkeypatch.setattr("code_agent.sandbox.subprocess.run", fake_run)
-    sandbox = DockerSandbox(tmp_path, SandboxPolicy())
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(stdout=stdout, stderr=stderr, wait=wait, poll=lambda: 5)
+
+    # Exercise the real bounded reader; only the Docker process is replaced.
+    monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda _do_setlocale=True: "cp1252")
+    monkeypatch.setattr("code_agent.bounded_process.subprocess.Popen", fake_popen)
+    sandbox = DockerSandbox(tmp_path, policy)
     sandbox.container_id = "authored-no-container-created"
-    result = sandbox.run(["python", "-c", "pass"])
-    assert result.stdout == "é" and options[0]["encoding"] == "utf-8" and options[0]["errors"] == "replace"
+    command = ["python", "-c", "pass"]
+    result = sandbox.run(command)
+
+    assert calls == [(
+        ["docker", "exec", "--user", "65532:65532", sandbox.container_id, *command],
+        {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "bufsize": 0},
+    )]
+    assert result.command == command and result.exit_code == 5 and not result.timed_out
+    assert result.stdout == "x" * 999 + "é"
+    assert result.stderr == "\u20ac\ufffd"
+    assert stdout.closed and stderr.closed
 
 
 @pytest.mark.asyncio
