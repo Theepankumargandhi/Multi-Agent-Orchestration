@@ -116,4 +116,4 @@ Exact location grading deliberately does not infer semantic equivalence from a d
 another file. Family bootstrap intervals are approximate, especially for small samples, and do
 not establish statistical independence across repositories. Improve the evidence with additional
 private, independently labelled repositories and downstream coding-agent experiments before
-making resume claims about quality improvements.
+reporting quality improvements.

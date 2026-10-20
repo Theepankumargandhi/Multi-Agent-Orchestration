@@ -37,6 +37,12 @@ class CodeTaskManager:
         max_concurrency: int = 1,
         max_records: int = 200,
     ):
+        if policy.counterfactual_verification_enabled:
+            raise ValueError("legacy single-agent manager does not support counterfactual verification")
+        if policy.patch_minimization_enabled:
+            raise ValueError("patch minimization requires a verified-PR workflow")
+        if policy.mutation_testing_mode != "off":
+            raise ValueError("patch mutation testing requires a verified-PR workflow")
         self.repository_root = repository_root.resolve()
         self.policy = policy
         self.jobs: dict[str, JobRecord] = {}
@@ -80,6 +86,7 @@ class CodeTaskManager:
             self._repository_path(request.repository)
             task = CodeTask(
                 repository=request.repository,
+                repair_memory_namespace=user_id,
                 issue=request.issue,
                 model=request.model,
                 test_command=request.test_command,
@@ -195,8 +202,14 @@ class DurableCodeTaskManager:
         self.execution_mode = execution_mode
         self.max_attempts = max(1, min(max_attempts, 20))
         self.lease_seconds = max(15, lease_seconds)
-        if workflow not in {"verified_pr", "single_agent", "repair_tournament"}:
-            raise ValueError("CODE_AGENT_WORKFLOW must be verified_pr, single_agent, or repair_tournament")
+        if workflow not in {"verified_pr", "single_agent", "repair_tournament", "adaptive_supervisor"}:
+            raise ValueError("CODE_AGENT_WORKFLOW must be verified_pr, single_agent, repair_tournament, or adaptive_supervisor")
+        if policy.counterfactual_verification_enabled and workflow == "single_agent":
+            raise ValueError("counterfactual verification requires a verified-PR workflow")
+        if policy.patch_minimization_enabled and workflow == "single_agent":
+            raise ValueError("patch minimization requires a verified-PR workflow")
+        if policy.mutation_testing_mode != "off" and workflow == "single_agent":
+            raise ValueError("patch mutation testing requires a verified-PR workflow")
         self.workflow = workflow
         self.max_concurrency = max(1, min(max_concurrency, 4))
         self.semaphore = asyncio.Semaphore(self.max_concurrency)
@@ -353,6 +366,35 @@ _policy = SandboxPolicy(
     max_changed_files=int(os.getenv("CODE_AGENT_MAX_CHANGED_FILES", "20")),
     max_repair_rounds=int(os.getenv("CODE_AGENT_MAX_REPAIR_ROUNDS", "2")),
     max_workflow_writes=int(os.getenv("CODE_AGENT_MAX_WORKFLOW_WRITES", "16")),
+    targeted_edits_only=os.getenv("CODE_AGENT_TARGETED_EDITS_ONLY", "true").lower() == "true",
+    delivery_verification_enabled=os.getenv("CODE_AGENT_DELIVERY_VERIFICATION_ENABLED", "true").lower() == "true",
+    require_specialist_completion=os.getenv("CODE_AGENT_REQUIRE_SPECIALISTS", "true").lower() == "true",
+    execution_retrieval_enabled=os.getenv("CODE_AGENT_EXECUTION_RETRIEVAL_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"},
+    repair_memory_enabled=os.getenv("CODE_AGENT_REPAIR_MEMORY_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"},
+    counterfactual_verification_enabled=os.getenv("CODE_AGENT_COUNTERFACTUAL_VERIFICATION_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"},
+    counterfactual_timeout_seconds=int(os.getenv("CODE_AGENT_COUNTERFACTUAL_TIMEOUT_SECONDS", "180")),
+    execution_retrieval_max_refreshes=int(os.getenv("CODE_AGENT_EXECUTION_RETRIEVAL_MAX_REFRESHES", "4")),
+    execution_retrieval_max_tokens=int(os.getenv("CODE_AGENT_EXECUTION_RETRIEVAL_MAX_TOKENS", "1024")),
+    fault_localization_enabled=os.getenv("CODE_AGENT_FAULT_LOCALIZATION_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"},
+    fault_localization_max_refreshes=int(os.getenv("CODE_AGENT_FAULT_LOCALIZATION_MAX_REFRESHES", "2")),
+    fault_localization_timeout_seconds=int(os.getenv("CODE_AGENT_FAULT_LOCALIZATION_TIMEOUT_SECONDS", "120")),
+    fault_localization_max_tokens=int(os.getenv("CODE_AGENT_FAULT_LOCALIZATION_MAX_TOKENS", "768")),
+    patch_minimization_enabled=os.getenv("CODE_AGENT_PATCH_MINIMIZATION_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"},
+    patch_minimization_max_files=int(os.getenv("CODE_AGENT_PATCH_MINIMIZATION_MAX_FILES", "3")),
+    patch_minimization_timeout_seconds=int(os.getenv("CODE_AGENT_PATCH_MINIMIZATION_TIMEOUT_SECONDS", "180")),
+    loop_guard_mode=os.getenv("CODE_AGENT_LOOP_GUARD_MODE", "off").strip().lower(),
+    loop_guard_repetition_limit=int(os.getenv("CODE_AGENT_LOOP_GUARD_REPETITION_LIMIT", "3")),
+    loop_guard_max_cycle_length=int(os.getenv("CODE_AGENT_LOOP_GUARD_MAX_CYCLE_LENGTH", "4")),
+    mutation_testing_mode=os.getenv("CODE_AGENT_MUTATION_TESTING_MODE", "off").strip().lower(),
+    mutation_testing_max_mutants=int(os.getenv("CODE_AGENT_MUTATION_TESTING_MAX_MUTANTS", "3")),
+    mutation_testing_min_mutants=int(os.getenv("CODE_AGENT_MUTATION_TESTING_MIN_MUTANTS", "1")),
+    mutation_testing_min_score=float(os.getenv("CODE_AGENT_MUTATION_TESTING_MIN_SCORE", "1.0")),
+    mutation_testing_timeout_seconds=int(os.getenv("CODE_AGENT_MUTATION_TESTING_TIMEOUT_SECONDS", "180")),
     min_changed_line_coverage=float(os.getenv("CODE_AGENT_MIN_CHANGED_LINE_COVERAGE", "0.8")),
     task_timeout_seconds=int(os.getenv("CODE_AGENT_TASK_TIMEOUT_SECONDS", "900")),
 )

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from code_agent.bounded_process import run_bounded
 from code_agent.models import SandboxCommandResult, SandboxPolicy
 from code_agent.workspace import EphemeralWorkspace, WorkspacePolicyError
 
@@ -161,12 +162,10 @@ class DockerSandbox:
             raise RuntimeError("sandbox is not running")
         started = time.perf_counter()
         try:
-            result = subprocess.run(
+            result = run_bounded(
                 ["docker", "exec", "--user", "65532:65532", self.container_id, *command],
-                capture_output=True,
-                text=True,
                 timeout=self.policy.command_timeout_seconds,
-                check=False,
+                max_chars=self.policy.max_output_chars,
             )
             duration = (time.perf_counter() - started) * 1000
             return SandboxCommandResult(
@@ -175,6 +174,7 @@ class DockerSandbox:
                 stdout=result.stdout[-self.policy.max_output_chars :],
                 stderr=result.stderr[-self.policy.max_output_chars :],
                 duration_ms=duration,
+                timed_out=result.timed_out,
             )
         except subprocess.TimeoutExpired as exc:
             duration = (time.perf_counter() - started) * 1000

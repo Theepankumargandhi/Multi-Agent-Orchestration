@@ -1,14 +1,95 @@
 # Sandboxed coding agent
 
+The local [portable verifier](portable-patch-verification.md) now accepts external
+Python patches or selected mini-SWE-agent batch predictions without invoking a
+repair team. Fresh repeated Docker runs distinguish owner-preservation violations
+from missing evidence. The [regression benchmark](patch-regression-benchmark.md)
+compares matched verification strategies, while [consented migration pilots](maintainer-migration-pilots.md)
+record human-reported outcomes separately. These entry points do not broaden
+service API permissions or claim independently reviewed real-task adoption.
+
+The optional local [stateful migration verifier](stateful-migration-verification.md)
+adds ordered session evidence to UpgradePilot repair tasks. Only discovery
+witnesses reach the team; withheld scenarios are evaluated after repair. It does
+not widen the service API, authorize inference, add generic tool permissions or
+write to the original repository.
+
+[Generated workflow laws](metamorphic-workflow-verification.md) add calibrated
+retry/read/rollback/order checks to that local migration path. The source must
+satisfy declared laws before repair; final target variants remain terminal.
+This is deterministic verification for the existing team, not additional agent
+autonomy, model training or a new service API permission.
+
+The separate local [migration-study runner](crash-safe-migration-studies.md) now
+reuses the benchmark checkpoint for arm-boundary recovery and uncertain-request
+reservations. It does not resume a live agent mid-tool call or change the coding
+service's durable worker/lease protocol.
+
 The coding agent turns a repository-scoped issue into a tested unified diff. It never edits the source repository. It copies an allowlisted, size-bounded view into a temporary workspace, plans with structured actions, executes only a fixed owner-supplied test command inside a hardened Docker container, and withholds the patch until the submitting user explicitly approves it.
 
+The [October 4 implementation audit](live-upgrade-audit-2026-10-04.md) records
+real Docker execution, a bounded live Groq smoke candidate, and 17 authenticated
+HTTP checks. It also records the failures: corrupt missing-newline patch framing
+(now repaired), unreliable provider schema responses, the unexecuted test-author
+role, and the held real-issue pilot. The stock Groq provider selector was not
+repaired by the audit's injected client. Do not treat offline coverage as proof
+that every specialist or the normal credentialed API-to-worker path passed live.
+
+## October 14 reliability integration
+
+The gaps above now have implemented controls and provider-free regression checks;
+this does not turn the October 4 live failures into successful live reruns.
+The normal API/worker policy enables targeted edits, required specialist completion,
+and fresh delivery verification. Programmatic `SandboxPolicy` defaults remain
+compatible with older authored controls; enable the flags explicitly in experiments.
+
+`read_lines` supplies a bounded source window and the file's byte hash. An `edit`
+requires that observed hash and exactly one matching block, then publishes the
+change atomically. Stale, ambiguous, overlapping, no-op and protected-path edits
+fail closed. The agent cannot rewrite an existing file in targeted-only mode.
+Explicit `groq:<model>` and `openai:<model>` routing validates original function-call
+arguments without SDK schema retries or guessed required fields.
+
+Final delivery copies the original repository again, applies the exact emitted
+patch, compares candidate source/configuration hashes, and runs owner tests in a
+fresh Docker container. Unsupported diff formats or missing execution evidence
+hold completion. The report records completed specialist stages and binds the
+delivery receipt to the patch. Generated repository code never executes on the host.
+
+The scripted four-role Docker check passed with all specialist stages completed,
+fresh patch application and owner tests passing, and original/candidate integrity
+preserved. It made seven scripted model invocations and zero provider requests.
+It is a workflow regression control, not a real coding-task benchmark.
+
+```bash
+python -m evals.targeted_delivery_evaluation --output data/evaluations/targeted-delivery/my-check.json
+python -m code_agent.benchmark_release validate evals/experiments/targeted_delivery_matrix.json
+```
+
+The three-arm matrix is a frozen authored-smoke comparison definition, not an
+executed live comparison. See [AI failure investigation](ai-failure-investigation.md)
+for the new private replay workflow and the remaining evidence needed.
+
 ## Execution lifecycle
+
+[UpgradePilot](upgradepilot.md) reuses this team for a pinned Pydantic migration
+profile, adding a real codemod baseline and repeated old/new JSON contracts.
+Controller-managed dependency paths are denied to model edit tools but may be
+applied by the trusted fresh-diff replay controller. Ordinary protected files
+remain immutable even when listed as controller-managed. The default managed-path
+list is empty, so existing coding policies retain their behavior.
+
+The opt-in [patch-targeted mutation gate](patch-targeted-mutation-testing.md) runs
+after existing quality gates and before independent review. It holds changed
+assertion tests constant across repeated clean/mutant Docker copies and never edits
+the candidate. Report mode is advisory; enforce mode holds insufficient sensitivity
+or unavailable evidence. Source drift blocks both modes. Defaults remain off.
 
 1. The authenticated API validates the repository as a relative path below `CODE_AGENT_REPOSITORY_ROOT` and transactionally enqueues the request. A per-user `Idempotency-Key` safely deduplicates client retries.
 2. A worker atomically claims one available job with an expiring lease. Its heartbeat extends ownership; a later worker recovers an expired lease after a crash or restart.
 3. Files are copied to a unique temporary directory. Git history, virtual environments, data directories, symlinks, `.env` files, keys, and certificates are excluded.
 4. A non-executing Tree-sitter pass builds a hybrid code index across six languages. Decomposed query facets drive lexical, semantic, graph, and reranking signals; a typed analyst receives only the compressed context pack.
-5. The implementer runs a bounded structured-action loop. It can list, read, search, write, delete, test, or finish, but it cannot construct shell commands.
+5. The implementer runs a bounded structured-action loop. It can list, read bounded lines, search, make hash-bound exact edits, create files, delete, test, or finish, but it cannot construct shell commands. Existing-file rewrites are denied when targeted-only mode is enabled.
 6. A separate test-author role inspects the changed workspace and may write only recognized test paths. Attempts to change production files are rejected by policy.
 7. Deterministic gates rerun the owner-approved tests and check patch scope, credential-like additions, unsafe execution/deserialization/TLS patterns, source-repository integrity, and baseline-aware Ruff results.
 8. An independent structured reviewer sees the issue, analyst plan, patch, changed files, and gate evidence. Critical/high findings override an inconsistent model approval.
@@ -33,6 +114,22 @@ The verification result and PR dossier retain a context receipt—not raw source
 
 ## Container controls
 
+[Cycle-aware stage control](agent-cycle-control.md) supports `off`, observational
+`shadow`, and opt-in `enforce` across all coding workflows. It hashes filtered
+source and tool outcomes to detect short repeated cycles; a stage stop is not
+verification or approval of a patch. Existing gates and budgets remain unchanged.
+
+[Execution-guided patch minimization](execution-guided-patch-minimization.md) is an
+optional pre-review experiment on extra Python production-file changes. It keeps
+tests intact, binds repeated outcomes to candidate snapshots, charges deterministic
+restorations/rollback against workflow writes, and reruns normal verification before
+independent review. It never applies a patch to the original repository.
+
+Optional [execution-spectrum localization](spectrum-fault-localization.md) compares
+passing/failing Python test coverage in repeated fresh copies and supplies advisory
+production-line context to coding stages. It is off by default, invalidates after
+edits, and does not change the owner command or approval gates.
+
 The worker creates the sandbox with networking disabled, a read-only root filesystem, a bounded writable `/tmp`, CPU/memory/PID limits, all Linux capabilities dropped, `no-new-privileges`, and numeric UID/GID `65532`. Only the temporary repository copy is bind-mounted. Provider credentials are used by the host-side planner and are never injected into the container.
 
 Build the minimal default image:
@@ -41,7 +138,7 @@ Build the minimal default image:
 docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
 ```
 
-The included image supports Python, pytest, and Ruff. For another stack, create a prebuilt image containing all dependencies, set `CODE_AGENT_IMAGE` to its exact trusted tag or digest, and keep runtime networking disabled. Do not allow request payloads to choose images.
+The included image supports Python, pytest, Ruff, and Coverage.py for optional spectrum instrumentation. For another stack, create a prebuilt image containing all dependencies, set `CODE_AGENT_IMAGE` to its exact trusted tag or digest, and keep runtime networking disabled. Do not allow request payloads to choose images.
 
 ## Local API workflow
 
@@ -116,6 +213,12 @@ The optional tournament supports a [pre-patch regression-design agent](regressio
 The optional [reference and mutation gate](oracle-calibration.md) additionally checks generated expectations against a pinned, separate operator implementation and measures which controlled code faults the suite detects. It produces a kill matrix and redundancy diagnostics without exposing reference code to repair models. Source revocation, invalid executions, and insufficient sensitivity hold the tournament.
 
 ## Deliberate limitations
+
+The optional local [schema-guided migration path](schema-guided-migration.md)
+uses a separately attested image probe and owner-allowlisted model/contract
+mappings. It does not enable schema introspection for ordinary coding jobs or
+widen their tool permissions. Actual behavioral gates and owner approval remain
+required, even when normalized schemas match.
 
 - The reference queue is durable and multi-process on one host, not a multi-region broker. Use PostgreSQL or a managed queue plus encrypted object storage for a multi-node production deployment.
 - Tree-sitter extraction covers six languages; other file types remain lexical-only and each language still needs repository-specific build/test images and command policy.

@@ -1,0 +1,9 @@
+# Historical replay only: Python 3.9 is EOL. Never use this image for a service.
+# The 2018 Boltons tests require collections.Mapping; keep tests and source intact.
+FROM python:3.9.23-slim@sha256:151b796af055298f244bc4d203bc19e19b0e63c8aa26c4fed2fc6809ea9b7caf
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+RUN python -m pip install --no-cache-dir pytest==8.4.2
+WORKDIR /workspace
+USER 65532:65532
+CMD ["python", "-c", "import time; time.sleep(10**9)"]

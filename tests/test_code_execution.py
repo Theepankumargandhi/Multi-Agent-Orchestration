@@ -25,6 +25,38 @@ from code_agent.models import (
 from code_agent.worker import CodeAgentWorker
 
 
+@pytest.mark.asyncio
+async def test_worker_binds_repair_memory_to_job_tenant(tmp_path, monkeypatch):
+    from code_agent.job_models import JobRecord
+
+    root = tmp_path / "repositories"
+    (root / "repo").mkdir(parents=True)
+    captured = []
+
+    class Sandbox:
+        def __init__(self, repository, policy):
+            pass
+
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Agent:
+        async def solve(self, task, sandbox):
+            captured.append(task.repair_memory_namespace)
+            return CodeAgentResult(status="failed", summary="Scripted tenant check")
+
+    monkeypatch.setattr("code_agent.worker.DockerSandbox", Sandbox)
+    monkeypatch.setattr("code_agent.worker.build_verified_pr_agent", lambda _: Agent())
+    worker = CodeAgentWorker(make_store(tmp_path), root, SandboxPolicy(repair_memory_enabled=True))
+    job = JobRecord(task_id="job", user_id="alice", status="running", created_at="now", updated_at="now",
+                    request=CodeTaskRequest(repository="repo", issue="Fix tax rounding precision"))
+    await worker._solve(job)
+    assert captured == ["alice"]
+
+
 def make_store(tmp_path: Path, max_records: int = 100) -> SQLiteJobStore:
     return SQLiteJobStore(
         tmp_path / "queue" / "jobs.db",

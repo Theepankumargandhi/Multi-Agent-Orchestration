@@ -1,4 +1,4 @@
-"""Credential-free routing regression evaluation for CI and portfolio demos."""
+"""Credential-free routing regression evaluation for CI and local checks."""
 
 import argparse
 import asyncio

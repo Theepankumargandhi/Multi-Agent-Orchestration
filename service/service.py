@@ -44,6 +44,7 @@ from code_agent.api import (
     router as code_agent_router,
 )
 from code_agent.observability import capture_research_agent_trace
+from code_agent.workbench import create_workbench_router
 from evals.adaptive_router import CostAwareRouter
 from evals.contextual_bandit import BanditArtifact, ContextualBanditPolicy
 from evals.platform import ExperimentStore
@@ -57,6 +58,8 @@ from schema import (
     UserInput,
     model_dump_compat,
 )
+from service.document_api import MAX_UPLOAD, create_document_router, documents_enabled
+from service.incident_api import router as incident_router
 from service.persistence_store import open_conversation_store
 
 if TYPE_CHECKING:
@@ -976,6 +979,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(code_agent_router)
+app.include_router(incident_router)
+app.include_router(create_workbench_router(CODE_AGENT_MANAGER, code_enabled=CODE_AGENT_ENABLED))
+app.include_router(create_document_router())
 
 
 @app.middleware("http")
@@ -1008,11 +1014,13 @@ async def request_guard_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", "").strip()[:128] or str(uuid4())
     request.state.request_id = request_id
     if request.method in {"POST", "PUT", "PATCH"}:
+        body_limit = MAX_UPLOAD if (request.method == 'POST' and request.url.path == '/workbench/documents'
+                                   and documents_enabled()) else MAX_REQUEST_BYTES
         try:
             content_length = int(request.headers.get("content-length", "0") or 0)
         except ValueError:
-            content_length = MAX_REQUEST_BYTES + 1
-        if content_length > MAX_REQUEST_BYTES:
+            content_length = body_limit + 1
+        if content_length < 0 or content_length > body_limit:
             return Response(
                 status_code=413,
                 content="Request body too large",
@@ -1112,6 +1120,8 @@ async def capabilities():
     return {
         "models": models,
         "features": {
+            "workbench": True,
+            "user_authentication": ENABLE_USER_AUTH,
             "streaming": True,
             "native_hitl": True,
             "local_rag": bool(os.getenv("USE_CHROMA_RAG", "true").lower() not in {"0", "false", "off"}),
@@ -1150,6 +1160,8 @@ async def capabilities():
                 in {"1", "true", "yes", "on"}
             ),
             "sandboxed_code_agent": CODE_AGENT_ENABLED,
+            "incident_investigation": os.getenv("INCIDENT_INVESTIGATION_ENABLED", "false").lower() == "true",
+            "incident_live_replay": os.getenv("INCIDENT_LIVE_REPLAY_ENABLED", "false").lower() == "true",
             "durable_code_jobs": True,
             "verified_pr_workflow": True,
             "graph_code_context": True,
@@ -1435,6 +1447,16 @@ def _parse_input(
     return kwargs, run_id
 
 
+def _request_incident_capture(user_input, user_id, run_id):
+    from agent.incident_runtime import make_capture
+    from service.incident_api import _configured_store
+    try:
+        return make_capture(user_input, user_id, run_id, lambda: _configured_store(
+            os.getenv("INCIDENT_DB_PATH", "data/incidents/private.db"), os.getenv("INCIDENT_ENCRYPTION_KEY", "")))
+    except ValueError:
+        raise HTTPException(400, "Incident capture requires enabled private storage, authenticated mode, consent and a task family") from None
+
+
 async def _store_message_safely(
     app: FastAPI,
     user_id: str | None,
@@ -1608,9 +1630,12 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
             "model_selection": kwargs["config"]["configurable"]["model_selection"],
         },
     )
+    capture = _request_incident_capture(user_input, user_id, run_id)
     agent_started = time.perf_counter()
     try:
-        response = await agent.ainvoke(**kwargs)
+        from contextlib import nullcontext
+        with capture.scope() if capture else nullcontext():
+            response = await agent.ainvoke(**kwargs)
     except Exception as e:
         AGENT_RUNS_TOTAL.labels(route="unknown", outcome="error").inc()
         _capture_genai_trace_safely(
@@ -1651,6 +1676,8 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
             )
             return output
         output = ChatMessage.from_langchain(response["messages"][-1])
+        if capture:
+            output.incident_capture = await asyncio.to_thread(capture.finish, response, output.content)
         _record_agent_result(response, "completed")
         _capture_genai_trace_safely(
             run_id=str(run_id),
@@ -1717,6 +1744,7 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
 async def message_generator(
     user_input: StreamInput,
     user_id: str | None = None,
+    incident_capture=None,
 ) -> AsyncGenerator[str, None]:
     """
     Generate a stream of messages from the agent.
@@ -1761,12 +1789,17 @@ async def message_generator(
     # we can yield the messages to the client in the main thread.
     async def run_agent_stream():
         try:
-            async for s in agent.astream(**kwargs, stream_mode="updates"):
-                await output_queue.put(s)
+            from contextlib import nullcontext
+            with capture.scope() if capture else nullcontext():
+                async for s in agent.astream(**kwargs, stream_mode="updates"):
+                    await output_queue.put(s)
         except Exception:
             await output_queue.put({"__error__": "Agent execution failed. Please retry."})
         finally:
             await output_queue.put(None)
+    capture = incident_capture or _request_incident_capture(user_input, user_id, run_id)
+    if capture:
+        capture.call_id = str(run_id)
     agent_started = time.perf_counter()
     stream_task = asyncio.create_task(run_agent_stream())
     stored_message_fingerprints = set()
@@ -1847,6 +1880,11 @@ async def message_generator(
             yield f"data: {json.dumps({'type': 'message', 'content': model_dump_compat(chat_message)})}\n\n"
     
     await stream_task
+    if capture and stream_outcome == "completed":
+        messages = latest_agent_state.get("messages") or []
+        answer = getattr(messages[-1], "content", "") if messages else ""
+        receipt = await asyncio.to_thread(capture.finish, latest_agent_state, answer)
+        yield f"data: {json.dumps({'type': 'incident_capture', 'content': receipt})}\n\n"
     _record_agent_result(latest_agent_state, stream_outcome)
     _capture_genai_trace_safely(
         run_id=str(run_id),
@@ -1877,8 +1915,9 @@ async def stream_agent(user_input: StreamInput, request: Request):
     is also attached to all messages for recording feedback.
     """
     user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+    capture = _request_incident_capture(user_input, user_id, uuid4())
     return StreamingResponse(
-        message_generator(user_input, user_id=user_id),
+        message_generator(user_input, user_id=user_id, incident_capture=capture),
         media_type="text/event-stream",
     )
 

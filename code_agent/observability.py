@@ -19,6 +19,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from code_agent.models import CodeAgentResult, CodeTask, TelemetrySpanRecord, TelemetryTrace
+from code_agent.providers import resolve_model
 
 INSTRUMENTATION_NAME = "io.agentforge.code-agent"
 INSTRUMENTATION_VERSION = "1.0.0"
@@ -43,7 +44,7 @@ def _canonical_hash(value: object) -> str:
 
 
 def _provider(model: str) -> str:
-    return "groq" if model.startswith(("llama-", "mixtral-", "gemma-")) else "openai"
+    return resolve_model(model)[0]
 
 
 def _span_id() -> str:

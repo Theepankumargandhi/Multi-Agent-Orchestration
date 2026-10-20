@@ -45,6 +45,6 @@ The exporter accepts either a collector base URL or a URL ending in `/v1/traces`
 
 The implementation targets the current [OpenTelemetry GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai). These conventions are still evolving, so the internal versioned trace model isolates dashboards and evaluation artifacts from upstream naming changes.
 
-## Recruiter-facing demo
+## Inspect a workflow trace
 
-Run the API, execute one research request and one sandboxed coding task, then load the local JSONL file into the evaluator. Show the parent/child trace hierarchy, per-workflow latency and cost, the security-policy spans, and the zero-leakage gates. This demonstrates the production concern that is usually missing from portfolio agents: proving how an agent behaved without storing the user's private context.
+Run the API, execute one research request and one sandboxed coding task, then load the local JSONL file into the evaluator. Inspect the parent/child trace hierarchy, per-workflow latency and cost, security-policy spans, and privacy gates. The trace records how the agent behaved without storing the user's private context.

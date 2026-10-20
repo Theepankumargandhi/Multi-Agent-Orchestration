@@ -11,6 +11,7 @@ requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 dependencies = [
   "argon2-cffi>=25,<26",
+  "cryptography>=46,<47",
   "fastapi>=0.135,<0.142",
   "langchain-core>=1.2,<2",
   "langchain-openai>=1.0,<2",
@@ -30,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "fonttools>=4.60,<5",
   "coverage[toml]>=7.10,<8",
   "httpx>=0.28,<1",
   "pytest>=8.4,<9",
@@ -40,8 +42,14 @@ dev = [
 code-intelligence-ml = [
   "sentence-transformers>=6,<7",
 ]
+document-multimodal = [
+  "pdfplumber>=0.11.9,<0.12",
+  "pypdfium2>=5,<6",
+  "Pillow>=12,<13",
+]
 
 [project.scripts]
+agentforge-document-demo = "agentforge_sdk.demo:main"
 agentforge-eval = "evals.run_experiments:main"
 agentforge-judge-calibration = "evals.run_judge_calibration:main"
 agentforge-retrieval-eval = "evals.run_retrieval_evals:main"
@@ -54,6 +62,11 @@ agentforge-flywheel = "evals.flywheel:main"
 agentforge-post-train = "post_training.cli:main"
 agentforge-code-worker = "code_agent.worker:main"
 agentforge-code-context-eval = "code_agent.context_evaluation:main"
+agentforge-upgrade = "code_agent.upgrade_cli:main"
+agentforge-verify = "code_agent.patch_verify:main"
+agentforge-regression-benchmark = "code_agent.regression_benchmark:main"
+agentforge-maintainer-pilot = "code_agent.maintainer_pilot:main"
+agentforge-migration-study = "code_agent.upgrade_study:main"
 agentforge-retrieval-train = "code_agent.retrieval_learning:main"
 agentforge-security-eval = "code_agent.security_evaluation:main"
 agentforge-benchmark-release = "code_agent.benchmark_release:main"
@@ -99,7 +112,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["agent", "client", "code_agent", "schema", "service"]
+source = ["agent", "agentforge_sdk", "client", "code_agent", "schema", "service"]
 
 [tool.coverage.report]
 show_missing = true

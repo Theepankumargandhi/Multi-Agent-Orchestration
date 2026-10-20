@@ -621,6 +621,8 @@ async def _call_llm(
             if isinstance(callback, UsageMetadataCallbackHandler)
         ]
     if MODEL_GATEWAY_ENABLED:
+        from agent.incident_runtime import hold_capture
+        hold_capture("gateway_generation_capture_not_supported")
         gateway = _get_inference_gateway()
         configurable = config.get("configurable") or {}
         model_name = str(configurable.get("model") or OPENAI_CHAT_MODEL)
@@ -661,6 +663,15 @@ async def _call_llm(
         model = model.bind(max_tokens=max_completion_tokens)
     runnable = RunnableLambda(lambda _: [SystemMessage(content=system), ("human", user)]) | model
     response = await runnable.ainvoke({}, call_config)
+    from agent.incident_runtime import active_capture
+    capture = active_capture()
+    if capture:
+        model_name = str((config.get("configurable") or {}).get("model") or OPENAI_CHAT_MODEL)
+        resolved = _resolve_model_name(model_name)
+        if resolved == "llama-3.1-70b":
+            resolved = GROQ_CHAT_MODEL
+        actual = (getattr(response, "response_metadata", None) or {}).get("model_name") or resolved
+        capture.model_response(system, user, response, _gateway_provider_for_model(resolved) + ":" + actual)
     return (response.content or "").strip()
 
 
@@ -2005,6 +2016,9 @@ async def response_agent(state: AgentState, config: RunnableConfig):
     suffix = _evaluation_instruction_suffix(config, "response_instruction_suffix")
     if suffix:
         system_instructions += f"\n\nEvaluation candidate policy:\n{suffix}"
+    from agent.incident_runtime import active_capture
+    if active_capture():
+        active_capture().before_generation(system_instructions, response_context, state)
     final = await _call_llm(
         system_instructions,
         response_context,

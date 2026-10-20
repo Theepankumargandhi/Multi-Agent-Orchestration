@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "name": "Paired Python spectrum fault-localization ablation",
+  "dataset": "../datasets/code_agent_smoke.jsonl",
+  "dataset_name": "agentforge-code-smoke-v1",
+  "dataset_lock": "code_agent_smoke.lock.json",
+  "repository_root": "../../tests/fixtures/code_repositories",
+  "output_dir": "../../data/evaluations/fault-localization-live",
+  "image": "agentforge-code-sandbox:local",
+  "max_cases": 5,
+  "score_source": "local_harness",
+  "variants": [
+    {"name": "without-spectra", "model": "gpt-4o-mini", "workflow": "verified_pr", "context_strategy": "hybrid_rerank", "fault_localization_enabled": false},
+    {"name": "with-spectra", "model": "gpt-4o-mini", "workflow": "verified_pr", "context_strategy": "hybrid_rerank", "fault_localization_enabled": true}
+  ]
+}

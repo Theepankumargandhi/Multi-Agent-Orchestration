@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "name": "Paired patch-targeted regression-test sensitivity",
+  "dataset": "../datasets/code_agent_smoke.jsonl",
+  "dataset_name": "agentforge-code-smoke-v1",
+  "dataset_lock": "code_agent_smoke.lock.json",
+  "repository_root": "../../tests/fixtures/code_repositories",
+  "output_dir": "../../data/evaluations/patch-mutation-live",
+  "image": "agentforge-code-sandbox:local",
+  "max_cases": 5,
+  "score_source": "local_harness",
+  "variants": [
+    {"name": "off", "model": "gpt-4o-mini", "workflow": "verified_pr", "context_strategy": "hybrid_rerank", "mutation_testing_mode": "off"},
+    {"name": "report", "model": "gpt-4o-mini", "workflow": "verified_pr", "context_strategy": "hybrid_rerank", "mutation_testing_mode": "report"},
+    {"name": "enforce", "model": "gpt-4o-mini", "workflow": "verified_pr", "context_strategy": "hybrid_rerank", "mutation_testing_mode": "enforce"}
+  ]
+}

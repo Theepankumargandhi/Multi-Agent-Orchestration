@@ -20,7 +20,9 @@ def load_reports(root: Path) -> list[tuple[Path, CodeBenchmarkReport]]:
         return reports
     for path in root.glob("*/report.json"):
         try:
-            reports.append((path, CodeBenchmarkReport.model_validate_json(path.read_text(encoding="utf-8"))))
+            report = CodeBenchmarkReport.model_validate_json(path.read_text(encoding="utf-8"))
+            if report.execution_status == "completed" and report.quality_metrics_valid:
+                reports.append((path, report))
         except (OSError, ValueError):
             continue
     return sorted(reports, key=lambda item: item[1].generated_at, reverse=True)

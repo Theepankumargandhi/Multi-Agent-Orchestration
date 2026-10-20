@@ -1,0 +1,12 @@
+{
+  "task_id": "union-coercion",
+  "family": "pydantic-union-selection",
+  "source_paths": ["app"],
+  "test_command": ["-m", "pytest", "-q", "owner_checks.py"],
+  "contracts": [
+    {"case_id": "integer", "entrypoint": "app.models:normalize", "args": [{"value": 7}]},
+    {"case_id": "numeric-string", "entrypoint": "app.models:normalize", "args": [{"value": "7"}]},
+    {"case_id": "ordinary-string", "entrypoint": "app.models:normalize", "args": [{"value": "seven"}]},
+    {"case_id": "missing", "entrypoint": "app.models:normalize", "args": [{}], "expected_kind": "error", "expected_error": "ValidationError"}
+  ]
+}

@@ -20,7 +20,7 @@ Unsafe requests and moderation-provider failures branch directly to the response
 
 ## ADR-004: Hybrid retrieval with bounded lexical work
 
-Status: accepted for the portfolio scale.
+Status: accepted for the single-host deployment.
 
 Vector retrieval is fused with BM25 using reciprocal-rank fusion and optionally reranked. The lexical corpus is bounded to protect memory. For a larger corpus, move BM25 to OpenSearch/Postgres FTS and keep only retrieved candidate IDs in application memory.
 

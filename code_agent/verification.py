@@ -20,19 +20,13 @@ from code_agent.models import (
     VerificationReport,
 )
 from code_agent.sandbox import DockerSandbox
+from code_agent.secret_patterns import SECRET_PATTERNS as _SECRET_PATTERNS
 
 _TEST_PATHS = (
     re.compile(r"(^|/)tests?/", re.IGNORECASE),
     re.compile(r"(^|/)test_[^/]+\.py$", re.IGNORECASE),
     re.compile(r"(^|/)[^/]+_test\.py$", re.IGNORECASE),
     re.compile(r"\.(spec|test)\.[jt]sx?$", re.IGNORECASE),
-)
-
-_SECRET_PATTERNS = (
-    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
-    re.compile(r"(?i)(?:api[_-]?key|secret|password|token)\s*[:=]\s*['\"][^'\"]{12,}['\"]"),
 )
 
 _UNSAFE_PATTERNS = (
@@ -301,6 +295,10 @@ async def run_quality_gates(
                 await asyncio.to_thread(
                     sandbox.workspace.delete_file, ".agentforge-coverage.json"
                 )
+    if task.policy.delivery_verification_enabled:
+        from code_agent.delivery import delivery_gate, verify_delivery
+        receipt = await verify_delivery(task, sandbox, patch, source_fingerprint_before)
+        gates.append(delivery_gate(receipt))
     return gates, final_test
 
 
@@ -342,6 +340,8 @@ def build_pr_dossier(
         },
         "verification": verification.model_dump(mode="json") if verification else None,
         "repair_tournament": result.tournament.model_dump(mode="json") if result.tournament else None,
+        "fault_localization": [item.model_dump(mode="json") for item in result.fault_localization],
+        "loop_guard": [item.model_dump(mode="json") for item in result.loop_guard],
         "execution": {
             "attempt": job.attempt,
             "iterations": result.iterations,
@@ -401,6 +401,50 @@ def build_pr_dossier(
             "",
         ]
     )
+    if verification and any(row.mutation_testing for row in verification.rounds):
+        markdown += "\n## Patch-targeted regression-test sensitivity\n\n"
+        for row in verification.rounds:
+            report = row.mutation_testing
+            if report:
+                markdown += (f"- Round {row.round}: `{report.mode}/{report.status}/{report.reason}`; killed {report.killed}, "
+                             f"survived {report.survived}, invalid {report.invalid}, planned {len(report.mutants)}; "
+                             f"{len(report.trials)} completed trials; evidence: `{report.fingerprint}`.\n")
+                for mutant in report.mutants:
+                    markdown += f"  - `{mutant.path}:{mutant.line}` `{mutant.operator}`: {mutant.status}.\n"
+        markdown += "\nOnly stable test-body assertion failures count as kills. Equivalent mutations, weak oracles, and bounded selection limit interpretation. No mutant source is retained.\n"
+    if result.loop_guard:
+        markdown += "\n## Agent cycle detection\n\n"
+        for receipt in result.loop_guard:
+            markdown += (f"- {receipt.candidate_id or 'standalone'}/{receipt.stage}, iteration {receipt.iteration}: "
+                         f"`{receipt.mode}/{receipt.disposition}`, period {receipt.cycle_length}, "
+                         f"repeats {receipt.repetitions}; evidence: `{receipt.fingerprint}`.\n")
+        markdown += "\nThese are stage-local repetition heuristics, not correctness evidence or measured saved inference. Shadow does not alter planning.\n"
+    if verification and any(row.patch_minimization for row in verification.rounds):
+        markdown += "\n## Execution-guided patch minimization\n\n"
+        for row in verification.rounds:
+            proof = row.patch_minimization
+            if proof:
+                markdown += (f"- Round {row.round}: `{proof.status}/{proof.reason}`, {len(proof.removed_paths)} production-file change(s) removed, "
+                             f"{len(proof.trials)} completed trials, {proof.mutation_writes} mutation attempt(s); "
+                             f"patch characters {proof.patch_chars_before} → {proof.patch_chars_after}; evidence: `{proof.fingerprint}`.\n")
+        markdown += "\nTests and configuration were not minimized. Conditional test preservation does not prove semantic equivalence or global minimality.\n"
+    if result.fault_localization:
+        markdown += "\n## Advisory spectrum fault localization\n\n"
+        for receipt in result.fault_localization:
+            markdown += (f"- {receipt.stage}, iteration {receipt.iteration}: `{receipt.status}/{receipt.reason}`, "
+                         f"{receipt.failing_tests} failing / {receipt.passing_tests} passing tests, "
+                         f"{len(receipt.ranked_lines)} packed suspicious line(s), "
+                         f"{len(receipt.trial_sha256)} trial(s); source SHA-256: `{receipt.source_sha256}`.\n")
+        markdown += "\nExecution association is not causal proof or approval authority. No source snippets are stored in these receipts.\n"
+    if verification and any(row.counterfactual for row in verification.rounds):
+        markdown += "\n## Counterfactual regression evidence\n\n"
+        for row in verification.rounds:
+            proof = row.counterfactual
+            if proof:
+                markdown += (f"- Round {row.round}: `{proof.status}/{proof.reason}`, "
+                             f"{len(proof.discriminating_test_sha256)} discriminating test(s), "
+                             f"{len(proof.trials)} trials; receipt SHA-256: `{proof.fingerprint}`.\n")
+        markdown += "\nSame tests distinguish original from patched code under repeated isolated execution; this does not prove the behavioral oracle is correct.\n"
     if result.tournament:
         tournament = result.tournament
         markdown += "\n## Repair tournament\n\n"
@@ -410,6 +454,21 @@ def build_pr_dossier(
         for candidate in tournament.candidates:
             markdown += (f"| {candidate.candidate_id} | {candidate.perspective} | {candidate.eligible} | "
                          f"{candidate.changed_files} | {candidate.changed_lines} | {', '.join(candidate.reasons) or 'none'} |\n")
+        if tournament.policy.adaptive_dispatch:
+            markdown += "\n### Adaptive dispatch\n\n"
+            markdown += f"Stop reason: `{tournament.stop_reason}`. Reported usage: {tournament.calls_with_usage}/{tournament.model_calls} calls.\n\n"
+            markdown += "Diagnosis labels are deterministic heuristics, not verified root causes. Undispatched teams make no calls.\n\n"
+            for decision in tournament.dispatch_decisions:
+                row = next(item for item in tournament.candidates if item.candidate_id == decision.candidate_id)
+                outcome = row.diagnosis.category if row.diagnosis else "unavailable"
+                markdown += f"- {decision.candidate_id}: {decision.perspective}, triggered by {decision.trigger}; outcome {outcome}.\n"
+            if tournament.dispatch_shadows:
+                markdown += "\n### Learned dispatch shadow (non-serving)\n\n"
+                markdown += "Recommendations reflect reviewed specialist preferences, not a probability of resolving the issue. Serving dispatch is unchanged.\n\n"
+                markdown += "| After candidate | Actual heuristic | Advisor proposal | Disposition | Supporting families |\n|---|---|---|---|---:|\n"
+                for shadow in tournament.dispatch_shadows:
+                    markdown += (f"| {shadow.candidate_id} | {shadow.baseline_role} | {shadow.proposed_role or 'abstain'} | "
+                                 f"{shadow.disposition} | {shadow.supporting_families} |\n")
         if tournament.policy.regression_challenges:
             markdown += "\n### Pre-patch regression probes\n\n"
             markdown += f"Suite SHA-256: `{tournament.regression_suite_sha256 or 'unavailable'}`.\n\n"

@@ -1,5 +1,30 @@
 # Coding-agent evaluation and trajectory lab
 
+For actual execution results rather than configuration examples, see the
+[October 4 full audit](live-upgrade-audit-2026-10-04.md). It preserves original
+failures, separates internal smoke completion from fresh artifact replay, and
+does not report a held Requests pilot as an official benchmark solution.
+
+The opt-in [counterfactual regression gate](counterfactual-regression-verification.md)
+adds `--counterfactual-verification` for verified-PR workflows and inherited
+tournament candidates. A completed result must include intact original-fail /
+patched-pass evidence; missing proof holds quality publication. Its authored
+controls and optional real-container fixture are not live coding-resolution lift.
+
+The [execution-guided retrieval comparison](execution-guided-retrieval.md) adds
+`--execution-retrieval` and a two-arm frozen smoke matrix at
+`evals/experiments/execution_retrieval_matrix.json`. Its no-provider localization
+controls are separate from resolution benchmarks; real comparisons require Docker,
+available model credits, and independently reviewed held-out tasks.
+
+The [reviewed repair-memory controls](reviewed-repair-memory.md) validate retrieval
+and lifecycle behavior without a provider. Mutable memory remains rejected by the
+frozen runner. The [snapshot protocol](frozen-repair-memory.md) allows explicitly
+pinned memory experiments with source lineage, overlap auditing, family metadata,
+and validated exposure receipts; no historical solution content is silently
+introduced into benchmark prompts. Invalid exposure evidence holds quality
+publication rather than counting as a valid memory-on measurement.
+
 This subsystem measures whether the sandboxed coding agent resolves repository failures, not whether its response sounds plausible. Each completed run is content-addressed by dataset and configuration fingerprints and produces a portable artifact directory.
 
 ## Regression-challenge ablation
@@ -9,6 +34,13 @@ The [regression designer](regression-challenge-agent.md) has a Docker-backed bas
 The [oracle-calibration controls](oracle-calibration.md) distinguish correct-reference agreement, insufficient fault sensitivity, and wrong expectations. `python -m evals.oracle_calibration_evaluation --output data/evaluations/oracle-calibration/my-review-v1.json` uses the Docker sandbox and no provider. The four authored faults and greedy probe-cover diagnostic are not general test adequacy or live-model quality measurements.
 
 ## Metrics
+
+For interruption-safe runs, use the optional `--checkpoint-dir` and follow
+[provider-aware recovery](provider-recovery.md). Terminal provider failures pause
+the batch. `execution_status`, `quality_metrics_valid`, pending case IDs, retained
+attempts and unknown recovery usage distinguish operational evidence from a complete
+quality evaluation. Numeric legacy score fields are not publishable when the validity
+flag is false. Recovered repeated attempts cannot be labelled Pass@1.
 
 The report records pass@1 with a deterministic bootstrap 95% confidence interval, final-test pass rate, verification pass rate, repair rounds, blocking findings, regression rate, timeout rate, sandbox-policy rejection rate, p50/p95 duration, average iterations/tool calls/changed files, provider-reported input/output tokens, estimated cost, cost per resolved task, failure categories, and repository/tag slices.
 
@@ -108,6 +140,35 @@ docker compose --profile evaluation up --build code_eval_dashboard
 The container runs as UID 10001 with a read-only root filesystem, dropped capabilities, no privilege escalation, a bounded temporary filesystem, and a read-only bind mount containing only generated evaluation artifacts.
 
 ## Reporting rules
+
+The [patch-mutation comparison](patch-targeted-mutation-testing.md) uses
+`--mutation-testing off|report|enforce` or the frozen `patch_mutation_matrix.json`.
+Report/checkpoint summaries retain statuses, measured cases, killed/survived/invalid
+mutants, and completed trials across retained review rounds. These are actions,
+not net final test strength or all losing-team results. Missing/inconsistent
+configured evidence withholds completed-case resolution and cost-per-resolution
+claims. Validate the matrix separately from executing it; its five authored smoke
+cases cannot establish real-issue gains. Report mode can influence reviewer prompts.
+
+The [cycle-control comparison](agent-cycle-control.md) uses `--loop-guard` or the
+frozen `loop_guard_matrix.json` with off/shadow/enforce variants. Reports retain
+stage/branch `loop_guard_status_counts` across checkpoint resume. These are
+signals, not saved-call estimates or correctness scores; compare resolution,
+regressions, total calls, latency, and fully accounted cost on the same tasks.
+
+The [patch-minimization ablation](execution-guided-patch-minimization.md) uses
+`--patch-minimization` or the frozen `patch_minimization_matrix.json` with verified
+workflows. Reports retain accepted file-removal actions, completed trials, case
+exposure, and abstention counts, including checkpoint resume. Measure final patch
+size and quality together; missing or invalid completed minimization evidence holds
+publication. Authored predicate controls are not live coding-resolution scores.
+
+The optional [spectrum-localization ablation](spectrum-fault-localization.md) uses
+`--fault-localization` or the locked `fault_localization_matrix.json`. Outcomes,
+reports, and release evidence retain context-selection counts and probe statuses,
+including on checkpoint resume. A feature-enabled arm with zero selected contexts
+is not evidence of localization benefit. Authored controls and trusted-fixture
+instrumentation tests are separate from live coding-resolution measurements.
 
 - Do not describe the five smoke cases as SWE-bench performance.
 - Do not combine results from different dataset fingerprints.

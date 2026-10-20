@@ -1,0 +1,5 @@
+{
+  "targets": [
+    {"seed_case_id": "empty-order", "model": "app.models:Request"}
+  ]
+}

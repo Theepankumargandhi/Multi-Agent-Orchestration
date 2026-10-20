@@ -1,19 +1,19 @@
 {
   "schema_version": "1.0",
-  "artifact_fingerprint": "72caabadefb12247ef8cfc11bc3a326197f3f6609ca5f82ba1dd9a49614069c4",
+  "artifact_fingerprint": "bfc24b8ac241200d53bc4c301d5cff4e14ab78e7de06decf0c77242b720c57e9",
   "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-  "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
+  "index_fingerprint": "f66036f6b30e3cd542b27ce07e4c63618a4934f0124b21eec84e69597b9a9719",
   "base": {
     "schema_version": "2.0",
     "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-    "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
+    "index_fingerprint": "f66036f6b30e3cd542b27ce07e4c63618a4934f0124b21eec84e69597b9a9719",
     "strategy": "hybrid_rerank",
     "embedding_backend": "hashing-semantic-384",
     "reranker_backend": "query-facet-reranker-v1",
     "fusion_backend": "fixed-weight-v1",
     "parser_backends": {
-      "tree-sitter": 82,
-      "lexical-only": 6
+      "tree-sitter": 198,
+      "lexical-only": 15
     },
     "top_k": 8,
     "max_tokens": 4096,
@@ -21,22 +21,22 @@
     "recall_at_k": 1.0,
     "mrr": 1.0,
     "ndcg_at_k": 0.9593872208972474,
-    "mean_context_tokens": 3746.8,
+    "mean_context_tokens": 4041.8,
     "mean_selected_files": 8.0,
-    "mean_compression_ratio": 0.046084518232827,
-    "mean_duplicate_lines_removed": 22.0,
+    "mean_compression_ratio": 0.0370506036717513,
+    "mean_duplicate_lines_removed": 18.6,
     "outcomes": [
       {
         "case_id": "durable-worker-leases",
         "selected_paths": [
           "code_agent/execution.py",
-          "code_agent/api.py",
           "code_agent/job_models.py",
+          "code_agent/api.py",
           "code_agent/worker.py",
-          "code_agent/retrieval_backends.py",
-          "code_agent/agent.py",
+          "frontend/src/Coding.tsx",
           "code_agent/models.py",
-          "code_agent/workspace.py"
+          "code_agent/retrieval_backends.py",
+          "code_agent/agent.py"
         ],
         "relevant_paths": [
           "code_agent/execution.py",
@@ -45,10 +45,10 @@
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
         "ndcg_at_k": 0.8772153153380493,
-        "context_tokens": 3438,
+        "context_tokens": 3865,
         "selected_files": 8,
-        "compression_ratio": 0.05782406138668128,
-        "duplicate_lines_removed": 29
+        "compression_ratio": 0.05541977269949894,
+        "duplicate_lines_removed": 28
       },
       {
         "case_id": "verified-pr-review",
@@ -56,11 +56,11 @@
           "code_agent/verified_pr.py",
           "code_agent/repair_tournament.py",
           "code_agent/verification.py",
-          "code_agent/models.py",
-          "code_agent/worker.py",
           "code_agent/evaluation.py",
-          "code_agent/api.py",
-          "code_agent/regression_challenges.py"
+          "code_agent/worker.py",
+          "code_agent/upgrade_runner.py",
+          "code_agent/models.py",
+          "code_agent/adaptive_dispatch.py"
         ],
         "relevant_paths": [
           "code_agent/verified_pr.py",
@@ -71,20 +71,20 @@
         "ndcg_at_k": 0.9197207891481876,
         "context_tokens": 4096,
         "selected_files": 8,
-        "compression_ratio": 0.06151907434986825,
-        "duplicate_lines_removed": 26
+        "compression_ratio": 0.05124790086281772,
+        "duplicate_lines_removed": 24
       },
       {
         "case_id": "swebench-sanitization",
         "selected_paths": [
           "code_agent/swebench.py",
-          "code_agent/repair_tournament.py",
+          "code_agent/patch_inputs.py",
           "code_agent/evaluation_models.py",
+          "code_agent/patch_verify.py",
           "code_agent/benchmark_release.py",
-          "code_agent/workspace.py",
-          "code_agent/evaluation.py",
           "code_agent/verification.py",
-          "code_agent/regression_challenges.py"
+          "code_agent/evaluation.py",
+          "code_agent/repair_tournament.py"
         ],
         "relevant_paths": [
           "code_agent/swebench.py"
@@ -92,10 +92,10 @@
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
         "ndcg_at_k": 1.0,
-        "context_tokens": 3354,
+        "context_tokens": 4096,
         "selected_files": 8,
-        "compression_ratio": 0.025145348837209314,
-        "duplicate_lines_removed": 15
+        "compression_ratio": 0.030704608649352205,
+        "duplicate_lines_removed": 10
       },
       {
         "case_id": "conversation-isolation",
@@ -103,11 +103,11 @@
           "service/persistence_store.py",
           "service/service.py",
           "code_agent/api.py",
-          "schema/schema.py",
+          "frontend/src/App.tsx",
+          "code_agent/regression_benchmark.py",
+          "code_agent/maintainer_pilot.py",
           "scripts/ingestion/generate_synthetic_graph_pdfs.py",
-          "post_training/models.py",
-          "agent/memory.py",
-          "client/client.py"
+          "code_agent/upstream_inputs.py"
         ],
         "relevant_paths": [
           "service/persistence_store.py",
@@ -116,21 +116,21 @@
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
         "ndcg_at_k": 1.0,
-        "context_tokens": 3750,
+        "context_tokens": 4070,
         "selected_files": 8,
-        "compression_ratio": 0.06414176077868594,
-        "duplicate_lines_removed": 29
+        "compression_ratio": 0.03274110166973676,
+        "duplicate_lines_removed": 20
       },
       {
         "case_id": "knowledge-graph-paths",
         "selected_paths": [
           "agent/knowledge_graph.py",
           "agent/graph_rag.py",
-          "agent/research_assistant.py",
-          "agent/grounding.py",
           "agent/local_rag.py",
-          "agent/evidence_quality.py",
-          "service/service.py",
+          "agent/research_assistant.py",
+          "agent/incident_runtime.py",
+          "code_agent/execution_retrieval.py",
+          "agent/grounding.py",
           "scripts/ingestion/generate_synthetic_graph_pdfs.py"
         ],
         "relevant_paths": [
@@ -140,9 +140,9 @@
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
         "ndcg_at_k": 1.0,
-        "context_tokens": 4096,
+        "context_tokens": 4082,
         "selected_files": 8,
-        "compression_ratio": 0.021792345811690206,
+        "compression_ratio": 0.015139634477350894,
         "duplicate_lines_removed": 11
       }
     ]
@@ -150,37 +150,37 @@
   "learned": {
     "schema_version": "2.0",
     "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-    "index_fingerprint": "73faf921f86967566beaa553ddfb83c20ea45186890a425b7a60e28a092107ea",
+    "index_fingerprint": "f66036f6b30e3cd542b27ce07e4c63618a4934f0124b21eec84e69597b9a9719",
     "strategy": "hybrid_rerank",
     "embedding_backend": "hashing-semantic-384",
     "reranker_backend": "query-facet-reranker-v1",
-    "fusion_backend": "pairwise-logistic:72caabadefb1",
+    "fusion_backend": "pairwise-logistic:bfc24b8ac241",
     "parser_backends": {
-      "tree-sitter": 82,
-      "lexical-only": 6
+      "tree-sitter": 198,
+      "lexical-only": 15
     },
     "top_k": 8,
     "max_tokens": 4096,
     "total": 5,
-    "recall_at_k": 1.0,
+    "recall_at_k": 0.9,
     "mrr": 1.0,
-    "ndcg_at_k": 0.9593872208972474,
-    "mean_context_tokens": 3835.0,
+    "ndcg_at_k": 0.8820166594503391,
+    "mean_context_tokens": 3938.2,
     "mean_selected_files": 8.0,
-    "mean_compression_ratio": 0.041093635432201084,
-    "mean_duplicate_lines_removed": 21.0,
+    "mean_compression_ratio": 0.046312831456770454,
+    "mean_duplicate_lines_removed": 20.8,
     "outcomes": [
       {
         "case_id": "durable-worker-leases",
         "selected_paths": [
           "code_agent/execution.py",
-          "code_agent/api.py",
           "code_agent/job_models.py",
+          "code_agent/api.py",
           "code_agent/worker.py",
+          "frontend/src/Coding.tsx",
           "code_agent/retrieval_backends.py",
-          "agent/prospective_validation.py",
-          "code_agent/agent.py",
-          "agent/execution_replay.py"
+          "agent/incident_store.py",
+          "agentforge_sdk/groq_reasoning.py"
         ],
         "relevant_paths": [
           "code_agent/execution.py",
@@ -189,10 +189,10 @@
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
         "ndcg_at_k": 0.8772153153380493,
-        "context_tokens": 3949,
+        "context_tokens": 3699,
         "selected_files": 8,
-        "compression_ratio": 0.04832489756567848,
-        "duplicate_lines_removed": 28
+        "compression_ratio": 0.062238560020281386,
+        "duplicate_lines_removed": 27
       },
       {
         "case_id": "verified-pr-review",
@@ -200,11 +200,11 @@
           "code_agent/verified_pr.py",
           "code_agent/verification.py",
           "code_agent/repair_tournament.py",
-          "code_agent/models.py",
-          "code_agent/worker.py",
-          "code_agent/api.py",
+          "code_agent/adaptive_dispatch.py",
+          "code_agent/upgrade_runner.py",
           "code_agent/evaluation.py",
-          "code_agent/benchmark_release.py"
+          "code_agent/worker.py",
+          "code_agent/api.py"
         ],
         "relevant_paths": [
           "code_agent/verified_pr.py",
@@ -213,22 +213,22 @@
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
         "ndcg_at_k": 1.0,
-        "context_tokens": 4085,
+        "context_tokens": 4036,
         "selected_files": 8,
-        "compression_ratio": 0.049511286944379784,
-        "duplicate_lines_removed": 23
+        "compression_ratio": 0.06784456377388992,
+        "duplicate_lines_removed": 28
       },
       {
         "case_id": "swebench-sanitization",
         "selected_paths": [
           "code_agent/swebench.py",
+          "code_agent/patch_inputs.py",
           "code_agent/evaluation_models.py",
+          "code_agent/repair_memory.py",
           "code_agent/repair_tournament.py",
+          "code_agent/patch_verify.py",
           "code_agent/benchmark_release.py",
-          "code_agent/verification.py",
-          "code_agent/workspace.py",
-          "code_agent/api.py",
-          "code_agent/regression_challenges.py"
+          "code_agent/api.py"
         ],
         "relevant_paths": [
           "code_agent/swebench.py"
@@ -236,46 +236,46 @@
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
         "ndcg_at_k": 1.0,
-        "context_tokens": 3332,
+        "context_tokens": 4040,
         "selected_files": 8,
-        "compression_ratio": 0.03525664229349168,
-        "duplicate_lines_removed": 18
+        "compression_ratio": 0.03268873854996113,
+        "duplicate_lines_removed": 16
       },
       {
         "case_id": "conversation-isolation",
         "selected_paths": [
           "service/persistence_store.py",
+          "frontend/src/App.tsx",
           "code_agent/api.py",
-          "service/service.py",
+          "code_agent/regression_benchmark.py",
           "scripts/ingestion/generate_synthetic_graph_pdfs.py",
-          "schema/schema.py",
           "post_training/models.py",
-          "agent/knowledge_graph.py",
-          "agent/memory.py"
+          "code_agent/maintainer_pilot.py",
+          "agent/knowledge_graph.py"
         ],
         "relevant_paths": [
           "service/persistence_store.py",
           "service/service.py"
         ],
-        "recall_at_k": 1.0,
+        "recall_at_k": 0.5,
         "reciprocal_rank": 1.0,
-        "ndcg_at_k": 0.9197207891481876,
-        "context_tokens": 3713,
+        "ndcg_at_k": 0.6131471927654584,
+        "context_tokens": 3820,
         "selected_files": 8,
-        "compression_ratio": 0.039953452288595814,
-        "duplicate_lines_removed": 25
+        "compression_ratio": 0.04038691036995168,
+        "duplicate_lines_removed": 23
       },
       {
         "case_id": "knowledge-graph-paths",
         "selected_paths": [
           "agent/knowledge_graph.py",
-          "agent/graph_rag.py",
-          "agent/grounding.py",
           "agent/local_rag.py",
-          "agent/research_assistant.py",
+          "agent/graph_rag.py",
+          "code_agent/execution_retrieval.py",
+          "agent/grounding.py",
+          "agent/incident_runtime.py",
           "scripts/ingestion/generate_synthetic_graph_pdfs.py",
-          "code_agent/retrieval_learning.py",
-          "service/service.py"
+          "agent/research_assistant.py"
         ],
         "relevant_paths": [
           "agent/knowledge_graph.py",
@@ -283,17 +283,20 @@
         ],
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
-        "ndcg_at_k": 1.0,
+        "ndcg_at_k": 0.9197207891481876,
         "context_tokens": 4096,
         "selected_files": 8,
-        "compression_ratio": 0.032421898068859645,
-        "duplicate_lines_removed": 11
+        "compression_ratio": 0.028405384569768155,
+        "duplicate_lines_removed": 10
       }
     ]
   },
-  "recall_delta": 0.0,
+  "recall_delta": -0.09999999999999998,
   "mrr_delta": 0.0,
-  "ndcg_delta": 0.0,
-  "promotion_approved": true,
-  "promotion_reasons": []
+  "ndcg_delta": -0.07737056144690824,
+  "promotion_approved": false,
+  "promotion_reasons": [
+    "recall regressed",
+    "NDCG regressed"
+  ]
 }

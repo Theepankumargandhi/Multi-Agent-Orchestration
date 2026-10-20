@@ -44,9 +44,10 @@ services:
       GENAI_OTEL_ENABLED: "false"
       OTEL_SERVICE_NAME: agentforge-agent-service
       GENAI_TRACE_JSONL_PATH: ""
-      CODE_AGENT_ENABLED: "false"
+      CODE_AGENT_ENABLED: ${CODE_AGENT_ENABLED:-false}
+      WORKBENCH_REPOSITORIES: ${WORKBENCH_REPOSITORIES:-}
       CODE_AGENT_EXECUTION_MODE: embedded
-      CODE_AGENT_WORKFLOW: verified_pr
+      CODE_AGENT_WORKFLOW: ${CODE_AGENT_WORKFLOW:-verified_pr}
       CODE_AGENT_SECURITY_POLICY_ENABLED: "true"
       CODE_AGENT_SECURITY_POLICY_VERSION: agentforge-security-v1
       CODE_AGENT_DB_PATH: /app/data/code-agent/jobs.db
@@ -107,6 +108,25 @@ services:
         - path: streamlit_app.py
           action: sync+restart
           target: /app/streamlit_app.py
+
+  workbench:
+    profiles: ["workbench"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.workbench
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      agent_service:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
 
   code_eval_dashboard:
     profiles: ["evaluation"]

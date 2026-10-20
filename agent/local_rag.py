@@ -5,10 +5,18 @@ import re
 import shutil
 import sqlite3
 import time
-from collections import Counter
-from math import log
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+from agentforge_sdk._retrieval import (
+    _bm25_rank_documents,
+    _chunk_text,
+    _heuristic_rerank,
+    _tokenize,
+)
+from agentforge_sdk._retrieval import (
+    _rrf_fuse_rankings as _shared_rrf,
+)
 
 DEFAULT_RAG_DB_PATH = os.getenv("LOCAL_RAG_DB_PATH", "local_rag.db")
 DEFAULT_RAG_PDF_DIR = os.getenv("RAG_PDF_DIR", "rag_docs")
@@ -110,10 +118,6 @@ def add_local_document(
         conn.commit()
 
 
-def _tokenize(text: str) -> List[str]:
-    return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(t) > 1]
-
-
 def _score_doc(query_tokens: List[str], title: str, content: str, source: str) -> int:
     haystack_title = title.lower()
     haystack_content = content.lower()
@@ -133,7 +137,7 @@ def _search_sqlite_knowledge(query: str, limit: int = 3, db_path: str = DEFAULT_
         return "No local knowledge hits."
 
     with _connect(db_path) as conn:
-        rows = conn.execute("SELECT title, content, source FROM docs").fetchall()
+        rows = conn.execute("SELECT id, title, content, source FROM docs").fetchall()
 
     scored: List[Tuple[int, sqlite3.Row]] = []
     for row in rows:
@@ -146,15 +150,42 @@ def _search_sqlite_knowledge(query: str, limit: int = 3, db_path: str = DEFAULT_
     if not top:
         return "No local knowledge hits."
 
+    candidates = [dict(row, score=score) for score, row in top]
+    result = format_sqlite_context(candidates)
+    from agent.incident_runtime import active_capture, document_payload, hold_capture, record_retrieval
+    if active_capture():
+        try:
+            if len(rows) > 20:
+                raise ValueError("bounded corpus required")
+            documents = [document_payload(row["content"], title=row["title"], source=row["source"],
+                file_name=row["title"], identifier=str(row["id"])) for row in rows]
+            by_id = {row["id"]: doc["document_id"] for row, doc in zip(rows, documents, strict=True)}
+            ranks = [{"document_id": by_id[row["id"]], "score": float(score)} for score, row in scored]
+            from agent.incident_models import fingerprint
+            record_retrieval({"query": query, "limit": max(1, limit), "documents": documents,
+                "retrieved_ids": [by_id[row["id"]] for _, row in top], "ranked_ids": [by_id[row["id"]] for _, row in top],
+                "snapshot": {"backend": "sqlite_overlap", "corpus_fingerprint": fingerprint(documents),
+                    "lexical_ranking": ranks, "fused_ranking": ranks, "reranker": "none_sqlite_score_order",
+                    "rrf_k": RAG_RRF_K, "bm25_top_k": RAG_BM25_TOP_K, "candidate_top_k": max(1, limit), "packed_context": result}})
+        except Exception:
+            hold_capture("snapshot_bounds_or_integrity_hold")
+    return result
+
+
+def format_sqlite_context(candidates, *, windowed=False) -> str:
     lines = []
-    for score, row in top:
-        snippet = row["content"].strip().replace("\n", " ")
+    for candidate in candidates:
+        snippet = (candidate["snippet"] if windowed else candidate["content"]).strip().replace("\n", " ")
         if len(snippet) > 240:
             snippet = snippet[:237] + "..."
-        lines.append(
-            f"- {row['title']} (score={score}, source={row['source']}): {snippet}"
-        )
+        lines.append(f"- {candidate['title']} (score={candidate['score']:g}, source={candidate['source']}): {snippet}")
     return "\n".join(lines)
+
+
+def format_hybrid_context(candidates) -> str:
+    return "\n".join(f"- source={candidate['source']}, page={candidate['page']}, "
+        f"fused={candidate['fused_score']:.4f}, bm25={candidate['bm25_score']:.4f}, vector={candidate['vector_score']:.4f}: "
+        f"{candidate['snippet']}" for candidate in candidates)
 
 
 def _build_embeddings():
@@ -216,7 +247,9 @@ def _get_redis_client():
     try:
         import redis  # type: ignore
 
-        _redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+        _redis_client = redis.Redis.from_url(
+            redis_url, decode_responses=True, socket_connect_timeout=2.0, socket_timeout=2.0
+        )
         _redis_client.ping()
         return _redis_client
     except Exception:
@@ -266,40 +299,6 @@ def _cache_set_rag(cache_key: Tuple[str, int, str, str], value: str) -> None:
             client.setex(_redis_key("rag_local", cache_key), ttl, value)
         except Exception:
             pass
-
-
-def _chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-    content = (text or "").strip()
-    if not content:
-        return []
-    chunk_size = max(200, int(chunk_size))
-    chunk_overlap = max(0, int(chunk_overlap))
-    if chunk_overlap >= chunk_size:
-        chunk_overlap = chunk_size // 5
-
-    # Prefer paragraph/sentence boundaries; fall back to hard splits only for
-    # unusually long unbroken text. This keeps citations semantically coherent.
-    units = [u.strip() for u in re.split(r"(?<=\.)\s+|\n{2,}", content) if u.strip()]
-    chunks: List[str] = []
-    current = ""
-    for unit in units:
-        if len(unit) > chunk_size:
-            if current:
-                chunks.append(current.strip())
-                current = ""
-            step = max(1, chunk_size - chunk_overlap)
-            chunks.extend(unit[start:start + chunk_size].strip() for start in range(0, len(unit), step))
-            continue
-        candidate = f"{current} {unit}".strip()
-        if current and len(candidate) > chunk_size:
-            chunks.append(current.strip())
-            overlap = current[-chunk_overlap:].strip() if chunk_overlap else ""
-            current = f"{overlap} {unit}".strip()
-        else:
-            current = candidate
-    if current:
-        chunks.append(current.strip())
-    return [chunk for chunk in chunks if chunk]
 
 
 def _file_sha256(path: Path) -> str:
@@ -497,95 +496,9 @@ def _search_chroma_knowledge(query: str, limit: int = 3) -> str | None:
     return "\n".join(lines)
 
 
-def _bm25_rank_documents(query: str, docs: List[str], top_k: int) -> List[Tuple[int, float]]:
-    """
-    Lightweight BM25-style lexical ranking over a local document list.
-    Returns (doc_index, score) sorted descending.
-    """
-    q_tokens = _tokenize(query)
-    if not q_tokens or not docs:
-        return []
-
-    tokenized_docs = [_tokenize(d) for d in docs]
-    doc_lens = [len(toks) for toks in tokenized_docs]
-    avgdl = (sum(doc_lens) / len(doc_lens)) if doc_lens else 1.0
-    if avgdl <= 0:
-        avgdl = 1.0
-
-    # Document frequency per token
-    df: Dict[str, int] = {}
-    for toks in tokenized_docs:
-        for tok in set(toks):
-            df[tok] = df.get(tok, 0) + 1
-
-    N = max(1, len(tokenized_docs))
-    k1 = 1.5
-    b = 0.75
-    scores: List[Tuple[int, float]] = []
-
-    for idx, toks in enumerate(tokenized_docs):
-        tf = Counter(toks)
-        dl = max(1, doc_lens[idx])
-        score = 0.0
-        for tok in q_tokens:
-            if tok not in tf:
-                continue
-            dft = df.get(tok, 0)
-            # BM25 IDF variant (positive-smoothed)
-            idf = log(1 + (N - dft + 0.5) / (dft + 0.5))
-            freq = tf[tok]
-            denom = freq + k1 * (1 - b + b * (dl / avgdl))
-            score += idf * ((freq * (k1 + 1)) / max(1e-9, denom))
-        if score > 0:
-            scores.append((idx, score))
-
-    scores.sort(key=lambda x: x[1], reverse=True)
-    return scores[: max(1, top_k)]
-
-
-def _rrf_fuse_rankings(
-    vector_ranked: List[Tuple[int, float]],
-    bm25_ranked: List[Tuple[int, float]],
-    rrf_k: int = RAG_RRF_K,
-) -> Dict[int, Dict[str, float]]:
-    """
-    Reciprocal Rank Fusion over vector + lexical ranks.
-    Returns fused score map keyed by doc index.
-    """
-    fused: Dict[int, Dict[str, float]] = {}
-
-    for rank, (doc_idx, score) in enumerate(vector_ranked, start=1):
-        rec = fused.setdefault(doc_idx, {"fused": 0.0, "vector": 0.0, "bm25": 0.0})
-        rec["vector"] = float(score)
-        rec["fused"] += 1.0 / (rrf_k + rank)
-
-    for rank, (doc_idx, score) in enumerate(bm25_ranked, start=1):
-        rec = fused.setdefault(doc_idx, {"fused": 0.0, "vector": 0.0, "bm25": 0.0})
-        rec["bm25"] = float(score)
-        rec["fused"] += 1.0 / (rrf_k + rank)
-
-    return fused
-
-
-def _heuristic_rerank(query: str, candidates: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
-    """
-    Cheap fallback reranker: boosts title/file-name and lexical overlap against snippet.
-    """
-    q_tokens = set(_tokenize(query))
-    if not q_tokens:
-        return candidates[: max(1, top_k)]
-
-    scored: List[Tuple[float, Dict[str, Any]]] = []
-    for c in candidates:
-        snippet = (c.get("snippet") or "").lower()
-        file_name = (c.get("file_name") or "").lower()
-        overlap = sum(1 for t in q_tokens if t in snippet)
-        file_boost = sum(1 for t in q_tokens if t in file_name) * 0.3
-        base = float(c.get("fused_score") or 0.0)
-        score = base + overlap * 0.05 + file_boost
-        scored.append((score, c))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, c in scored[: max(1, top_k)]]
+def _rrf_fuse_rankings(vector_ranked, bm25_ranked, rrf_k=RAG_RRF_K):
+    """Preserve the service-configured default while sharing the SDK primitive."""
+    return _shared_rrf(vector_ranked, bm25_ranked, rrf_k=rrf_k)
 
 
 def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
@@ -593,14 +506,19 @@ def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: 
     Optional LLM reranker over fused candidates.
     Falls back to heuristic reranking on any error or missing key/dependencies.
     """
-    if not RAG_ENABLE_LLM_RERANKER or not os.getenv("OPENAI_API_KEY"):
+    from agent.incident_runtime import active_capture
+    def fallback():
+        if active_capture():
+            active_capture().reranker = "production_heuristic"
         return _heuristic_rerank(query, candidates, top_k)
+    if not RAG_ENABLE_LLM_RERANKER or not os.getenv("OPENAI_API_KEY"):
+        return fallback()
 
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
         from langchain_openai import ChatOpenAI
     except Exception:
-        return _heuristic_rerank(query, candidates, top_k)
+        return fallback()
 
     model = ChatOpenAI(model=RAG_RERANK_MODEL, temperature=0)
     candidate_lines: List[str] = []
@@ -629,14 +547,19 @@ def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: 
             if 1 <= idx <= len(candidates) and idx not in ranked_indices:
                 ranked_indices.append(idx)
         if not ranked_indices:
-            return _heuristic_rerank(query, candidates, top_k)
+            return fallback()
         ordered = [candidates[i - 1] for i in ranked_indices]
         # append any missing candidates in original fused order
         used_ids = {id(c) for c in ordered}
         ordered.extend([c for c in candidates if id(c) not in used_ids])
+        if active_capture():
+            active_capture().reranker = "llm:" + RAG_RERANK_MODEL
+            usage = getattr(response, "usage_metadata", None) or {}
+            active_capture().reranker_usage = {key: usage.get(key) if type(usage.get(key)) is int and usage[key] >= 0 else None
+                                               for key in ("input_tokens", "output_tokens")}
         return ordered[: max(1, top_k)]
     except Exception:
-        return _heuristic_rerank(query, candidates, top_k)
+        return fallback()
 
 
 def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
@@ -749,16 +672,32 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
 
     reranked = _llm_rerank_candidates(clean_query, candidates, top_k=max(1, limit))
 
-    lines: List[str] = []
-    for c in reranked[: max(1, limit)]:
-        lines.append(
-            (
-                f"- source={c['source']}, page={c['page']}, "
-                f"fused={c['fused_score']:.4f}, bm25={c['bm25_score']:.4f}, vector={c['vector_score']:.4f}: "
-                f"{c['snippet']}"
-            )
-        )
-    return "\n".join(lines)
+    result = format_hybrid_context(reranked[:max(1, limit)])
+    from agent.incident_runtime import active_capture, document_payload, hold_capture, record_retrieval
+    if active_capture():
+        try:
+            if len(ids) != len(docs) or len(docs) > 20 or len(metas) < len(docs):
+                raise ValueError("incomplete corpus")
+            documents = [document_payload(text, source=str((metas[number] or {}).get("source", "unknown")),
+                file_name=str((metas[number] or {}).get("file_name", (metas[number] or {}).get("source", "unknown"))),
+                page=str((metas[number] or {}).get("page", "n/a")), identifier=str(ids[number])) for number, text in enumerate(docs)]
+            def ranking(items):
+                return [{"document_id": documents[number]["document_id"], "score": float(score)} for number, score in items]
+            from agent.incident_models import fingerprint
+            record_retrieval({"query": clean_query, "limit": max(1, limit), "documents": documents,
+                "retrieved_ids": [documents[c["doc_idx"]]["document_id"] for c in candidates],
+                "ranked_ids": [documents[c["doc_idx"]]["document_id"] for c in reranked[:max(1, limit)]],
+                "snapshot": {"backend": "chroma_hybrid", "corpus_fingerprint": fingerprint(documents),
+                    "vector_ranking": ranking(vector_ranked), "lexical_ranking": ranking(bm25_ranked),
+                    "fused_ranking": ranking([(number, scores["fused"]) for number, scores in fused_sorted]),
+                    "reranker": active_capture().reranker, "rrf_k": RAG_RRF_K, "bm25_top_k": max(limit, RAG_BM25_TOP_K),
+                    "embedding_model": OPENAI_EMBEDDING_MODEL, "collection": CHROMA_COLLECTION_NAME, "vector_score_mode": vector_mode,
+                    "rerank_input_tokens": active_capture().reranker_usage.get("input_tokens"),
+                    "rerank_output_tokens": active_capture().reranker_usage.get("output_tokens"),
+                    "candidate_top_k": max(limit, RAG_RERANK_TOP_K), "packed_context": result}})
+        except Exception:
+            hold_capture("snapshot_bounds_or_integrity_hold")
+    return result
 
 
 def search_local_knowledge(
@@ -783,6 +722,8 @@ def search_local_knowledge(
     )
     cached_value, cache_backend = _cache_get_rag(cache_key)
     if cached_value is not None:
+        from agent.incident_runtime import hold_capture
+        hold_capture("cached_context_has_no_complete_reproduction_snapshot")
         meta = {"cache_hit": True, "cache_backend": cache_backend or "unknown", "source": "rag_cache"}
         return (cached_value, meta) if return_meta else cached_value
 

@@ -37,6 +37,12 @@ the verified-PR pipeline: analyst, implementer, restricted test author, independ
 and bounded repair. A fourth compatibility-focused team is optional. Role prompts differ,
 but all use the configured model; this is not statistical independence between model families.
 
+For execution-guided escalation instead of a fixed team pool, see the optional
+[adaptive coding supervisor](adaptive-coding-supervisor.md). It starts one team, preserves
+verification headroom, selects unused specialists from heuristic execution diagnoses, and
+stops before launching unnecessary branches. The fixed tournament and default verified-PR
+workflow remain available unchanged.
+
 Every team receives its own temporary workspace and container, copied from the same frozen
 snapshot. The snapshot and original repository are checked for changes. A bad source
 fingerprint, reused workspace, or exceeded global deadline blocks publication. Competing
@@ -142,8 +148,3 @@ SWE-bench improvement. The focused-fix control uses 6 logical calls with one tea
 startup timing. CI fails unexpected control outcomes, uploads a review card, and never
 executes the live matrix or activates this workflow. Reports remain held; `--require-gate`
 returns 1 even when orchestration controls pass.
-
-For a resume, describe the engineering capability accurately: “Built an isolated multi-team
-coding workflow with shared inference budgets, challenge review, execution-gated selection,
-and human-approved diffs; tested recovery and fail-closed behavior with controlled ablations.”
-Add measured resolution/cost gains only after a genuine downstream benchmark.

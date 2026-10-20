@@ -2,6 +2,13 @@
 
 The repository separates deterministic CI gates from credentialed model evaluations.
 
+The [October 4 audit](live-upgrade-audit-2026-10-04.md) maps the implemented
+subsystems to their actual checks: 84 test modules, 62 credential-free CI
+commands, real-container controls, live coding attempts, and local HTTP journeys.
+It lists the still-unverified provider, specialist, research and infrastructure
+paths explicitly. Passing a synthetic governance drill is not a production
+quality result or authorization to activate a candidate.
+
 The coding tournament's [regression-challenge stage](regression-challenge-agent.md) adds pre-patch JSON probe generation and a separate Docker-backed weak-patch ablation. CI runs authored probe/patch controls without a provider; the live generation smoke run is opt-in. These distinguish execution controls from model-oracle quality, and neither automatically activates the workflow.
 
 ## Reproducible experiment platform
@@ -20,6 +27,37 @@ Experiment definitions live in `evals/experiments/`; datasets live in `evals/dat
 The live adapter defaults to `bypass_hitl=true` so batch evaluation can exercise web retrieval and synthesis without pausing 120 times. This flag exists only in direct graph evaluation configuration and is not accepted by the public API. Set `"bypass_hitl": false` in a variant when the approval workflow itself is under test.
 
 ## Offline gates
+
+[UpgradePilot's frozen controls](upgradepilot.md) run actual Pydantic 1.10.24 and
+2.12.4 environments plus bump-pydantic 0.8.0. They distinguish a codemod-sufficient
+constraint case, a union-type regression hidden by passing unit tests, and a
+validator-signature failure. Fixture-specific scripted specialists exercise the
+repair path; the results must not be presented as live model migration accuracy.
+The corpus lock, source preservation, original tests and exact contract inputs
+are retained across baseline and repaired candidates.
+
+The [AI incident study](ai-failure-investigation.md) tests actual snapshot retrieval,
+ranking and packing transformations against five authored failures/negative controls:
+
+```bash
+python -m evals.incident_investigation_evaluation --output data/evaluations/incident-investigation/my-controls.json
+```
+
+It uses an extractive generator and simulated exact-fact labels, makes no provider
+requests, and cannot promote a repair. Independently reviewed live replay is a
+separate opt-in path. The October 14 affected integration suite passed 323 tests
+without skips; this is not a rerun of every test in the repository. A separate
+scripted four-role coding run passed exact-patch fresh-container verification.
+
+`python -m evals.runtime_rag_evaluation --output data/evaluations/runtime-rag/controls.json`
+adds authored controls through actual SQLite RAG, encrypted runtime capture and
+a reopened durable worker. Its three cases must pass while still withholding
+live repair recommendations. The [frozen comparison protocol](runtime-rag-investigation.md)
+separates diagnostic families from held-out snapshot cohorts, preregisters all
+members before comparative replays, retains missing/deleted outcomes in bounds,
+and reports family-bootstrap correctness differences rather than inventing a lift.
+It does not claim prospective random traffic sampling or independent human labels
+for the local control study.
 
 `python -m evals.run_offline_evals` keeps the original seven-case compatibility gate. `python -m evals.run_experiments --no-store --min-score 0.95` runs the 25-case ablation and blocks CI when the winning quality score falls below 95%. Pytest separately covers the grading system, experiment registry, safety behavior, state isolation, citation scoring, chunking, graph traversal, durable approval lookup, API auth, storage isolation, and monitoring.
 
@@ -146,7 +184,80 @@ back on the first unhealthy aggregate window. See
 
 ## Release policy
 
+Migration comparisons have an optional [counterexample and final-set protocol](counterexample-migration.md).
+Discovery feedback is available only to its enabled arm; the frozen final gate is
+terminal, not a source of repair hints. The local pilot runner retains held attempts
+and missing usage explicitly. Its scripted controls are not real-repository results.
+
+The [schema-guided ablation](schema-guided-migration.md) holds final inputs and
+discovery budgets constant while comparing input-shape reach. It reports actual
+source-value versus source-error counts, not an invented branch-coverage metric.
+Normalized JSON Schema equality never counts as behavioral equivalence.
+
+The optional [stateful migration controls](stateful-migration-verification.md)
+compare ordered observations within isolated sessions, including state after a
+failed call. Their reduced discovery traces may inform repair; final sessions
+are terminal and patch-bound. The October 16 local run passed 194 selected tests
+without skips and all four authored Docker expectations, including the overfit
+negative control. Those results do not measure live-model or real-repository
+migration quality.
+
+[Metamorphic workflow controls](metamorphic-workflow-verification.md) add a distinct
+correctness oracle: owner-declared laws with generated variants and explicit
+effect checks. Source-law failures stop before repair, while withheld target
+variants are terminal. Property inventories describe only the selected laws and
+cases; they are not application coverage or evidence of live-model improvement.
+
+[Crash-safe study recovery](crash-safe-migration-studies.md) keeps completed
+successes and holds immutable, preserves unknown request reservations, and marks
+quality metrics invalid after an unresolved earlier attempt. Final readiness
+rates after an explicit retry are descriptive, not first-attempt model accuracy.
+
 Block a release on unit/integration failures, routing accuracy below 95%, coverage below the configured floor, lint failures, or known vulnerable runtime dependencies. Model/RAG metric thresholds should be established from a representative dataset and stored alongside each experiment.
+## Developer text-evidence SDK
+
+The [SDK controls](document-sdk.md) exercise the shared production text-RAG
+primitives through a typed, instance-isolated public API. Authored cases check
+literal quotes, page/version provenance, abstention, consent, held selector output
+and corpus/context limits. A separate packaging control installs the lightweight
+wheel and runs an application outside the checkout with platform/provider imports
+and network sockets blocked. The HTTP example is tested separately from the
+existing service; these checks do not exercise live LLM generation or establish
+real-document QA quality. See [the local audit](document-sdk-audit-2026-10-16.md).
+
+## Portable patch-regression comparisons
+
+The [portable verifier benchmark](patch-regression-benchmark.md) freezes external
+patches, owner contracts/domains, source/license bytes, implementation and image
+IDs. It separately executes tests-only, contract and generated-domain arms,
+retains inconclusives and reports detection, false alarms, coverage and latency.
+No models are called: provider cost is zero while infrastructure cost is unknown.
+
+The starter corpus has four authored controls, not independently reviewed real
+patches. Real-case intake prepares exact review bindings but never invents a
+reviewer; independent attestations and negative controls are required at admission.
+Source drift or mixed task-family splits invalidate a comparison. Public controls
+are not a secret holdout. [Maintainer pilot outcomes](maintainer-migration-pilots.md)
+are recorded separately and remain human-reported, not automatically verified
+GitHub acceptance or evidence of general coding-agent quality.
+
+## Structured failures behind green tests
+
+The [structured regression controls](structured-regression-discovery.md) compare
+tests-only, explicit-contract and generated JSON arms, then exercise equivalent
+patches, intentionally changed out-of-scope behavior and invalid original domains.
+Failures are reduced with fresh single-input confirmation and can be replayed
+against source/patch/image-pinned inputs. These six expectations execute in real
+offline Docker; they are authored controls, not real upstream benchmark outcomes.
+Optional AI domain-proposal tests use injected clients, not paid provider calls.
+
+The [real-patch pilot](real-patch-validation.md) additionally freezes source,
+license, test and candidate bytes for four actual forward upstream changes.
+It compares all three strategies and confirms exported reduced inputs in fresh
+containers. Its public, curator-labelled development results remain provisional;
+the independent-review/holdout gate is not bypassed. The manual workflow uploads
+only an input-free summary, not raw counterexamples or private snapshots.
+
 ## Retrieval query stress controls
 
 The [query robustness study](retrieval-robustness.md) compares clean and perturbed queries

@@ -1,0 +1,11 @@
+{
+  "task_id": "validator-signature",
+  "family": "pydantic-validator-context",
+  "source_paths": ["app"],
+  "test_command": ["-m", "pytest", "-q", "owner_checks.py"],
+  "contracts": [
+    {"case_id": "positive", "entrypoint": "app.models:normalize", "args": [{"count": 3}]},
+    {"case_id": "zero", "entrypoint": "app.models:normalize", "args": [{"count": 0}]},
+    {"case_id": "negative", "entrypoint": "app.models:normalize", "args": [{"count": -1}], "expected_kind": "error", "expected_error": "ValidationError"}
+  ]
+}

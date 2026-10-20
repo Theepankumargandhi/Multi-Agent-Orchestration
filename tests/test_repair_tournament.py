@@ -201,15 +201,66 @@ async def test_timeout_cleans_all_workspaces_without_selecting_late_results(tmp_
 
 
 @pytest.mark.asyncio
-async def test_cancellation_during_startup_waits_then_cleans(tmp_path):
+async def test_cancellation_during_startup_waits_then_cleans(tmp_path, monkeypatch):
     sandboxes = []
+    started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    original_start = ControlledSandbox.start
+
+    def observed_start(self):
+        loop.call_soon_threadsafe(started.set)
+        return original_start(self)
+
+    monkeypatch.setattr(ControlledSandbox, "start", observed_start)
     solver = tournament(sandboxes=sandboxes, sandbox_options={"startup_delay": 0.05})
     pending = asyncio.create_task(solver.solve(code_task(), fixture_repository(tmp_path)))
-    await asyncio.sleep(0.02)
+    await asyncio.wait_for(started.wait(), timeout=5)
     pending.cancel()
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert sandboxes and all(sandbox.closed and sandbox.workspace.root is None for sandbox in sandboxes)
+
+
+@pytest.mark.asyncio
+async def test_terminal_provider_failure_vetoes_a_concurrently_eligible_patch(tmp_path, monkeypatch):
+    original = ControlledModel.ainvoke
+
+    class QuotaError(Exception):
+        status_code = 429
+        code = "insufficient_quota"
+
+    async def invoke(self, messages, config=None):
+        if self.error:
+            await asyncio.sleep(0.05)
+            raise QuotaError("private provider message")
+        return await original(self, messages, config=config)
+
+    monkeypatch.setattr(ControlledModel, "ainvoke", invoke)
+    result = await tournament(options={"candidate-2": {"error": True}}).solve(code_task(), fixture_repository(tmp_path))
+    assert result.status == "failed" and not result.patch and not result.tournament.winner_id
+    assert "provider_hold:quota" in result.tournament.blocking_reasons
+    assert result.provider_failures[-1].category == "quota"
+    assert verify_tournament_report(result.tournament)
+
+
+@pytest.mark.asyncio
+async def test_adaptive_dispatch_stops_on_structured_quota_without_action_observation(tmp_path, monkeypatch):
+    class QuotaError(Exception):
+        status_code = 429
+        code = "insufficient_quota"
+
+    async def invoke(self, messages, config=None):
+        raise QuotaError("private provider message")
+
+    monkeypatch.setattr(ControlledModel, "ainvoke", invoke)
+    solver = tournament()
+    solver.policy = RepairTournamentPolicy(candidates=3, max_parallel=1, adaptive_dispatch={})
+    result = await solver.solve(code_task(), fixture_repository(tmp_path))
+    assert result.tournament.stop_reason == "provider_error"
+    assert len(result.tournament.dispatch_decisions) == 1
+    assert result.model_calls == 1
+    assert [row.status for row in result.tournament.candidates][1:] == ["skipped", "skipped"]
+    assert verify_tournament_report(result.tournament)
 
 
 @pytest.mark.asyncio

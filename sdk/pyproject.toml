@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=78", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentforge-document-sdk"
+version = "0.10.0"
+description = "Offline-first text and spatial document evidence with checkable citations and cell calculations."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+dependencies = ["pydantic>=2.11,<3"]
+
+[project.optional-dependencies]
+pdf = ["pypdf>=6.14,<7", "fonttools>=4.60,<5"]
+fastapi = ["fastapi>=0.135,<0.142"]
+multimodal = ["pdfplumber>=0.11.9,<0.12", "pypdfium2>=5,<6", "Pillow>=12,<13"]
+
+[project.scripts]
+agentforge-document-demo = "agentforge_sdk.demo:main"
+agentforge-verify-claims = "agentforge_sdk.bundle_cli:main"
+
+[tool.setuptools]
+# One implementation shared with the service, packaged as a separate lightweight wheel.
+packages = ["agentforge_sdk"]
+package-dir = { agentforge_sdk = "../agentforge_sdk" }
+
+[tool.setuptools.package-data]
+agentforge_sdk = ["py.typed"]

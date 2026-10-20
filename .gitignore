@@ -17,12 +17,23 @@ data/rag/*.db
 data/chroma_db/
 data/graph_chroma_db/
 data/code-agent/
+data/upgradepilot/
+data/patch-verify/
+data/regression-benchmark/
+data/maintainer-pilots/
 data/memory/
 data/execution-replay/
+data/incidents/
 data/process-supervision/
 data/verifier-shadow/
 
 # VSCode
+# Workbench dependencies, production output and test artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+
 .vscode
 .DS_Store
 
@@ -177,6 +188,8 @@ User Input Processing-*.png
 
 # Local evaluation runs (datasets and experiment definitions remain versioned)
 data/evaluations/
+data/workbench-documents/
+.runtime_logs/
 
 # Local repositories submitted to the sandboxed coding agent
 repositories/*

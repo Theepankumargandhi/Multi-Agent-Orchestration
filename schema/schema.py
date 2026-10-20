@@ -57,6 +57,19 @@ class UserInput(BaseModel):
         default=None, min_length=1, max_length=128,
         description="Optional task-family ID, assigned before execution to group related tasks for prospective evaluation.",
     )
+    incident_capture_consent: bool = Field(default=False, strict=True,
+        description="Explicit consent to encrypt this request's bounded local-RAG content for private investigation.")
+    incident_task_family: str | None = Field(default=None, min_length=1, max_length=100,
+        description="Task family declared before execution; private incident capture only.")
+    incident_parent_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$",
+        description="Optional owner-scoped supported diagnostic case for fresh shadow capture.")
+
+    @field_validator("incident_task_family")
+    @classmethod
+    def validate_incident_family(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("incident family must contain text")
+        return value.strip() if value is not None else None
 
     @field_validator("execution_replay_task_family")
     @classmethod
@@ -174,6 +187,8 @@ class ChatMessage(BaseModel):
         description="Content of the message.",
         examples=["Hello, world!"],
     )
+    incident_capture: Dict[str, Any] | None = Field(default=None,
+        description="Content-free private investigation capture receipt, when explicitly requested.")
     tool_calls: List[ToolCall] = Field(
         description="Tool calls in the message.",
         default_factory=list,

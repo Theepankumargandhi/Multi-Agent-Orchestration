@@ -1,0 +1,3 @@
+# Exact-hunk verification controls must survive Windows/Linux checkout differences.
+tests/fixtures/patch_verify/** text eol=lf
+tests/fixtures/patch_structured/** text eol=lf

@@ -50,16 +50,39 @@ class DatasetLock(BaseModel):
 class BenchmarkVariant(BaseModel):
     name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
     model: str = Field(min_length=1, max_length=100)
-    workflow: Literal["single_agent", "verified_pr", "repair_tournament"] = "verified_pr"
+    workflow: Literal["single_agent", "verified_pr", "repair_tournament", "adaptive_supervisor"] = "verified_pr"
     tournament_policy: RepairTournamentPolicy | None = None
     context_strategy: ContextStrategy = "hybrid_rerank"
+    execution_retrieval_enabled: bool = False
+    fault_localization_enabled: bool = False
+    patch_minimization_enabled: bool = False
+    loop_guard_mode: Literal["off", "shadow", "enforce"] = "off"
+    mutation_testing_mode: Literal["off", "report", "enforce"] = "off"
+    counterfactual_verification_enabled: bool = False
+    targeted_edits_only: bool = False
+    delivery_verification_enabled: bool = False
+    require_specialist_completion: bool = False
+    repair_memory_snapshot: str = Field(default="", max_length=1000)
+    repair_memory_snapshot_sha256: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
     input_cost_per_million: float = Field(default=0.0, ge=0)
     output_cost_per_million: float = Field(default=0.0, ge=0)
 
     @model_validator(mode="after")
     def explicit_tournament_policy(self):
-        if (self.workflow == "repair_tournament") != (self.tournament_policy is not None):
+        if self.patch_minimization_enabled and self.workflow == "single_agent":
+            raise ValueError("patch minimization requires a verified-PR workflow")
+        if self.mutation_testing_mode != "off" and self.workflow == "single_agent":
+            raise ValueError("patch mutation testing requires a verified-PR workflow")
+        if self.counterfactual_verification_enabled and self.workflow == "single_agent":
+            raise ValueError("counterfactual verification requires a verified-PR workflow")
+        if bool(self.repair_memory_snapshot) != bool(self.repair_memory_snapshot_sha256):
+            raise ValueError("memory snapshot path and fingerprint must be supplied together")
+        if self.repair_memory_snapshot and self.workflow not in {"single_agent", "verified_pr"}:
+            raise ValueError("memory snapshot comparisons currently support single_agent or verified_pr only")
+        if (self.workflow in {"repair_tournament", "adaptive_supervisor"}) != (self.tournament_policy is not None):
             raise ValueError("tournament variants require an explicit policy; other workflows must omit it")
+        if bool(self.tournament_policy and self.tournament_policy.adaptive_dispatch) != (self.workflow == "adaptive_supervisor"):
+            raise ValueError("adaptive_dispatch policy is required only for adaptive_supervisor")
         return self
 
 
@@ -86,6 +109,19 @@ class BenchmarkMatrix(BaseModel):
 
 
 class VariantEvidence(BaseModel):
+    mutation_testing_status_counts: dict[str, int] = Field(default_factory=dict)
+    mutation_measured_cases: int = Field(default=0, ge=0)
+    mutation_killed: int = Field(default=0, ge=0)
+    mutation_survived: int = Field(default=0, ge=0)
+    mutation_invalid: int = Field(default=0, ge=0)
+    mutation_completed_trials: int = Field(default=0, ge=0)
+    loop_guard_status_counts: dict[str, int] = Field(default_factory=dict)
+    patch_minimized_cases: int = Field(default=0, ge=0)
+    minimization_removed_file_changes: int = Field(default=0, ge=0)
+    minimization_completed_trials: int = Field(default=0, ge=0)
+    patch_minimization_status_counts: dict[str, int] = Field(default_factory=dict)
+    fault_localized_cases: int = Field(default=0, ge=0)
+    fault_localization_status_counts: dict[str, int] = Field(default_factory=dict)
     name: str
     rank: int = Field(ge=1)
     pareto_efficient: bool
@@ -107,6 +143,12 @@ class VariantEvidence(BaseModel):
     p50_duration_ms: float
     p95_duration_ms: float
     failure_categories: dict[str, int]
+    regression_rate: float = 0.0
+    average_model_calls: float = 0.0
+    total_model_calls: int = 0
+    usage_accounting_complete: bool = False
+    prices_configured: bool = False
+    total_candidate_regressions: int = 0
 
 
 class PairedComparison(BaseModel):
@@ -122,6 +164,7 @@ class PairedComparison(BaseModel):
     exact_mcnemar_p_value: float
     total_cost_delta_usd: float
     p95_duration_delta_ms: float
+    cost_comparison_eligible: bool = False
 
 
 class BenchmarkRelease(BaseModel):
@@ -232,6 +275,8 @@ def paired_comparison(
             candidate.total_estimated_cost_usd - baseline.total_estimated_cost_usd
         ),
         p95_duration_delta_ms=candidate.p95_duration_ms - baseline.p95_duration_ms,
+        cost_comparison_eligible=(baseline.usage_accounting_complete and candidate.usage_accounting_complete
+                                  and baseline.prices_configured and candidate.prices_configured),
     )
 
 
@@ -242,14 +287,16 @@ def _pareto_names(named_reports: list[tuple[str, Path, CodeBenchmarkReport]]) ->
         for other_name, _, other in named_reports:
             if other_name == name:
                 continue
+            comparable_cost = (report.usage_accounting_complete and other.usage_accounting_complete
+                               and report.prices_configured and other.prices_configured)
             no_worse = (
                 other.pass_at_1 >= report.pass_at_1
-                and other.total_estimated_cost_usd <= report.total_estimated_cost_usd
+                and (not comparable_cost or other.total_estimated_cost_usd <= report.total_estimated_cost_usd)
                 and other.p95_duration_ms <= report.p95_duration_ms
             )
             strictly_better = (
                 other.pass_at_1 > report.pass_at_1
-                or other.total_estimated_cost_usd < report.total_estimated_cost_usd
+                or (comparable_cost and other.total_estimated_cost_usd < report.total_estimated_cost_usd)
                 or other.p95_duration_ms < report.p95_duration_ms
             )
             if no_worse and strictly_better:
@@ -269,6 +316,11 @@ def build_release(
 ) -> BenchmarkRelease:
     if len(named_reports) < 2:
         raise ValueError("a benchmark release requires at least two reports")
+    if any(report.execution_status != "completed" or not report.quality_metrics_valid
+           or report.pending_case_ids or any(outcome.status == "not_run" or any(f.terminal for f in outcome.provider_failures)
+                                            for outcome in report.outcomes)
+           for _, _, report in named_reports):
+        raise ValueError("incomplete or retried benchmark cannot be published as a quality comparison")
     names = [name for name, _, _ in named_reports]
     if len(names) != len(set(names)):
         raise ValueError("benchmark report labels must be unique")
@@ -289,7 +341,8 @@ def build_release(
         named_reports,
         key=lambda item: (
             -item[2].pass_at_1,
-            item[2].total_estimated_cost_usd,
+            (item[2].total_estimated_cost_usd if all(report.usage_accounting_complete and report.prices_configured
+                                                   for _, _, report in named_reports) else 0.0),
             item[2].p95_duration_ms,
             item[0],
         ),
@@ -319,6 +372,25 @@ def build_release(
             p50_duration_ms=report.p50_duration_ms,
             p95_duration_ms=report.p95_duration_ms,
             failure_categories=report.failure_categories,
+            regression_rate=report.regression_rate,
+            average_model_calls=report.average_model_calls,
+            total_model_calls=report.total_model_calls,
+            usage_accounting_complete=report.usage_accounting_complete,
+            prices_configured=report.prices_configured,
+            total_candidate_regressions=report.total_candidate_regressions,
+            fault_localized_cases=report.fault_localized_cases,
+            fault_localization_status_counts=report.fault_localization_status_counts,
+            patch_minimized_cases=report.patch_minimized_cases,
+            minimization_removed_file_changes=report.minimization_removed_file_changes,
+            minimization_completed_trials=report.minimization_completed_trials,
+            patch_minimization_status_counts=report.patch_minimization_status_counts,
+            loop_guard_status_counts=report.loop_guard_status_counts,
+            mutation_testing_status_counts=report.mutation_testing_status_counts,
+            mutation_measured_cases=report.mutation_measured_cases,
+            mutation_killed=report.mutation_killed,
+            mutation_survived=report.mutation_survived,
+            mutation_invalid=report.mutation_invalid,
+            mutation_completed_trials=report.mutation_completed_trials,
         )
         for name, path, report in named_reports
     ]
@@ -394,13 +466,50 @@ def benchmark_card(release: BenchmarkRelease) -> str:
     )
     for item in release.variants:
         low, high = item.pass_at_1_confidence_interval
+        cost_label = f"${item.total_cost_usd:.4f}" if item.usage_accounting_complete and item.prices_configured else "unavailable"
         lines.append(
             f"| {item.rank} | {item.name} | {item.model} | {item.workflow} | "
             f"{item.context_strategy} | {item.resolved}/{item.total} | {item.pass_at_1:.1%} | "
-            f"{low:.1%}–{high:.1%} | ${item.total_cost_usd:.4f} | "
+            f"{low:.1%}–{high:.1%} | {cost_label} | "
             f"{item.p95_duration_ms / 1000:.2f}s | {'yes' if item.pareto_efficient else 'no'} |"
         )
-    lines.extend(["", "## Paired comparisons against baseline", ""])
+    lines.extend(["", "## Execution and inference accounting", "",
+                  "| Variant | Final regression rate | Candidate regressions | Logical model calls | Calls/task | Usage complete | Prices configured | Cost/resolved |",
+                  "|---|---:|---:|---:|---:|---|---|---|"])
+    for item in release.variants:
+        cost = (f"${item.cost_per_resolved_usd:.4f}" if item.cost_per_resolved_usd is not None
+                and item.usage_accounting_complete and item.prices_configured else "unavailable")
+        lines.append(f"| {item.name} | {item.regression_rate:.1%} | {item.total_candidate_regressions} | {item.total_model_calls} | {item.average_model_calls:.2f} | "
+                     f"{item.usage_accounting_complete} | {item.prices_configured} | {cost} |")
+    if any(item.mutation_testing_status_counts for item in release.variants):
+        lines.extend(["", "## Patch-targeted regression-test sensitivity", "",
+                      "Counts cover retained review-round actions, not final net test strength or semantic correctness. Errors/skips/instability do not kill a mutant.", ""])
+        for item in release.variants:
+            statuses = ", ".join(f"{status}={count}" for status, count in sorted(item.mutation_testing_status_counts.items())) or "no receipts"
+            lines.append(f"- {item.name}: {item.mutation_measured_cases} measured case(s); killed={item.mutation_killed}, survived={item.mutation_survived}, "
+                         f"invalid={item.mutation_invalid}, completed trials={item.mutation_completed_trials}; {statuses}.")
+    if any(item.loop_guard_status_counts for item in release.variants):
+        lines.extend(["", "## Agent cycle detection", "",
+                      "Stage-local repetition signals, not proven saved calls or repair-quality gains. Shadow does not alter planning.", ""])
+        for item in release.variants:
+            statuses = ", ".join(f"{status}={count}" for status, count in sorted(item.loop_guard_status_counts.items())) or "no receipts"
+            lines.append(f"- {item.name}: {statuses}.")
+    if any(item.patch_minimization_status_counts for item in release.variants):
+        lines.extend(["", "## File-level patch ablation", "",
+                      "Counts describe accepted optimization actions, not proof of semantic minimality or final net savings.", ""])
+        for item in release.variants:
+            statuses = ", ".join(f"{status}={count}" for status, count in sorted(item.patch_minimization_status_counts.items())) or "no receipts"
+            lines.append(f"- {item.name}: {item.patch_minimized_cases} case(s) minimized; {item.minimization_removed_file_changes} file-change removal(s), "
+                         f"{item.minimization_completed_trials} completed trial(s); {statuses}.")
+    if any(item.fault_localization_status_counts for item in release.variants):
+        lines.extend(["", "## Advisory localization exposure", "",
+                      "Selected counts mean context was prepared for planning, not proof the model used it correctly.", ""])
+        for item in release.variants:
+            statuses = ", ".join(f"{status}={count}" for status, count in sorted(item.fault_localization_status_counts.items())) or "no probe receipts"
+            lines.append(f"- {item.name}: {item.fault_localized_cases}/{item.total} cases with selected spectrum context; {statuses}.")
+    lines.extend(["", "Dollar comparisons require complete usage and configured input/output prices in both arms.",
+                  "Logical calls do not count hidden SDK retries; estimates are not billing receipts.",
+                  "", "## Paired comparisons against baseline", ""])
     if not release.comparisons:
         lines.append("No candidate comparisons were available.")
     for item in release.comparisons:
@@ -412,7 +521,9 @@ def benchmark_card(release: BenchmarkRelease) -> str:
                 f"- Pass@1 delta: {item.pass_at_1_delta:+.1%} (paired bootstrap 95% CI {low:+.1%} to {high:+.1%})",
                 f"- Candidate-only wins: {item.candidate_only}; baseline-only wins: {item.baseline_only}",
                 f"- Exact McNemar p-value: {item.exact_mcnemar_p_value:.4f}",
-                f"- Cost delta: ${item.total_cost_delta_usd:+.4f}; P95 latency delta: {item.p95_duration_delta_ms / 1000:+.2f}s",
+                (f"- Cost delta: ${item.total_cost_delta_usd:+.4f}" if item.cost_comparison_eligible
+                 else "- Cost comparison unavailable: incomplete usage or unset prices."),
+                f"- P95 latency delta: {item.p95_duration_delta_ms / 1000:+.2f}s",
                 "",
             ]
         )
@@ -459,6 +570,14 @@ def _resolve(base: Path, value: str) -> Path:
     return path.resolve() if path.is_absolute() else (base / path).resolve()
 
 
+def _load_memory_snapshots(matrix, base, cases):
+    from code_agent.memory_snapshot import FrozenRepairMemory
+
+    return {variant.name: FrozenRepairMemory.load(_resolve(base, variant.repair_memory_snapshot),
+            variant.repair_memory_snapshot_sha256, cases)
+            for variant in matrix.variants if variant.repair_memory_snapshot}
+
+
 async def execute_matrix(path: Path) -> tuple[BenchmarkRelease, Path]:
     matrix = load_matrix(path)
     base = path.resolve().parent
@@ -487,12 +606,23 @@ async def execute_matrix(path: Path) -> tuple[BenchmarkRelease, Path]:
     )
     run_root = output_root / "runs"
     named_reports: list[tuple[str, Path, CodeBenchmarkReport]] = []
+    snapshots = _load_memory_snapshots(matrix, base, cases)
     for variant in matrix.variants:
         report = await run_benchmark(
             cases,
             repository_root=repository_root,
             default_model=variant.model,
-            policy=policy,
+            policy=policy.model_copy(update={"execution_retrieval_enabled": variant.execution_retrieval_enabled,
+                                            "fault_localization_enabled": variant.fault_localization_enabled,
+                                            "patch_minimization_enabled": variant.patch_minimization_enabled,
+                                            "loop_guard_mode": variant.loop_guard_mode,
+                                            "mutation_testing_mode": variant.mutation_testing_mode,
+                                            "counterfactual_verification_enabled": variant.counterfactual_verification_enabled,
+                                            "targeted_edits_only": variant.targeted_edits_only,
+                                            "delivery_verification_enabled": variant.delivery_verification_enabled,
+                                            "require_specialist_completion": variant.require_specialist_completion,
+                                            "repair_memory_enabled": variant.name in snapshots}),
+            **({"memory_snapshot": snapshots[variant.name]} if variant.name in snapshots else {}),
             dataset_name=matrix.dataset_name,
             dataset_path=dataset_path.as_posix(),
             output_dir=run_root,
@@ -503,6 +633,8 @@ async def execute_matrix(path: Path) -> tuple[BenchmarkRelease, Path]:
             context_strategy=variant.context_strategy,
             tournament_policy=variant.tournament_policy,
         )
+        if report.execution_status != "completed":
+            raise ValueError("provider hold paused the matrix; completed variant artifacts were retained")
         named_reports.append((variant.name, run_root / report.run_id / "report.json", report))
     release = build_release(
         named_reports,
@@ -572,6 +704,8 @@ def main() -> None:
             dataset_fingerprint(cases) == lock.dataset_fingerprint
             and [case.id for case in cases] == lock.case_ids
         )
+        if valid:
+            _load_memory_snapshots(matrix, base, cases)
         print(json.dumps({"matrix": matrix.name, "variants": len(matrix.variants), "cases": len(cases), "frozen": valid}))
         if not valid:
             raise SystemExit(1)

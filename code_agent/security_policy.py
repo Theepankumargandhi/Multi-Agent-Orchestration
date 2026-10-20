@@ -22,6 +22,7 @@ from code_agent.models import (
     SecuritySummary,
     ToolObservation,
 )
+from code_agent.secret_patterns import SECRET_PATTERNS as _SECRET_PATTERNS
 
 POLICY_VERSION = "agentforge-security-v1"
 
@@ -31,12 +32,6 @@ _INJECTION_PATTERNS = (
     re.compile(r"(?i)do not tell (?:the )?(?:user|reviewer|operator)"),
     re.compile(r"(?i)(?:override|bypass|disable) (?:the )?(?:policy|sandbox|review|safety)"),
     re.compile(r"(?i)<\/?(?:system|assistant|tool)>"),
-)
-_SECRET_PATTERNS = (
-    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\b(?:sk|ghp|github_pat)-[A-Za-z0-9_-]{16,}\b"),
-    re.compile(r"(?i)(?:api[_-]?key|password|secret|token)\s*[:=]\s*['\"][^'\"]{12,}['\"]"),
 )
 _UNSAFE_EXECUTION = (
     re.compile(r"\bos\.system\s*\("),
@@ -101,7 +96,7 @@ def classify_untrusted_content(content: str) -> list[str]:
 def artifact_for_observation(observation: ToolObservation) -> SecurityArtifact | None:
     if not observation.output:
         return None
-    source = "repository" if observation.action in {"read", "search", "list"} else "tool_output"
+    source = "repository" if observation.action in {"read", "read_lines", "search", "list"} else "tool_output"
     return SecurityArtifact(
         source=source,
         trusted=False,
@@ -133,6 +128,7 @@ class SecurityPolicyEngine:
         rules = {
             "version": self.version,
             "enabled": self.enabled,
+            "credential_patterns": [(pattern.pattern, pattern.flags) for pattern in _SECRET_PATTERNS],
             "rules": [
                 "AGENT-PATH-001",
                 "AGENT-SECRET-001",
@@ -160,9 +156,10 @@ class SecurityPolicyEngine:
         severity = "none"
         source_taints = sorted({taint for item in artifacts for taint in item.taints})
         path = action.path.strip().replace("\\", "/")
-        payload = "\n".join((action.content, action.rationale, action.pattern))
+        edited_content = action.new_text if action.kind == "edit" else action.content
+        payload = "\n".join((edited_content, action.rationale, action.pattern))
 
-        if self.enabled and action.kind in {"read", "write", "delete"}:
+        if self.enabled and action.kind in {"read", "read_lines", "write", "edit", "delete"}:
             pure = PurePosixPath(path)
             unsafe_path = (
                 not path
@@ -178,30 +175,30 @@ class SecurityPolicyEngine:
                 categories.append("identity_privilege_abuse")
                 severity = "critical"
 
-        if self.enabled and action.kind == "write":
-            if _matches(_SECRET_PATTERNS, action.content):
+        if self.enabled and action.kind in {"write", "edit"}:
+            if _matches(_SECRET_PATTERNS, edited_content):
                 rules.append("AGENT-SECRET-001")
                 categories.append("sensitive_information_disclosure")
                 severity = "critical"
-            if _matches(_UNSAFE_EXECUTION, action.content):
+            if _matches(_UNSAFE_EXECUTION, edited_content):
                 rules.append("AGENT-EXEC-001")
                 categories.append("unexpected_code_execution")
                 severity = "critical"
-            if _NETWORK_SINKS.search(action.content) and _SENSITIVE_SOURCES.search(action.content):
+            if _NETWORK_SINKS.search(edited_content) and _SENSITIVE_SOURCES.search(edited_content):
                 rules.append("AGENT-EXFIL-001")
                 categories.append("data_exfiltration")
                 severity = "critical"
-            if _matches(_TEST_TAMPERING, action.content):
+            if _matches(_TEST_TAMPERING, edited_content):
                 rules.append("AGENT-TEST-001")
                 categories.append("evaluation_tampering")
                 severity = "high" if severity == "none" else severity
-            if _matches(_RESOURCE_ABUSE, action.content):
+            if _matches(_RESOURCE_ABUSE, edited_content):
                 rules.append("AGENT-DOS-001")
                 categories.append("unbounded_consumption")
                 severity = "high" if severity == "none" else severity
 
         injection_in_action = _matches(_INJECTION_PATTERNS, payload)
-        privileged_action = action.kind in {"write", "delete", "test"}
+        privileged_action = action.kind in {"write", "edit", "delete", "test"}
         if self.enabled and injection_in_action and privileged_action:
             rules.append("AGENT-INJECTION-001")
             categories.append("agent_goal_hijack")
