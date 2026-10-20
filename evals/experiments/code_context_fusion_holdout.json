@@ -1,12 +1,12 @@
 {
   "schema_version": "1.0",
-  "artifact_fingerprint": "bfc24b8ac241200d53bc4c301d5cff4e14ab78e7de06decf0c77242b720c57e9",
+  "artifact_fingerprint": "48ba4ab2142f7ffc581daa2dea46ce867bfaec1b3634b4b8ec64249b5ddffcff",
   "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-  "index_fingerprint": "f66036f6b30e3cd542b27ce07e4c63618a4934f0124b21eec84e69597b9a9719",
+  "index_fingerprint": "eedc74f99601870862466e91b5e2b672a82cf40277d68c631ff099668945bde4",
   "base": {
     "schema_version": "2.0",
     "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-    "index_fingerprint": "f66036f6b30e3cd542b27ce07e4c63618a4934f0124b21eec84e69597b9a9719",
+    "index_fingerprint": "eedc74f99601870862466e91b5e2b672a82cf40277d68c631ff099668945bde4",
     "strategy": "hybrid_rerank",
     "embedding_backend": "hashing-semantic-384",
     "reranker_backend": "query-facet-reranker-v1",
@@ -150,11 +150,11 @@
   "learned": {
     "schema_version": "2.0",
     "dataset_fingerprint": "4ff1f30bfce825869b2fc9d15c301bbe4ace1c2afc04ee902f0596803ac1a59b",
-    "index_fingerprint": "f66036f6b30e3cd542b27ce07e4c63618a4934f0124b21eec84e69597b9a9719",
+    "index_fingerprint": "eedc74f99601870862466e91b5e2b672a82cf40277d68c631ff099668945bde4",
     "strategy": "hybrid_rerank",
     "embedding_backend": "hashing-semantic-384",
     "reranker_backend": "query-facet-reranker-v1",
-    "fusion_backend": "pairwise-logistic:bfc24b8ac241",
+    "fusion_backend": "pairwise-logistic:48ba4ab2142f",
     "parser_backends": {
       "tree-sitter": 198,
       "lexical-only": 15
@@ -165,9 +165,9 @@
     "recall_at_k": 0.9,
     "mrr": 1.0,
     "ndcg_at_k": 0.8820166594503391,
-    "mean_context_tokens": 3938.2,
+    "mean_context_tokens": 3949.4,
     "mean_selected_files": 8.0,
-    "mean_compression_ratio": 0.046312831456770454,
+    "mean_compression_ratio": 0.046316588056614094,
     "mean_duplicate_lines_removed": 20.8,
     "outcomes": [
       {
@@ -227,8 +227,8 @@
           "code_agent/repair_memory.py",
           "code_agent/repair_tournament.py",
           "code_agent/patch_verify.py",
-          "code_agent/benchmark_release.py",
-          "code_agent/api.py"
+          "code_agent/api.py",
+          "code_agent/benchmark_release.py"
         ],
         "relevant_paths": [
           "code_agent/swebench.py"
@@ -236,9 +236,9 @@
         "recall_at_k": 1.0,
         "reciprocal_rank": 1.0,
         "ndcg_at_k": 1.0,
-        "context_tokens": 4040,
+        "context_tokens": 4096,
         "selected_files": 8,
-        "compression_ratio": 0.03268873854996113,
+        "compression_ratio": 0.03270752154917933,
         "duplicate_lines_removed": 16
       },
       {

@@ -163,18 +163,45 @@ def test_cli_summary_and_exit_codes_are_distinct_and_do_not_leak_claims(tmp_path
 
 
 def test_builder_refuses_live_review_authority_without_laundering_it(tmp_path):
-    from agentforge_sdk import EvidenceSource, ReviewAuthority, ReviewedRAG, apply_review, prepare_review
-    from evals.evidence_review_fixtures import create_review_fixture
+    from agentforge_sdk import (
+        EvidenceSource,
+        PageCorrection,
+        ReviewAuthority,
+        ReviewedRAG,
+        ReviewedRegionInput,
+        apply_review,
+        prepare_review,
+    )
 
-    path, original, correction = create_review_fixture(tmp_path)
+    # This tests live authority, not image parsing. Bind the authored manifest
+    # to its fixture bytes without requiring optional extraction libraries.
+    original = source("reviewed").reader.document
+    path = tmp_path / "authored-source.bin"
+    path.write_bytes(original.version.encode())
+    page = original.pages[0]
+    correction = PageCorrection(
+        page=page.page,
+        original_page_sha256=fingerprint(page.model_dump(mode="json")),
+        regions=tuple(
+            ReviewedRegionInput(**region.model_dump(exclude={"region_id", "confidence"}))
+            for region in page.regions
+        ),
+        attestation="complete_page_review",
+    )
     authority = ReviewAuthority({"reviewer": b"a" * 32}, clock=lambda: 1000)
     draft = prepare_review(original, [correction], rationale="Authored snapshot authority control")
     approval = authority.decide(draft, reviewer_id="reviewer", decision="approve")
     reviewed = ReviewedRAG(
         apply_review(original, draft, approval, authority=authority), authority=authority, source_path=path
     )
-    evidence, entries = example()
     mixed = EvidenceSet([source("a"), EvidenceSource("reviewed", query().scope, reviewed)])
+    receipt = mixed.lookup(query())
+    claim = NumericClaim(
+        claim_id="reviewed", label="Authored review authority", expected_value="125", expected_unit="scalar"
+    )
+    check = check_numeric_claim(mixed, claim, receipt)
+    assert reviewed.is_authorized() and check.status == "supported"
+    entry = ClaimReplayEntry(recipe=ClaimReplayRecipe(claim=claim, queries=(query(),)), check=check)
     with pytest.raises(ClaimBundleError):
-        build_claim_replay_bundle(mixed, entries)
-    assert reviewed.is_authorized() and evidence.verify_fact(evidence.lookup(query()))
+        build_claim_replay_bundle(mixed, [entry])
+    assert reviewed.is_authorized() and mixed.verify_fact(receipt)

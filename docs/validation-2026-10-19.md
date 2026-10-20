@@ -42,6 +42,40 @@ reproducibility does not override the regression gate or change the serving
 baseline. Source-bound checks used a disposable prospective index to include
 the new source files before staging.
 
+## Document-controller CI import fix
+
+The isolated document job initially stopped with twelve collection errors:
+importing a document adapter also imported `service.service` through the package
+initializer, which then required `dotenv` and the rest of the application stack.
+The package now loads the application only when a caller explicitly requests
+`app`. The existing `from service import app` entry point is preserved.
+
+Four fresh-process regression tests check the lightweight import boundary,
+document adapters, cached application export and unknown attributes. They block
+application/provider and optional parser imports explicitly. CI now runs these
+checks using the document controller's existing dependency list.
+
+The clean-controller run also exposed an authority-test fixture that unnecessarily
+called the optional image/PDF extractor. That unit test now uses an authored,
+source-hash-bound manifest with the real approval authority. It verifies a
+supported numeric receipt before checking that the portable bundle builder
+rejects the live reviewed source. The security assertion remains active.
+
+The host document selection passed all **300 tests**, including the actual
+Docker PDF, OCR, replay and cell integrations. The final fixture/import selection
+passed **29 tests** in both the clean Python 3.11 controller and the host
+environment. Existing service-hardening and Workbench contracts passed **30
+tests**. The strict source-bound retrieval regression passed after the initializer
+change; its learned candidate remains rejected, with serving defaults unchanged.
+These counts describe separate commands, not a single combined test run.
+
+The complete selection also passed in the clean Python 3.11 controller:
+**290 passed and 10 skipped**. Nine skips were the explicit Docker integrations,
+which ran on the host; the remaining skip was an optional-parser SDK fixture,
+also covered by the host selection. The controller confirmed that `dotenv`,
+LangChain, LangGraph and model-provider packages were absent. No application
+dependencies were added to make the document job pass.
+
 ## Remaining merge gates
 
 The full backend coverage run was still in progress when this PR snapshot was
