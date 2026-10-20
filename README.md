@@ -717,7 +717,13 @@ The reference-calibration iteration's affected Python 3.13 regression passed **2
 
 These are historical local test results, not a completed GitHub run. Some earlier runs lacked Docker or reported host dependency mismatches. The [release-readiness review](docs/release-readiness-2026-10-16.md) records the later successful runtime image builds and the remaining environment/security limitations. No live-provider quality result is implied.
 
-CI runs on Python 3.11, builds the coding sandbox, executes pytest with coverage, and runs offline control gates, Ruff, dependency auditing, and container build checks. The configured coverage minimum is 30%, not a test-count floor. CI uploads coverage and evaluation artifacts; inspect the run before claiming those checks passed on a particular commit.
+CI runs on Python 3.11 with independent jobs for pytest and coverage, offline AI
+evaluation gates, Ruff, and service dependency auditing. Tests and AI evaluations
+each have a 35-minute budget and provision their own sandbox images and parsers;
+lint and auditing do not wait for either job. Container build checks follow the
+test job. The configured coverage minimum is 30%, not a test-count floor. CI
+uploads coverage and evaluation artifacts; inspect the run before claiming those
+checks passed on a particular commit.
 
 The table records historical focused branch-coverage measurements, not whole-project coverage or live-model quality. The latest step-to-answer measurement is documented in [its validation guide](docs/ensemble-outcome-validation.md).
 

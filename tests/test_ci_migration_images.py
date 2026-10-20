@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
     [
         ("metamorphic-migration-controls", {"agentforge-upgradepilot-sessions:local"}),
         ("tests", {"agentforge-upgradepilot-schema:local", "agentforge-upgradepilot-sessions:local"}),
+        ("ai-evaluations", {"agentforge-upgradepilot-schema:local", "agentforge-upgradepilot-sessions:local"}),
         ("portable-patch-controls", set()),
     ],
 )

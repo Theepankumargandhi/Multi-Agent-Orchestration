@@ -124,6 +124,35 @@ write JUnit output to a shared folder; a fresh report path passed with exit code
 zero. The unchanged strict retrieval-artifact regression and repository-wide
 Ruff check also passed. These are separate commands, not a full-suite rerun.
 
+## CI execution-budget separation
+
+[CI run 31](https://github.com/Theepankumargandhi/Multi-Agent-Orchestration/actions/runs/39352797064)
+on commit `1b81ca3` completed the main Python 3.11 test suite: **2,164 passed,
+75 skipped**, with **78.98% coverage**. The tests took 14 minutes 44 seconds.
+All five other executable jobs passed. The combined main job was cancelled at
+approximately 25 minutes while running offline evaluations, matching its
+25-minute limit. Lint and dependency auditing were skipped, and the dependent
+container-build job did not start. This was not a new test assertion failure.
+
+The workflow now gives pytest and offline AI evaluations independent 35-minute
+budgets. Each provisions its own dependencies, parsers, local database directories
+and sandbox images. Lint and service dependency auditing are separate jobs with
+five- and fifteen-minute limits and no dependency on the execution jobs. The
+existing container-build dependency on `tests` is unchanged. Coverage and JUnit
+artifacts remain with pytest; evaluation artifacts stay with their producers.
+
+All **82 non-setup steps** from the former combined job are retained verbatim,
+including command arguments, quality gates, report destinations and the existing
+audit exceptions. The change does not waive an advisory, activate a candidate or
+turn a failing gate into a success. The workflow/image-contract selection passed
+**14 tests on Windows**. A Linux selection passed **39 tests**, including those
+contracts, bounded-output and migration-input regressions, and strict retrieval
+reproducibility. Repository-wide Ruff passed. The three remaining offline tail
+commands also passed in a network-disabled controller: flywheel CLI validation,
+the low-rank training smoke test, and local model registration. These commands
+made no live provider requests. Fresh CI must confirm the new scheduling and
+budgets on a hosted runner.
+
 ## Remaining merge gates
 
 The earlier broad backend coverage run finished with **2,191 passed, 36 skipped
@@ -132,8 +161,9 @@ frozen final commit. Its source-bound retrieval failure was followed by an
 artifact refresh and passing strict reruns. The Docker-output UTF-8 regression
 now passes in the focused Windows and Linux selections described above. Both
 failures in the supplied main-job CI log also pass in the relevant follow-up
-selections. These targeted fixes are not a clean full-suite pass; remote CI on
-the final commit must finish successfully before merging.
+selections. The later Python 3.11 run completed its full test suite, as recorded
+above, but did not finish all CI gates. Remote CI on the final commit must finish
+successfully before merging.
 
 The unwaived service dependency audit reported 12 entries across two packages,
 representing eight distinct advisories after duplicate IDs were collapsed:

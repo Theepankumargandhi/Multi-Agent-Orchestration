@@ -2,6 +2,14 @@
 
 The repository separates deterministic CI gates from credentialed model evaluations.
 
+The main workflow also separates execution budgets. Pytest and coverage run in
+`tests`, while the offline evaluation commands and their reports run in
+`ai-evaluations`; each job has 35 minutes and provisions its own runtime. Python
+lint and the service dependency audit run independently, so a long evaluation
+cannot prevent them from starting. Coverage/JUnit uploads remain with the test
+job, and evaluation artifacts remain with the job that generated them. No quality
+thresholds or dependency exceptions change when a command moves between jobs.
+
 The [October 4 audit](live-upgrade-audit-2026-10-04.md) maps the implemented
 subsystems to their actual checks: 84 test modules, 62 credential-free CI
 commands, real-container controls, live coding attempts, and local HTTP journeys.

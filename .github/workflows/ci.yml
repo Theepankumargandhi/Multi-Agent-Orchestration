@@ -64,7 +64,80 @@ jobs:
   tests:
     name: Tests (Python 3.11)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
+    env:
+      PYTHON_DOTENV_DISABLED: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --no-deps --editable .
+
+      - name: Prepare local sqlite directories
+        run: mkdir -p data/checkpoints data/store data/rag
+
+      - name: Provision code parsers before offline runtime tests
+        run: python scripts/setup_code_parsers.py
+
+      - name: Build coding sandbox image
+        run: docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
+
+      - name: Build pinned dependency-migration sandbox
+        run: docker build -f docker/Dockerfile.upgradepilot -t agentforge-upgradepilot:local -t agentforge-upgradepilot-schema:local -t agentforge-upgradepilot-sessions:local .
+
+      - name: Run unit and integration tests
+        # Incident controls never contact a provider or activate a repair.
+        env:
+          CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
+          STORE_DB_PATH: data/store/store_ci.db
+          LOCAL_RAG_DB_PATH: data/rag/local_rag_ci.db
+          ENABLE_USER_AUTH: "true"
+          USER_AUTH_SECRET: ci-user-auth-secret
+        run: python -m pytest -q --cov --cov-report=term-missing --cov-report=xml --junitxml=test-results.xml
+
+      - name: Annotate pytest failures
+        if: failure() && hashFiles('test-results.xml') != ''
+        run: python scripts/ci/report_junit_failures.py test-results.xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-junit
+          path: test-results.xml
+          if-no-files-found: ignore
+
+  ai-evaluations:
+    name: Offline AI evaluation gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PYTHON_DOTENV_DISABLED: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -110,16 +183,6 @@ jobs:
           name: oracle-calibration-controls
           path: data/evaluations/oracle-calibration/ci.*
           if-no-files-found: error
-
-      - name: Run unit and integration tests
-        # Incident controls never contact a provider or activate a repair.
-        env:
-          CHECKPOINT_DB_PATH: data/checkpoints/checkpoints_ci.db
-          STORE_DB_PATH: data/store/store_ci.db
-          LOCAL_RAG_DB_PATH: data/rag/local_rag_ci.db
-          ENABLE_USER_AUTH: "true"
-          USER_AUTH_SECRET: ci-user-auth-secret
-        run: python -m pytest -q --cov --cov-report=term-missing --cov-report=xml --junitxml=test-results.xml
 
       - name: Run AI failure-investigation controls (authored, no provider)
         run: |
@@ -177,10 +240,6 @@ jobs:
           name: incident-investigation-controls
           path: data/evaluations/incident-investigation/*.json
           if-no-files-found: error
-
-      - name: Annotate pytest failures
-        if: failure() && hashFiles('test-results.xml') != ''
-        run: python scripts/ci/report_junit_failures.py test-results.xml
 
       - name: Verify retrieval artifact reproducibility
         run: python -m code_agent.retrieval_learning train-fusion evals/datasets/code_context_learning.jsonl --repository-root . --negatives-per-positive 4 --epochs 400 --check evals/experiments/code_context_fusion.json
@@ -432,34 +491,6 @@ jobs:
           python -m post_training.cli smoke --output-dir data/evaluations/post-training/ci-smoke
           python -m post_training.cli register --registry data/evaluations/post-training/registry.json --version ci-smoke-v1 --run-manifest data/evaluations/post-training/ci-smoke/run_manifest.json
 
-      - name: Lint
-        run: python -m ruff check .
-
-      - name: Dependency audit
-        run: |
-          pip install pip-audit
-          pip-audit -r requirements-service.txt \
-            --ignore-vuln PYSEC-2026-311 \
-            --ignore-vuln CVE-2026-45830 \
-            --ignore-vuln CVE-2026-45831 \
-            --ignore-vuln CVE-2026-45833
-
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-xml
-          path: coverage.xml
-          if-no-files-found: ignore
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-junit
-          path: test-results.xml
-          if-no-files-found: ignore
-
       - name: Upload code-context ablation
         uses: actions/upload-artifact@v4
         with:
@@ -655,6 +686,47 @@ jobs:
           name: process-reward-verification-evidence
           path: data/evaluations/process-reward/
           if-no-files-found: error
+
+  lint:
+    name: Python lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lint dependencies
+        run: python -m pip install 'ruff>=0.12,<1'
+
+      - name: Lint
+        run: python -m ruff check .
+
+  dependency-audit:
+    name: Service dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependency audit
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements-service.txt \
+            --ignore-vuln PYSEC-2026-311 \
+            --ignore-vuln CVE-2026-45830 \
+            --ignore-vuln CVE-2026-45831 \
+            --ignore-vuln CVE-2026-45833
 
   metamorphic-migration-controls:
     name: Metamorphic Migration Controls (offline)
