@@ -13,6 +13,9 @@ RUN python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
 COPY code_agent/__init__.py ./code_agent/__init__.py
 COPY code_agent/dashboard.py ./code_agent/dashboard.py
 COPY code_agent/evaluation_models.py ./code_agent/evaluation_models.py
+COPY code_agent/provider_reliability.py ./code_agent/provider_reliability.py
+
+RUN python -c "import code_agent.dashboard"
 
 RUN addgroup --system dashboard && adduser --system --ingroup dashboard --uid 10001 dashboard \
     && mkdir -p /app/data/evaluations/code-agent \

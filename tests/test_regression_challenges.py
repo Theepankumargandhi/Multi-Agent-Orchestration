@@ -291,7 +291,8 @@ async def test_real_docker_harness_executes_exact_and_metamorphic_probes(tmp_pat
     if not DockerSandbox.available() or not DockerSandbox.image_available(task.policy.image):
         pytest.skip("Docker engine and allowlisted image are required; never substitute host execution")
     root = fixture_repository(tmp_path)
-    root.joinpath("app.py").write_text("def value(x):\n    return x * 2\n")
+    # Keep byte length identical on Windows too: workspace edits preserve LF.
+    root.joinpath("app.py").write_text("def value(x):\n    return x * 2\n", newline="")
     probes = BehavioralProbeSuite(probes=[
         BehavioralProbe(target="app.value", args=[3], expected=6, rationale="Exact expected output"),
         BehavioralProbe(target="app.value", args=[0], second_args=[0], relation="same_result", rationale="Determinism"),

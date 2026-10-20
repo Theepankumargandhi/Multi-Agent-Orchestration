@@ -158,10 +158,6 @@ The full repository run on this iteration finished with 453 tests passed and two
 tests skipped because the local engine/image was unavailable. Repository-wide Ruff, compilation,
 the control CLI gate and the five-case retrieval smoke check also passed (recall@8 and MRR 1.0).
 
-For a resume, an accurate claim is: “Built family-bootstrap, independently supervised verifier
-ensembles with validation-only calibration, training-feature support guards, signed lineage,
-fresh-family holdout controls, and missing-review-aware risk/coverage evaluation.”
-
 There is no runtime activation flag for this artifact. Before any future serving integration,
 evaluate a preregistered mapping from these **step** predictions to final-answer decisions on new
 terminal outcomes. The new [ensemble outcome study](ensemble-outcome-validation.md) implements that

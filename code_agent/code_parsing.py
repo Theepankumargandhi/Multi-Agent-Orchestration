@@ -155,17 +155,17 @@ class CodeParser:
                 if parsed is not None:
                     return parsed
             except (ImportError, RuntimeError, TypeError, ValueError, OSError) as exc:
-                self._tree_sitter_error = f"{type(exc).__name__}: {exc}"
+                self._tree_sitter_error = type(exc).__name__
         return _fallback_parse(language, content)
 
     def _tree_sitter_imports(self):
         try:
+            import tree_sitter_language_pack
             from tree_sitter import Parser
-            from tree_sitter_language_pack import get_language
         except ImportError as exc:
-            self._tree_sitter_error = f"{type(exc).__name__}: {exc}"
+            self._tree_sitter_error = type(exc).__name__
             return None
-        return Parser, get_language
+        return Parser, tree_sitter_language_pack
 
     def _parser(self, language: str):
         if language in self._parsers:
@@ -173,8 +173,22 @@ class CodeParser:
         imports = self._tree_sitter_imports()
         if imports is None:
             return None
-        Parser, get_language = imports
-        parser = Parser(get_language(language))
+        Parser, language_pack = imports
+        try:
+            # Newer packs lazily fetch native grammars. Retrieval must not initiate
+            # downloads; operators provision them explicitly before serving.
+            downloaded = getattr(language_pack, "downloaded_languages", None)
+            if downloaded is not None and language not in downloaded():
+                self._tree_sitter_error = f"grammar_not_cached:{language}"
+                self._parsers[language] = None
+                return None
+            parser = Parser(language_pack.get_language(language))
+        except Exception as exc:
+            # Native pack errors need not subclass RuntimeError. Cache setup
+            # failures so every file does not repeat the same failed operation.
+            self._tree_sitter_error = type(exc).__name__
+            self._parsers[language] = None
+            return None
         self._parsers[language] = parser
         return parser
 

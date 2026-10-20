@@ -1,0 +1,9 @@
+{
+  "corpus_id": "patch-regression-authored-controls-v1",
+  "cases": [
+    {"case_id": "fee-regression", "family": "fee-boundary", "split": "holdout", "evidence_kind": "authored_control", "repository": "tests/fixtures/patch_verify", "patch": "tests/fixtures/patch_verify/fee-regression.diff", "spec": "tests/fixtures/patch_verify/fee-regression.json", "expected": "regression", "license_identifier": "MIT"},
+    {"case_id": "fee-correct", "family": "fee-boundary", "split": "holdout", "evidence_kind": "authored_control", "repository": "tests/fixtures/patch_verify", "patch": "tests/fixtures/patch_verify/fee-correct.diff", "spec": "tests/fixtures/patch_verify/fee-correct.json", "expected": "correct", "license_identifier": "MIT"},
+    {"case_id": "discount-regression", "family": "discount-types", "split": "development", "evidence_kind": "authored_control", "repository": "tests/fixtures/patch_verify", "patch": "tests/fixtures/patch_verify/discount-regression.diff", "spec": "tests/fixtures/patch_verify/discount-regression.json", "expected": "regression", "license_identifier": "MIT"},
+    {"case_id": "discount-correct", "family": "discount-types", "split": "development", "evidence_kind": "authored_control", "repository": "tests/fixtures/patch_verify", "patch": "tests/fixtures/patch_verify/discount-correct.diff", "spec": "tests/fixtures/patch_verify/discount-correct.json", "expected": "correct", "license_identifier": "MIT"}
+  ]
+}

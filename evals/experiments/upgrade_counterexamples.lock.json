@@ -1,0 +1,18 @@
+{
+  "protocol": "upgrade-counterexample-controls-v1",
+  "origin": "authored",
+  "families": 1,
+  "reducer_version": "shape-preserving-bounded-v1",
+  "corpus_fingerprint": "8ba3eed56ba571aa7053f6287fb34d338db3c57e259d1b6ba58dcc0d77c818c7",
+  "spec_fingerprint": "3ffbc39265d22ca31bdee68462584252bd2f0bd75ffd690c0ca95aaa08f8e2ff",
+  "campaign_commitment": "d19e732368e19f350f9f8a446b5c75809db701a0fdff73a7b002f9bcb077b498",
+  "policy": {
+    "seed": 1729,
+    "discovery_cases": 24,
+    "final_cases": 16,
+    "max_counterexamples": 2,
+    "max_shrink_evaluations": 12
+  },
+  "real_repository_migrations": 0,
+  "model_quality_measured": false
+}

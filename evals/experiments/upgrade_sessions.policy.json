@@ -1,0 +1,28 @@
+{
+  "discovery": [{
+    "scenario_id": "add-reject-observe",
+    "factory": "app.models:create_basket",
+    "steps": [
+      {"method": "snapshot"},
+      {"method": "add", "args": ["12"]},
+      {"method": "add", "args": [{}]},
+      {"method": "snapshot"},
+      {"method": "clear"},
+      {"method": "snapshot"}
+    ]
+  }],
+  "final": [{
+    "scenario_id": "withheld-rollback-and-reset",
+    "factory": "app.models:create_basket",
+    "steps": [
+      {"method": "add", "args": [7]},
+      {"method": "add", "args": [{}]},
+      {"method": "snapshot"},
+      {"method": "clear"},
+      {"method": "add", "args": ["37"]},
+      {"method": "snapshot"}
+    ]
+  }],
+  "max_shrink_evaluations": 8,
+  "max_counterexamples": 1
+}

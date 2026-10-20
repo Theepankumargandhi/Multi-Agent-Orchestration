@@ -12,6 +12,34 @@ from code_agent.security_policy import SecurityPolicyEngine, classify_untrusted_
 DATASET = Path("evals/datasets/agent_security_redteam.jsonl")
 
 
+@pytest.mark.parametrize("prefix", ["sk-", "ghp_", "github_pat_", "gsk_", "ghp-"])
+def test_common_literal_credentials_are_blocked_by_both_policy_layers(prefix):
+    from code_agent.verification import _SECRET_PATTERNS
+
+    # Construct clearly synthetic values; do not put real or complete keys in fixtures.
+    credential = prefix + "syntheticTestValue" * 3
+    content = f"VALUE = '{credential}'\n"
+    assert "secret_material" in classify_untrusted_content(content)
+    assert any(pattern.search(content) for pattern in _SECRET_PATTERNS)
+    task = CodeTask(repository="fixture", issue="Reject literal credentials in a source edit.")
+    decision = SecurityPolicyEngine().evaluate(CodeAction(kind="write", path="app.py", content=content), task)
+    assert not decision.allowed and "AGENT-SECRET-001" in decision.rule_ids
+    assert credential not in decision.model_dump_json()
+
+
+def test_credential_placeholders_are_not_misclassified_as_literal_keys():
+    assert "secret_material" not in classify_untrusted_content("GROQ_API_KEY = os.getenv('GROQ_API_KEY')")
+    assert "secret_material" not in classify_untrusted_content("gsk_ ghp_ github_pat_ sk-placeholder")
+
+
+def test_policy_receipt_changes_when_credential_rules_change(monkeypatch):
+    from code_agent import security_policy
+
+    before = SecurityPolicyEngine().fingerprint()
+    monkeypatch.setattr(security_policy, "_SECRET_PATTERNS", ())
+    assert SecurityPolicyEngine().fingerprint() != before
+
+
 def test_security_dataset_baseline_defended_ablation_and_no_raw_payload_persistence():
     cases = load_security_cases(DATASET)
     report = evaluate_security(cases, dataset_path=DATASET.as_posix())

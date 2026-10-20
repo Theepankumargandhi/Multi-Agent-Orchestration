@@ -96,4 +96,4 @@ A baseline mismatch establishes discrimination, not oracle correctness: a wrong 
 
 Allowlisting restricts model target selection, not what repository functions can do. They remain untrusted code. Hashes and receipts detect ordinary tampering but are not signed attestations against a malicious process in the same container. Hostile repositories need isolated workers and a stronger VM/microVM boundary.
 
-This is an additional veto, not an autonomous correctness oracle. Owner approval remains required. The defensible resume claim is independent pre-patch behavioral validation with compute accounting, reproducible weak-patch controls, and explicit abstention—not unmeasured resolution gains.
+This is an additional veto, not an autonomous correctness oracle. Owner approval remains required. The checks provide independent pre-patch behavioral validation, compute accounting, reproducible weak-patch controls, and explicit abstention. They do not establish improved issue-resolution rates.

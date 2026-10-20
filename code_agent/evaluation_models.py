@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from code_agent.provider_reliability import ProviderFailure
+
 
 class CodeBenchmarkCase(BaseModel):
     id: str = Field(min_length=1, max_length=300)
@@ -31,6 +33,8 @@ class CodeTaskScore(BaseModel):
     iterations: int
     tool_calls: int
     model_calls: int
+    usage_accounting_complete: bool | None = None
+    candidate_regressions: int = 0
     duration_ms: float
     changed_files: int
     patch_chars: int
@@ -45,6 +49,20 @@ class CodeTaskScore(BaseModel):
 
 
 class CodeBenchmarkOutcome(BaseModel):
+    mutation_testing_status_counts: dict[str, int] = Field(default_factory=dict)
+    mutation_measured: bool = False
+    mutation_killed: int = Field(default=0, ge=0)
+    mutation_survived: int = Field(default=0, ge=0)
+    mutation_invalid: int = Field(default=0, ge=0)
+    mutation_completed_trials: int = Field(default=0, ge=0)
+    loop_guard_status_counts: dict[str, int] = Field(default_factory=dict)
+    patch_minimized: bool = False
+    minimization_removed_file_changes: int = Field(default=0, ge=0)
+    minimization_completed_trials: int = Field(default=0, ge=0)
+    patch_minimization_status_counts: dict[str, int] = Field(default_factory=dict)
+    fault_localized: bool = False
+    fault_localization_status_counts: dict[str, int] = Field(default_factory=dict)
+    provider_failures: list[ProviderFailure] = Field(default_factory=list)
     case_id: str
     repository: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -58,6 +76,25 @@ class CodeBenchmarkOutcome(BaseModel):
 
 
 class CodeBenchmarkReport(BaseModel):
+    mutation_testing_status_counts: dict[str, int] = Field(default_factory=dict)
+    mutation_measured_cases: int = Field(default=0, ge=0)
+    mutation_killed: int = Field(default=0, ge=0)
+    mutation_survived: int = Field(default=0, ge=0)
+    mutation_invalid: int = Field(default=0, ge=0)
+    mutation_completed_trials: int = Field(default=0, ge=0)
+    loop_guard_status_counts: dict[str, int] = Field(default_factory=dict)
+    patch_minimized_cases: int = Field(default=0, ge=0)
+    minimization_removed_file_changes: int = Field(default=0, ge=0)
+    minimization_completed_trials: int = Field(default=0, ge=0)
+    patch_minimization_status_counts: dict[str, int] = Field(default_factory=dict)
+    fault_localized_cases: int = Field(default=0, ge=0)
+    fault_localization_status_counts: dict[str, int] = Field(default_factory=dict)
+    execution_status: Literal["completed", "paused"] = "completed"
+    quality_metrics_valid: bool = True
+    pending_case_ids: list[str] = Field(default_factory=list)
+    attempted_cases: int = 0
+    retained_attempts: int = 0
+    recovery_usage_unknown: bool = False
     schema_version: str = "2.0"
     run_id: str
     generated_at: str
@@ -83,6 +120,11 @@ class CodeBenchmarkReport(BaseModel):
     p95_duration_ms: float
     average_iterations: float
     average_tool_calls: float
+    average_model_calls: float = 0.0
+    total_model_calls: int = 0
+    usage_accounting_complete: bool = False
+    prices_configured: bool = False
+    total_candidate_regressions: int = 0
     average_changed_files: float
     total_prompt_tokens: int
     total_completion_tokens: int

@@ -144,6 +144,8 @@ class DirectoryWorkspace:
                 continue
             if self.source_only and (
                 relative.name.startswith("test_") or relative.name.endswith("_test.py")
+                or any(part in {"test", "tests", "__tests__"} for part in relative.parts[:-1])
+                or any(relative.name.endswith(suffix) for suffix in (".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx"))
             ):
                 continue
             if path.stat().st_size > 250_000:

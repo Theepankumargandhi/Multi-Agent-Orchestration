@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "name": "Strict verified PR versus fixed teams versus adaptive supervisor - authored smoke only",
+  "dataset": "../datasets/code_agent_smoke.jsonl",
+  "dataset_name": "agentforge-code-smoke-v1",
+  "dataset_lock": "code_agent_smoke.lock.json",
+  "repository_root": "../../tests/fixtures/code_repositories",
+  "output_dir": "../../data/evaluations/targeted-delivery-comparison",
+  "image": "agentforge-code-sandbox:local",
+  "max_cases": 5,
+  "score_source": "local_harness",
+  "variants": [
+    {"name": "strict-verified-pr", "model": "groq:openai/gpt-oss-20b", "workflow": "verified_pr", "context_strategy": "hybrid_rerank", "targeted_edits_only": true, "delivery_verification_enabled": true, "require_specialist_completion": true},
+    {"name": "strict-fixed-teams", "model": "groq:openai/gpt-oss-20b", "workflow": "repair_tournament", "context_strategy": "hybrid_rerank", "targeted_edits_only": true, "delivery_verification_enabled": true, "require_specialist_completion": true,
+      "tournament_policy": {"candidates": 3, "max_parallel": 1, "max_model_calls": 32, "max_estimated_prompt_tokens": 50000, "candidate_timeout_seconds": 300, "challenge_timeout_seconds": 30}},
+    {"name": "strict-adaptive", "model": "groq:openai/gpt-oss-20b", "workflow": "adaptive_supervisor", "context_strategy": "hybrid_rerank", "targeted_edits_only": true, "delivery_verification_enabled": true, "require_specialist_completion": true,
+      "tournament_policy": {"candidates": 3, "max_parallel": 1, "max_model_calls": 32, "max_estimated_prompt_tokens": 50000, "candidate_timeout_seconds": 300, "challenge_timeout_seconds": 30, "adaptive_dispatch": {"verification_model_calls": 1, "verification_prompt_tokens": 4096, "verification_seconds": 30, "repeated_failure_limit": 2}}}
+  ]
+}

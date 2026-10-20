@@ -1,0 +1,6 @@
+{
+  "task_id": "fee-correct", "source_paths": ["app.py"], "test_paths": ["owner_checks.py"],
+  "preservation_authorized": true,
+  "contracts": [{"case_id": "ordinary", "entrypoint": "app:fee", "args": [2]}],
+  "integer_domains": [{"domain_id": "quantities", "entrypoint": "app:fee", "minimum": 0, "maximum": 10}]
+}

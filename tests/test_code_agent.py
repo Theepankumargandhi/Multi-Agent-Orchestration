@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,6 +59,42 @@ def test_sandbox_rejects_shell_and_non_allowlisted_images(tmp_path: Path):
         sandbox._validate_command(["sh", "-c", "cat /etc/passwd"])
     with pytest.raises(ValueError, match="allowlisted"):
         SandboxPolicy(image="untrusted:latest")
+
+
+@pytest.mark.parametrize("before,after", [
+    ("VALUE = 1\n", "VALUE = 2"),
+    ("VALUE = 1", "VALUE = 2\n"),
+    ("VALUE = 1", "VALUE = 2"),
+    ("VALUE = 1\r\n", "VALUE = 2"),
+    ("TEXT = 'old\u2028text'\n", "TEXT = 'new\u2028text'"),
+])
+def test_workspace_patch_round_trips_exact_bytes_without_final_newline(tmp_path, before, after):
+    if shutil.which("git") is None:
+        pytest.skip("Git is required to independently parse generated patch bytes")
+    source = tmp_path / "source"
+    replay = tmp_path / "replay"
+    source.mkdir()
+    replay.mkdir()
+    (source / "app.py").write_bytes(before.encode("utf-8"))
+    (replay / "app.py").write_bytes(before.encode("utf-8"))
+    workspace = EphemeralWorkspace(source, SandboxPolicy())
+    workspace.prepare()
+    try:
+        workspace.write_file("app.py", after)
+        # A second file catches accidental concatenation across file boundaries.
+        workspace.write_file("new.py", "OTHER = 3")
+        patch = workspace.unified_diff()
+        assert "\\ No newline at end of file\n" in patch
+        applied = subprocess.run(
+            ["git", "-c", "core.autocrlf=false", "apply", "--no-index", "--whitespace=nowarn", "-"],
+            input=patch.encode("utf-8"), cwd=replay, capture_output=True, timeout=10,
+        )
+        assert applied.returncode == 0, applied.stderr.decode("utf-8", errors="replace")
+        assert (replay / "app.py").read_bytes() == after.encode("utf-8")
+        assert (replay / "new.py").read_bytes() == b"OTHER = 3"
+        assert (source / "app.py").read_bytes() == before.encode("utf-8")
+    finally:
+        workspace.cleanup()
 
 
 def test_sandbox_container_command_enforces_hardening(tmp_path: Path, monkeypatch):
@@ -140,6 +178,9 @@ def test_real_docker_sandbox_is_non_root_offline_read_only_and_testable(tmp_path
 
 
 class FakeWorkspace:
+    def check_agent_edit_path(self, path):
+        return Path(path)
+
     def __init__(self):
         self.files = {"app.py": "VALUE = 1\n"}
         self.original = dict(self.files)

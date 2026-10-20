@@ -1,0 +1,17 @@
+{
+  "protocol": "schema-guided-authored-ablation-v1",
+  "origin": "authored",
+  "text_identity": "utf8-lf-normalized",
+  "corpus_fingerprint": "8b8bd48a323a2cc05cb3164591eab7930040c2c6adac31d57db698377e0cd7f6",
+  "source_schema_fingerprint": "3870411528f702a7e9ac172a565ee643793dcff150d4a3f0eba5794c39b06d11",
+  "campaign_commitment": "fc908fcaacade9347ec0c9652742ccf224bf17e28f7affff0878a1e7d934ae9d",
+  "input_policy": {
+    "seed": 1729,
+    "discovery_cases": 24,
+    "final_cases": 16,
+    "max_counterexamples": 2,
+    "max_shrink_evaluations": 12
+  },
+  "families": 1,
+  "live_model_quality_measured": false
+}

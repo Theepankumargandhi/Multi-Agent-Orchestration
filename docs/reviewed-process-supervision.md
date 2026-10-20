@@ -155,6 +155,6 @@ outcome-credit training scores 0.2182. Lower Brier is better. The sparse-review 
 score on reviewed examples alone is insufficient: the missing-label bound reverses the conclusion.
 
 The synthetic template deliberately makes correctness learnable from workflow features. Its strong
-score demonstrates the mechanism, not generalization, recruiter-ready benchmark results, or a
-measured improvement in live answers. The useful interview story is the leakage diagnosis, separation
-of features and labels, time-aware evaluation, and refusal to activate a model on insufficient evidence.
+score demonstrates the mechanism, not generalization or improved live answers.
+The controls check leakage prevention, separation of features and labels,
+time-aware evaluation, and withholding a model when the evidence is insufficient.

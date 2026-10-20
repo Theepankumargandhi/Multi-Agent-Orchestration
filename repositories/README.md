@@ -4,6 +4,13 @@ This is the default source root for coding tasks, not the agent's working direct
 
 Everything beneath this directory except this README is Git-ignored. Local source code must not be added to AgentForge's repository with `git add -f`. Ignoring files does not encrypt them or authorize sending their contents to a model provider.
 
+The [portable patch verifier](../docs/portable-patch-verification.md) can also
+inspect an external patch against an owner-approved local snapshot without
+calling a provider. [Maintainer migration pilots](../docs/maintainer-migration-pilots.md)
+require explicit consent and pinned snapshot/license evidence before execution.
+Keep consent, independent review records and withheld reproductions outside the
+agent-visible repository. A local passing patch is not maintainer acceptance.
+
 ## Local setup
 
 Run from the AgentForge repository root, on a trusted host with Docker available:
@@ -46,4 +53,11 @@ Tests execute in a non-root Docker container with networking disabled by default
 
 For API/worker separation, set `CODE_AGENT_EXECUTION_MODE=external` on the API and run `python -m code_agent.worker` on the dedicated worker. It needs the same configured local job/artifact storage, authorized source root, and sandbox image. A relative root is resolved from the worker's current directory; use a deliberate absolute path when processes start elsewhere. Shared SQLite is a single-host reference design, not a multi-node queue.
 
-The stock Compose and Kubernetes stacks leave coding execution disabled and do not mount repositories or the Docker socket. Do not expose the host Docker daemon through a public API container. Worker provisioning, repository mounts, and stronger sandbox isolation are separate operator responsibilities.
+The stock Compose and Kubernetes stacks leave coding execution disabled by default and do not mount repositories or the Docker socket. Do not expose the host Docker daemon through a public API container. Worker provisioning, repository mounts, and stronger sandbox isolation are separate operator responsibilities.
+
+## Browser Workbench
+
+To offer an existing repository in the browser, add its relative ID to the
+backend's `WORKBENCH_REPOSITORIES` allowlist. Empty is the default. This does not
+clone or upload repositories, grant a new per-repository tenant ACL, or bypass the
+coding agent's root/policy checks. See [frontend setup](../frontend/README.md).

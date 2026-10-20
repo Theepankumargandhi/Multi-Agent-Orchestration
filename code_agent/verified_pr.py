@@ -12,12 +12,14 @@ from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from code_agent.agent import CodingAgent, build_chat_model
+from code_agent.counterfactual import counterfactual_gate, verify_counterfactual
 from code_agent.intelligence import STRATEGIES, CodeIntelligenceIndex
 from code_agent.models import (
     AnalysisPlan,
     CodeAction,
     CodeAgentResult,
     CodeTask,
+    PatchMinimizationReport,
     QualityGateResult,
     ReviewFinding,
     ReviewVerdict,
@@ -25,9 +27,14 @@ from code_agent.models import (
     VerificationRound,
 )
 from code_agent.observability import capture_code_agent_trace
+from code_agent.patch_minimization import file_manifest, minimization_gate, minimize_patch
+from code_agent.patch_mutation import mutation_gate, test_patch_mutations
+from code_agent.provider_reliability import GuardedModel, ProviderGuard
+from code_agent.regression_challenges import fingerprint
 from code_agent.repository_map import build_repository_map
 from code_agent.sandbox import DockerSandbox
 from code_agent.security_policy import summarize_security
+from code_agent.usage import CountingUsageCallback
 from code_agent.verification import (
     blocking_reasons,
     is_test_path,
@@ -52,6 +59,7 @@ class VerifiedPRAgent:
         input_cost_per_million: float = 0.0,
         output_cost_per_million: float = 0.0,
         context_strategy: str | None = None,
+        repair_memory_snapshot=None,
     ):
         self.analysis_model = analysis_model
         self.action_model = action_model
@@ -59,12 +67,14 @@ class VerifiedPRAgent:
         self.input_cost_per_million = max(0.0, input_cost_per_million)
         self.output_cost_per_million = max(0.0, output_cost_per_million)
         self.context_strategy = context_strategy
+        self.repair_memory_snapshot = repair_memory_snapshot
 
     async def _analyze(
         self,
         task: CodeTask,
         repository_map: str,
         usage: UsageMetadataCallbackHandler,
+        guard: ProviderGuard | None = None,
     ) -> AnalysisPlan:
         messages = [
             SystemMessage(
@@ -80,7 +90,8 @@ class VerifiedPRAgent:
             ),
         ]
         try:
-            value = await self.analysis_model.ainvoke(messages, config={"callbacks": [usage]})
+            model = GuardedModel(self.analysis_model, guard, "analysis") if guard else self.analysis_model
+            value = await model.ainvoke(messages, config={"callbacks": [usage]})
             return value if isinstance(value, AnalysisPlan) else AnalysisPlan.model_validate(value)
         except Exception as exc:
             return AnalysisPlan(
@@ -98,6 +109,7 @@ class VerifiedPRAgent:
         changed_files: list[str],
         gates: list,
         usage: UsageMetadataCallbackHandler,
+        guard: ProviderGuard | None = None,
     ) -> ReviewVerdict:
         messages = [
             SystemMessage(
@@ -123,7 +135,8 @@ class VerifiedPRAgent:
             ),
         ]
         try:
-            value = await self.review_model.ainvoke(messages, config={"callbacks": [usage]})
+            model = GuardedModel(self.review_model, guard, "review") if guard else self.review_model
+            value = await model.ainvoke(messages, config={"callbacks": [usage]})
             verdict = value if isinstance(value, ReviewVerdict) else ReviewVerdict.model_validate(value)
             if any(item.severity in {"critical", "high"} for item in verdict.findings):
                 verdict = verdict.model_copy(update={"approved": False})
@@ -178,27 +191,35 @@ class VerifiedPRAgent:
         if python_repository and "ruff" in task.policy.allowed_test_executables:
             baseline_lint = await asyncio.to_thread(sandbox.run, ["ruff", "check", "."])
 
-        specialist_usage = UsageMetadataCallbackHandler()
-        analysis = await self._analyze(task, context_pack.prompt_context, specialist_usage)
+        specialist_usage = CountingUsageCallback()
+        guard = ProviderGuard()
+        analysis = await self._analyze(task, context_pack.prompt_context, specialist_usage, guard)
         stage_results: list[CodeAgentResult] = []
         total_writes = 0
 
         implementer = CodingAgent(
-            self.action_model,
+            GuardedModel(self.action_model, guard, "implementation"),
             stage="implementation",
             role_instructions=(
                 "Implement the smallest production-code change satisfying the issue and acceptance criteria. "
                 f"Analyst plan: {_bounded(analysis.model_dump_json(), 4000)}"
             ),
             capture_telemetry=False,
+            repair_memory_snapshot=self.repair_memory_snapshot,
         )
-        implementation = await implementer.solve(
-            task, sandbox, repository_context=context_pack.prompt_context
+        implementation = (
+            CodeAgentResult(status="failed", model=task.model, summary="Provider admission held before implementation.")
+            if guard.hold else await implementer.solve(task, sandbox, repository_context=context_pack.prompt_context)
         )
         stage_results.append(implementation)
         total_writes += implementation.writes
+        analysis_failed = any(item.stage == "analysis" for item in guard.failures)
+        stage_outcomes = {"analysis": "provider_held" if guard.hold else "failed" if analysis_failed else "completed",
+                          "implementation": implementation.status,
+                          "test_author": "not_run:provider_hold" if guard.hold else "not_run:implementation_or_write_budget",
+                          "review": "not_run"}
 
-        if implementation.status == "completed" and total_writes < task.policy.max_workflow_writes:
+        if not guard.hold and implementation.status == "completed" and total_writes < task.policy.max_workflow_writes:
             before_tests = set(await asyncio.to_thread(sandbox.workspace.changed_files))
             remaining = max(1, task.policy.max_workflow_writes - total_writes)
             test_policy = task.policy.model_copy(update={"max_writes": min(task.policy.max_writes, remaining)})
@@ -213,7 +234,7 @@ class VerifiedPRAgent:
                 }
             )
             test_author = CodingAgent(
-                self.action_model,
+                GuardedModel(self.action_model, guard, "test_author"),
                 stage="test_author",
                 role_instructions=(
                     "You may write or delete only test files. Prefer one focused regression test; do not duplicate "
@@ -221,9 +242,11 @@ class VerifiedPRAgent:
                 ),
                 write_path_policy=is_test_path,
                 capture_telemetry=False,
+                repair_memory_snapshot=self.repair_memory_snapshot,
             )
             test_result = await test_author.solve(test_task, sandbox)
             stage_results.append(test_result)
+            stage_outcomes["test_author"] = test_result.status
             total_writes += test_result.writes
             after_tests = set(await asyncio.to_thread(sandbox.workspace.changed_files))
             test_files_changed = sorted(path for path in after_tests - before_tests if is_test_path(path))
@@ -236,6 +259,8 @@ class VerifiedPRAgent:
         final_verdict = ReviewVerdict(approved=False, summary="Verification did not run.")
 
         for review_round in range(task.policy.max_repair_rounds + 1):
+            if guard.hold:
+                break
             changed_files = await asyncio.to_thread(sandbox.workspace.changed_files)
             patch = await asyncio.to_thread(sandbox.workspace.unified_diff) if changed_files else ""
             gates, final_test = await run_quality_gates(
@@ -246,6 +271,27 @@ class VerifiedPRAgent:
                 source_fingerprint_before=source_before,
                 baseline_lint=baseline_lint,
             )
+            minimization = None
+            if task.policy.patch_minimization_enabled:
+                if not any(gate.status == "failed" for gate in gates):
+                    minimization = await minimize_patch(task, sandbox,
+                        remaining_writes=task.policy.max_workflow_writes - total_writes,
+                        original_sha256=source_before, deadline=started + task.policy.task_timeout_seconds)
+                    total_writes += minimization.mutation_writes
+                    if minimization.status == "minimized" or minimization.mutation_writes:
+                        changed_files = await asyncio.to_thread(sandbox.workspace.changed_files)
+                        patch = await asyncio.to_thread(sandbox.workspace.unified_diff) if changed_files else ""
+                        gates, final_test = await run_quality_gates(task, sandbox, patch=patch,
+                            changed_files=changed_files, source_fingerprint_before=source_before, baseline_lint=baseline_lint)
+                    if minimization.status == "minimized":
+                        current_sha = fingerprint(await asyncio.to_thread(file_manifest, sandbox.workspace, task.policy))
+                        if current_sha != minimization.candidate_after_sha256:
+                            minimization.status, minimization.reason = "integrity_error", "post_verification_source_drift"
+                            minimization.fingerprint = fingerprint(minimization.model_dump(mode="json", exclude={"fingerprint"}))
+                else:
+                    minimization = PatchMinimizationReport(status="rejected", reason="prerequisite_quality_gates_failed")
+                    minimization.fingerprint = fingerprint(minimization.model_dump(mode="json", exclude={"fingerprint"}))
+                gates.append(minimization_gate(minimization))
             gates.append(
                 QualityGateResult(
                     name="regression_test_authorship",
@@ -257,15 +303,51 @@ class VerifiedPRAgent:
                     ),
                 )
             )
+            if task.policy.require_specialist_completion:
+                complete = all(stage_outcomes[name] == "completed" for name in ("analysis", "implementation", "test_author"))
+                gates.append(QualityGateResult(name="specialist_stage_completion",
+                    status="passed" if complete else "failed",
+                    summary="Required specialist stages completed." if complete else "A required specialist stage did not complete.",
+                    evidence=dict(stage_outcomes)))
+            counterfactual = None
+            if task.policy.counterfactual_verification_enabled:
+                if not any(gate.status == "failed" for gate in gates):
+                    counterfactual = await verify_counterfactual(
+                        task, sandbox, changed_files,
+                        deadline=started + task.policy.task_timeout_seconds,
+                        original_sha256=source_before,
+                    )
+                    gates.append(counterfactual_gate(counterfactual))
+                else:
+                    gates.append(QualityGateResult(name="counterfactual_regression", status="failed",
+                        summary="Counterfactual execution held: prerequisite quality gates failed."))
+            mutation_testing = None
+            if task.policy.mutation_testing_mode != "off":
+                if not any(gate.status == "failed" for gate in gates):
+                    mutation_testing = await test_patch_mutations(task, sandbox, patch, changed_files,
+                        original_sha256=source_before, deadline=started + task.policy.task_timeout_seconds)
+                else:
+                    from code_agent.models import PatchMutationReport
+                    mutation_testing = PatchMutationReport(mode=task.policy.mutation_testing_mode,
+                        min_mutants=task.policy.mutation_testing_min_mutants, min_score=task.policy.mutation_testing_min_score,
+                        status="insufficient_evidence", reason="prerequisite_quality_gates_failed")
+                    mutation_testing.fingerprint = fingerprint(mutation_testing.model_dump(mode="json", exclude={"fingerprint"}))
+                gates.append(mutation_gate(mutation_testing))
             final_verdict = await self._review(
-                task, analysis, patch, changed_files, gates, specialist_usage
+                task, analysis, patch, changed_files, gates, specialist_usage, guard
             )
+            stage_outcomes["review"] = "provider_held" if guard.hold else "completed"
             current_round = VerificationRound(
                 round=review_round,
                 verdict=final_verdict,
                 quality_gates=gates,
+                counterfactual=counterfactual,
+                patch_minimization=minimization,
+                mutation_testing=mutation_testing,
             )
             rounds.append(current_round)
+            if guard.hold:
+                break
             provisional = VerificationReport(
                 analysis=analysis,
                 context=context_pack.receipt,
@@ -275,6 +357,10 @@ class VerifiedPRAgent:
             )
             reasons = blocking_reasons(provisional)
             if not reasons:
+                break
+            if minimization and minimization.status == "integrity_error":
+                break
+            if mutation_testing and mutation_testing.status == "integrity_error":
                 break
             if review_round >= task.policy.max_repair_rounds:
                 break
@@ -294,10 +380,11 @@ class VerifiedPRAgent:
                 }
             )
             repair_agent = CodingAgent(
-                self.action_model,
+                GuardedModel(self.action_model, guard, "repair"),
                 stage=f"repair_{review_round + 1}",
                 role_instructions="Address only the supplied blockers, preserve correct work, and rerun tests.",
                 capture_telemetry=False,
+                repair_memory_snapshot=self.repair_memory_snapshot,
             )
             repair_result = await repair_agent.solve(repair_task, sandbox)
             stage_results.append(repair_result)
@@ -310,8 +397,11 @@ class VerifiedPRAgent:
             test_files_changed=test_files_changed,
             rounds=rounds,
             repair_rounds=repair_rounds,
+            stage_outcomes=stage_outcomes,
         )
         reasons = blocking_reasons(report)
+        if guard.hold:
+            reasons.append(f"provider_hold:{guard.hold.category}")
         verified = not reasons and final_verdict.approved
         report.final_decision = "verified" if verified else "blocked"
         report.blocking_reasons = reasons
@@ -352,14 +442,21 @@ class VerifiedPRAgent:
             baseline_test=implementation.baseline_test,
             final_test=final_test,
             iterations=self._aggregate(stage_results, "iterations"),
-            writes=self._aggregate(stage_results, "writes"),
+            writes=total_writes,
             tool_calls=self._aggregate(stage_results, "tool_calls"),
-            model_calls=self._aggregate(stage_results, "model_calls") + 1 + len(rounds),
+            model_calls=guard.calls,
+            provider_failures=guard.failures,
+            usage_accounting_complete=(specialist_usage.calls_with_usage == 1 + len(rounds)
+                                       and all(item.usage_accounting_complete is True for item in stage_results)),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             estimated_cost_usd=estimated_cost,
             total_duration_ms=(time.perf_counter() - started) * 1000,
             observations=observations,
+            execution_retrieval=[item for result in stage_results for item in result.execution_retrieval],
+            repair_memory=[item for result in stage_results for item in result.repair_memory],
+            fault_localization=[item for result in stage_results for item in result.fault_localization],
+            loop_guard=[item for result in stage_results for item in result.loop_guard],
             model=task.model,
             sandbox={
                 "image": task.policy.image,
@@ -379,6 +476,7 @@ class VerifiedPRAgent:
                 "context_estimated_tokens": context_pack.receipt.estimated_tokens,
                 "policy_sha256": hashlib.sha256(task.policy.model_dump_json().encode("utf-8")).hexdigest(),
                 "workflow": "verified_pr_v1",
+                "delivery_required": task.policy.delivery_verification_enabled,
             },
             verification=report,
             security=summarize_security(security_events, task.policy.security_policy_version),
@@ -391,6 +489,7 @@ def build_verified_pr_agent(
     model_name: str,
     *,
     context_strategy: str | None = None,
+    repair_memory_snapshot=None,
 ) -> VerifiedPRAgent:
     base = build_chat_model(model_name)
     return VerifiedPRAgent(
@@ -400,4 +499,5 @@ def build_verified_pr_agent(
         input_cost_per_million=float(os.getenv("CODE_AGENT_INPUT_COST_PER_MILLION", "0")),
         output_cost_per_million=float(os.getenv("CODE_AGENT_OUTPUT_COST_PER_MILLION", "0")),
         context_strategy=context_strategy,
+        repair_memory_snapshot=repair_memory_snapshot,
     )

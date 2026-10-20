@@ -1,5 +1,27 @@
 # Code Intelligence V2
 
+[Execution-spectrum fault localization](spectrum-fault-localization.md) adds an
+independent opt-in signal when tracebacks fail to locate production code: repeated
+passing/failing test spectra rank suspicious Python lines. It supplies current,
+source-bound advisory snippets without activating a learned retrieval artifact.
+
+The opt-in [execution-guided retriever](execution-guided-retrieval.md) supplements
+the initial issue pack with current source selected from known test-failure
+locations. It uses a bounded local-only index, hash-based reuse, edit invalidation,
+balanced packing, and content-free receipts. This feedback layer does not activate
+the experimental fusion artifact or change the initial retrieval defaults.
+
+[Reviewed repair memory](reviewed-repair-memory.md) is a separate opt-in context
+source for human-approved historical lessons. It is scoped by authenticated tenant,
+deployment project, and repository, and checks TTL, integrity, applicability paths,
+and revocation at each planning step. It does not turn on learned fusion or treat
+an old repair as proof of correctness for current code.
+
+The [frozen-memory experiment path](frozen-repair-memory.md) separately pins this
+context for held-out comparisons, requiring source lineage and rejecting detected
+case/family/dataset/text overlap. It leaves retrieval defaults unchanged and does
+not prove semantic independence or real-model improvement.
+
 The verified PR workflow uses a bounded retrieval pipeline before its analyst and implementer stages. It narrows a repository into evidence-bearing code snippets instead of placing an arbitrary file listing or the full repository in a model prompt.
 
 ## Pipeline
@@ -35,6 +57,15 @@ Repository code is parsed as data and is never imported or executed during index
 - changed files edit a copy of the previous Tree-sitter tree and pass it to the next parse, allowing unchanged subtrees to be reused.
 
 The receipt states how many files were parsed, reused, and incrementally reparsed and counts each parser backend. Raw parse trees and source embeddings remain process-local.
+
+Provision native grammars explicitly with `python scripts/setup_code_parsers.py`
+during installation. This setup command may download parser binaries. Runtime
+indexing does not trigger the language pack's lazy downloads: absent/corrupt
+grammars use the declared Python-AST or bounded-pattern fallback. Native setup
+failures are cached per parser instance and expose an error type, not raw native
+exception text. Recreate the parser/index after provisioning a missing grammar.
+The service image provisions these grammars at build time in its application
+cache; the non-root runtime does not need to fetch them on the first request.
 
 ## Query planning and hybrid retrieval
 
@@ -109,7 +140,16 @@ python -m code_agent.retrieval_learning fine-tune \
 
 Every neural run writes an `agentforge_training_manifest.json` tying the output to its base model, dataset fingerprint, index fingerprint, pair count, epochs, and batch size.
 
-The refreshed deterministic fusion artifact uses 44 hard-negative pairs and has 88.64% pairwise training accuracy. On the current five-query regression set, baseline and learned fusion both retain Recall@8 `1.00`, MRR `1.00`, and NDCG@8 `0.9594`. The evaluator's small non-regression gate accepts this candidate for review; equality is not evidence of improvement or authorization to activate it. The default empty `CODE_CONTEXT_FUSION_ARTIFACT` still keeps the fixed-weight baseline. A previous source-corpus snapshot regressed to `0.9295` and was held; changing code changes the deterministic training corpus, so current decisions must use the refreshed artifact and matching report.
+The change-aware audit-replay source refresh produces a deterministic fusion artifact with 44 hard-negative pairs and 84.09% pairwise training accuracy. On the current five-query regression set, baseline and learned fusion both retain Recall@8 `1.00` and MRR `1.00`; NDCG@8 is `0.9594` for the baseline and `0.9229` for learned fusion. The non-regression gate rejects promotion because NDCG regressed by `0.0365`. The default empty `CODE_CONTEXT_FUSION_ARTIFACT` keeps the fixed-weight baseline. Exact reproduction is checked independently of quality: training accuracy does not imply held-out superiority. Earlier snapshots had different results; changing code changes the deterministic training corpus, so current decisions must use the refreshed artifact and matching report. Retrieval metrics do not measure mutation testing's repair quality. An earlier eight-query training-set diagnostic was also generated privately; its better ranking is not the holdout promotion decision. The [October 4 audit](live-upgrade-audit-2026-10-04.md) distinguishes neural retrieval capabilities from the hashing/feature backends actually used in the live smoke.
+
+The October 16 document-SDK/shared-core refresh retains the rejected promotion
+decision, with updated holdout metrics and source/artifact fingerprints. New
+source files were not staged on the user's behalf: local training and exact
+reproduction used a temporary prospective index containing public versionable
+filenames, while reading the actual working source bytes. Ignored private data
+was excluded and the real Git index was unchanged. The ordinary Git-root check
+only sees tracked files; run it after tracking the new public source files, or
+its narrower local corpus will correctly report the prospective artifact stale.
 
 The `--check` command compares the complete parsed artifact, including its fingerprints, rather than JSON whitespace. A dataset, source-index, feature, hyperparameter, or weight change requires retraining and explicit review. A stale-artifact error now identifies the changed fields. Embedding dot products, fusion logits, and training margins use explicit `math.fsum` rather than Python's version-dependent built-in floating-point summation; the exact check is not replaced with a tolerance or rounded weights. `validate-fusion --require-promotion` separately returns a nonzero status for a rejected model; keep that gate when deciding whether to activate one.
 

@@ -98,6 +98,44 @@ def task(policy: SandboxPolicy | None = None) -> CodeTask:
 
 
 @pytest.mark.asyncio
+async def test_verified_pr_retains_opt_in_execution_retrieval_receipts(tmp_path: Path, monkeypatch):
+    from code_agent.models import RepairMemoryReceipt
+
+    def memory(_task, _workspace, *, stage, iteration):
+        return "", RepairMemoryReceipt(stage=stage, iteration=iteration, status="no_match")
+
+    monkeypatch.setattr("code_agent.agent.retrieve_for_task", memory)
+    class InitialFailureSandbox(FakeSandbox):
+        failed_once = False
+
+        def run(self, command):
+            if command == ["python", "-m", "pytest", "-q"] and not self.failed_once:
+                self.failed_once = True
+                return SandboxCommandResult(command=command, exit_code=1,
+                                            stdout='File "/workspace/app.py", line 1', duration_ms=1)
+            return super().run(command)
+
+    policy = SandboxPolicy(execution_retrieval_enabled=True, repair_memory_enabled=True, max_repair_rounds=0)
+    sandbox = InitialFailureSandbox(repository(tmp_path), policy)
+    actions = SequenceModel([
+        CodeAction(kind="write", path="app.py", content="VALUE = 2\n"),
+        CodeAction(kind="test"), CodeAction(kind="test"),
+    ])
+    agent = VerifiedPRAgent(SequenceModel([analysis()]), actions, SequenceModel([approval()]))
+    try:
+        result = await agent.solve(task(policy), sandbox)
+    finally:
+        sandbox.close()
+    assert result.status == "completed"
+    assert len(result.execution_retrieval) == 2
+    assert {item.stage for item in result.execution_retrieval} == {"implementation"}
+    assert all(item.status == "selected" for item in result.execution_retrieval)
+    assert result.execution_retrieval[0].selected_file_sha256["app.py"] != result.execution_retrieval[1].selected_file_sha256["app.py"]
+    assert len(result.repair_memory) == 3
+    assert {item.stage for item in result.repair_memory} == {"implementation", "test_author"}
+
+
+@pytest.mark.asyncio
 async def test_verified_pr_runs_specialists_and_produces_typed_evidence(tmp_path: Path):
     sandbox = FakeSandbox(repository(tmp_path), SandboxPolicy(max_repair_rounds=1))
     actions = SequenceModel(

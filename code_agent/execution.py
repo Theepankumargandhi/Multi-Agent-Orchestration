@@ -199,6 +199,8 @@ class SQLiteJobStore:
                     ON code_jobs(user_id, idempotency_key) WHERE idempotency_key <> '';
                 CREATE INDEX IF NOT EXISTS idx_code_jobs_claim
                     ON code_jobs(status, available_at, created_at);
+                CREATE INDEX IF NOT EXISTS idx_code_jobs_owner_history
+                    ON code_jobs(user_id, created_at DESC, task_id DESC);
                 CREATE TABLE IF NOT EXISTS code_job_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT NOT NULL REFERENCES code_jobs(task_id) ON DELETE CASCADE,
@@ -535,6 +537,23 @@ class SQLiteJobStore:
             )
             events.append(event)
         return events
+
+    def recent(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
+        """Bounded owner history; never loads result blobs, patch artifacts or worker identities."""
+        if not user_id or type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("coding history requires an owner and a limit of 1-50")
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT task_id,status,created_at,updated_at,request_json FROM code_jobs "
+                "WHERE user_id=? ORDER BY created_at DESC,task_id DESC LIMIT ?", (user_id, limit),
+            ).fetchall()
+        result = []
+        for row in rows:
+            request = CodeTaskRequest.model_validate_json(row["request_json"])
+            result.append({"task_id": row["task_id"], "status": row["status"],
+                           "created_at": row["created_at"], "updated_at": row["updated_at"],
+                           "repository": request.repository, "issue_preview": request.issue[:160], "model": request.model})
+        return result
 
     def stats(self, user_id: str | None = None) -> dict[str, int]:
         query = "SELECT status,COUNT(*) AS count FROM code_jobs"

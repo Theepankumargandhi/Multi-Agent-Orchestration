@@ -1,0 +1,48 @@
+name: Public upstream patch pilot (manual, no models)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_public_replays:
+        description: Run the pinned public-development catalog, including the isolated EOL historical runtime
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-pilot:
+    if: ${{ inputs.run_public_replays }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PYTHON_DOTENV_DISABLED: '1'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install controller dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install --no-deps --editable .
+      - name: Test intake, selectors and review separation
+        run: python -m pytest tests/test_upstream_git.py tests/test_upstream_pilot.py tests/test_patch_selectors.py tests/test_regression_benchmark.py -q
+      - name: Build separate maintained and historical execution images
+        run: |
+          docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local .
+          docker build -f docker/Dockerfile.upstream-legacy -t agentforge-upstream-legacy:local .
+      - name: Fetch pinned public objects and freeze the unreviewed pilot
+        run: python -m code_agent.upstream_pilot prepare --input evals/datasets/upstream_patch_pilot.json --output-dir data/regression-benchmark/ci-upstream/prepared --allow-download
+      - name: Execute all matched arms and independently replay reduced findings
+        run: python -m code_agent.upstream_pilot run --input data/regression-benchmark/ci-upstream/prepared/study.json --output-dir data/regression-benchmark/ci-upstream/results
+      - name: Upload only the input-free public summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-upstream-development-summary
+          path: data/regression-benchmark/ci-upstream/results/public-summary.json
+          if-no-files-found: warn

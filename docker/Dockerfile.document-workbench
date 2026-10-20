@@ -1,0 +1,15 @@
+FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+RUN python -m pip install --no-cache-dir 'pydantic==2.13.4' 'pdfplumber==0.11.10' \
+    'pypdfium2==5.14.0' 'Pillow==12.3.0'
+WORKDIR /app
+COPY agentforge_sdk /app/agentforge_sdk
+COPY service/document_worker.py /app/document_worker.py
+COPY service/document_cell_worker.py /app/document_cell_worker.py
+COPY service/document_cell_contracts.py /app/service/document_cell_contracts.py
+COPY service/document_cell_geometry.py /app/service/document_cell_geometry.py
+COPY service/document_pixel_worker.py /app/document_pixel_worker.py
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHON_DOTENV_DISABLED=1 OMP_THREAD_LIMIT=1 HOME=/tmp
+USER 10001:10001
+ENTRYPOINT ["sleep", "180"]

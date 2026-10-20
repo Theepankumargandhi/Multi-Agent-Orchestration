@@ -1,0 +1,6 @@
+--- a/app.py
++++ b/app.py
+@@ -4,2 +4,2 @@
+ def fee(quantity):
+-    return max(0, quantity) * 10
++    return (quantity if quantity else 1) * 10

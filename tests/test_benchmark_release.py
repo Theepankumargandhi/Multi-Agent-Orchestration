@@ -188,3 +188,51 @@ def test_checked_in_matrix_matches_frozen_dataset_selection():
     assert len(matrix.variants) == 4
     assert generated.dataset_fingerprint == lock.dataset_fingerprint
     assert generated.case_ids == lock.case_ids
+
+
+@pytest.mark.asyncio
+async def test_execution_retrieval_matrix_changes_only_opt_in_policy(monkeypatch):
+    from types import SimpleNamespace
+
+    from code_agent.benchmark_release import execute_matrix
+
+    policies = []
+
+    class StopAfterSecond(RuntimeError):
+        pass
+
+    async def capture(_cases, **kwargs):
+        policies.append(kwargs["policy"])
+        if len(policies) == 2:
+            raise StopAfterSecond()
+        return SimpleNamespace(execution_status="completed", run_id="fake-run")
+
+    monkeypatch.setattr("code_agent.benchmark_release.run_benchmark", capture)
+    with pytest.raises(StopAfterSecond):
+        await execute_matrix(Path("evals/experiments/execution_retrieval_matrix.json"))
+    assert policies[0].execution_retrieval_enabled is False
+    assert policies[1].execution_retrieval_enabled is True
+    assert policies[0].model_dump(exclude={"execution_retrieval_enabled"}) == policies[1].model_dump(exclude={"execution_retrieval_enabled"})
+
+
+@pytest.mark.asyncio
+async def test_counterfactual_matrix_changes_only_opt_in_gate(monkeypatch):
+    from types import SimpleNamespace
+
+    from code_agent.benchmark_release import BenchmarkVariant, execute_matrix
+
+    policies = []
+    async def capture(_cases, **kwargs):
+        policies.append(kwargs["policy"])
+        if len(policies) == 2:
+            raise RuntimeError("stop after dispatch")
+        return SimpleNamespace(execution_status="completed", run_id="fake")
+
+    monkeypatch.setattr("code_agent.benchmark_release.run_benchmark", capture)
+    with pytest.raises(RuntimeError, match="dispatch"):
+        await execute_matrix(Path("evals/experiments/counterfactual_matrix.json"))
+    assert policies[0].counterfactual_verification_enabled is False
+    assert policies[1].counterfactual_verification_enabled is True
+    assert policies[0].model_dump(exclude={"counterfactual_verification_enabled"}) == policies[1].model_dump(exclude={"counterfactual_verification_enabled"})
+    with pytest.raises(ValueError, match="verified-PR"):
+        BenchmarkVariant(name="invalid", model="scripted", workflow="single_agent", counterfactual_verification_enabled=True)
