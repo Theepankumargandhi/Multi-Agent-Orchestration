@@ -7,7 +7,12 @@ import json
 import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,8 @@ def validate_inference_url(base_url: str, allow_remote: bool = False) -> str:
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("inference base URL must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password or parsed.fragment or parsed.query:
+        raise ValueError("inference URL may not include credentials, query, or fragment")
     local_hosts = {"127.0.0.1", "localhost", "::1", "host.docker.internal"}
     if not allow_remote and parsed.hostname.casefold() not in local_hosts:
         raise ValueError("remote inference endpoints require allow_remote=true")
@@ -57,8 +64,12 @@ async def generate(
     request = Request(endpoint, data=payload, headers=headers, method="POST")
 
     def execute() -> dict:
-        with urlopen(request, timeout=max(1.0, min(timeout_seconds, 600.0))) as response:
-            return json.loads(response.read().decode("utf-8"))
+        opener = build_opener(ProxyHandler({}), _NoRedirect())
+        with opener.open(request, timeout=max(1.0, min(timeout_seconds, 600.0))) as response:
+            data = response.read(1_000_001)
+            if len(data) > 1_000_000:
+                raise ValueError("inference response exceeds byte limit")
+            return json.loads(data.decode("utf-8"))
 
     response = await asyncio.to_thread(execute)
     choices = response.get("choices") or []

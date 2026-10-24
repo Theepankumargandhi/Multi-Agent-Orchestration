@@ -81,3 +81,31 @@ def test_docker_context_excludes_private_inputs_and_generated_outputs():
         ".runtime_logs",
         "*.egg-info",
     } <= patterns
+
+
+def test_development_compose_publishes_only_loopback_ports():
+    import yaml
+
+    services = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))["services"]
+    published = [port for service in services.values() for port in service.get("ports", [])]
+    assert published
+    assert all(isinstance(port, str) and port.startswith("127.0.0.1:") for port in published)
+
+
+def test_compose_requires_operator_passwords_without_public_defaults():
+    import yaml
+
+    services = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))["services"]
+    assert services["grafana"]["environment"]["GF_SECURITY_ADMIN_PASSWORD"].startswith("${GRAFANA_ADMIN_PASSWORD:?")
+    assert services["postgres"]["environment"]["POSTGRES_PASSWORD"].startswith("${POSTGRES_PASSWORD:?")
+    for name in ("POSTGRES_CHECKPOINT_URI", "POSTGRES_STORE_URI"):
+        assert "${POSTGRES_PASSWORD:?" in services["agent_service"]["environment"][name]
+
+
+def test_kubernetes_services_do_not_publish_unauthenticated_node_ports():
+    import yaml
+
+    for path in (ROOT / "k8s").glob("*-service.yaml"):
+        service = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert service["spec"].get("type", "ClusterIP") == "ClusterIP", path.name
+        assert not any("nodePort" in port for port in service["spec"]["ports"]), path.name

@@ -4,15 +4,15 @@ services:
       context: .
       dockerfile: docker/Dockerfile.service
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     environment:
       HOST: 0.0.0.0
       PORT: 8000
       APP_ENV: development
-      POSTGRES_CHECKPOINT_URI: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-agent-local-only}@postgres:5432/${POSTGRES_DB:-agent_platform}
-      POSTGRES_STORE_URI: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-agent-local-only}@postgres:5432/${POSTGRES_DB:-agent_platform}
+      POSTGRES_CHECKPOINT_URI: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:?Set a strong URL-safe POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_platform}
+      POSTGRES_STORE_URI: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:?Set a strong URL-safe POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_platform}
       CACHE_USE_REDIS: "true"
       REDIS_URL: redis://redis:6379/0
       MCP_TOOLS_ENABLED: "false"
@@ -88,7 +88,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.app
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     depends_on:
       agent_service:
         condition: service_healthy
@@ -134,7 +134,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.eval-dashboard
     ports:
-      - "8502:8502"
+      - "127.0.0.1:8502:8502"
     environment:
       CODE_AGENT_EVAL_DIR: /app/data/evaluations/code-agent
     volumes:
@@ -154,7 +154,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.context-dashboard
     ports:
-      - "8504:8504"
+      - "127.0.0.1:8504:8504"
     environment:
       CODE_CONTEXT_EVAL_DIR: /app/data/evaluations/code-context
     volumes:
@@ -174,7 +174,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.security-dashboard
     ports:
-      - "8505:8505"
+      - "127.0.0.1:8505:8505"
     environment:
       CODE_SECURITY_EVAL_DIR: /app/data/evaluations/security
     volumes:
@@ -194,7 +194,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.reliability-dashboard
     ports:
-      - "8506:8506"
+      - "127.0.0.1:8506:8506"
     environment:
       AGENTOPS_RESULTS_DIR: /app/data/evaluations
       AGENTOPS_DATASETS_DIR: /app/evals/datasets
@@ -216,7 +216,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.post-training-dashboard
     ports:
-      - "8503:8503"
+      - "127.0.0.1:8503:8503"
     environment:
       POST_TRAINING_RESULTS_DIR: /app/data/evaluations/post-training
     volumes:
@@ -233,7 +233,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.54.1
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
       - agent_service
     volumes:
@@ -243,12 +243,12 @@ services:
   grafana:
     image: grafana/grafana-oss:11.2.0
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     depends_on:
       - prometheus
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-local-only}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set a strong GRAFANA_ADMIN_PASSWORD}
     volumes:
       - grafana_data:/var/lib/grafana
     restart: unless-stopped
@@ -257,7 +257,7 @@ services:
     image: postgres:16.4-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agent}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent-local-only}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a strong URL-safe POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-agent_platform}
     volumes:
       - postgres_data:/var/lib/postgresql/data

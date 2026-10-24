@@ -4,11 +4,10 @@ metadata:
   name: streamlit-app
   namespace: agent-platform
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: streamlit-app
   ports:
     - name: http
       port: 8501
       targetPort: 8501
-      nodePort: 30501

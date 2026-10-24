@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import time
 from collections import defaultdict, deque
@@ -61,6 +62,7 @@ from schema import (
 from service.document_api import MAX_UPLOAD, create_document_router, documents_enabled
 from service.incident_api import router as incident_router
 from service.persistence_store import open_conversation_store
+from service.request_limits import RequestBodyLimitMiddleware
 
 if TYPE_CHECKING:
     from langgraph.graph.graph import CompiledGraph
@@ -87,11 +89,11 @@ ENABLE_USER_AUTH = os.getenv("ENABLE_USER_AUTH", "true").strip().lower() not in 
     "no",
     "off",
 }
-USER_AUTH_SECRET = (
+_CONFIGURED_USER_AUTH_SECRET = (
     os.getenv("USER_AUTH_SECRET")
     or os.getenv("AUTH_SECRET")
-    or "dev-insecure-user-auth-secret-change-me"
 )
+USER_AUTH_SECRET = _CONFIGURED_USER_AUTH_SECRET or secrets.token_urlsafe(32)
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 USER_AUTH_TOKEN_TTL_SECONDS = int(os.getenv("USER_AUTH_TOKEN_TTL_SECONDS", "86400"))
 PASSWORD_HASH_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "210000"))
@@ -454,6 +456,8 @@ def _create_access_token(user_id: str) -> str:
 
 
 def _verify_access_token(token: str) -> str | None:
+    if not isinstance(token, str) or len(token) > 2048 or not token.isascii():
+        return None
     try:
         payload_segment, signature_segment = token.split(".", 1)
     except ValueError:
@@ -468,9 +472,11 @@ def _verify_access_token(token: str) -> str | None:
     except Exception:
         return None
 
-    user_id = str(payload.get("sub") or "").strip()
-    exp = int(payload.get("exp") or 0)
-    if not user_id or exp <= int(time.time()):
+    if not isinstance(payload, dict):
+        return None
+    user_id, exp = payload.get("sub"), payload.get("exp")
+    if (not isinstance(user_id, str) or not _USER_ID_PATTERN.fullmatch(user_id)
+            or type(exp) is not int or exp <= int(time.time())):
         return None
     return user_id
 
@@ -581,13 +587,13 @@ def _resolve_metric_path(request: Request) -> str:
     template = getattr(route, "path", None)
     if isinstance(template, str) and template:
         return template
-    return request.url.path
+    return "unmatched"
 
 
 def _rate_limit_path(path: str) -> str:
-    if path.startswith("/store/"):
-        return "/store/{thread_id}"
-    return path
+    # Caller-controlled path segments must not create unlimited buckets or
+    # allow bypassing a limit by varying a nonexistent task/document ID.
+    return "auth" if path in {"/auth/login", "/auth/register"} else "api"
 
 
 def _parse_ymd_date(value: str) -> datetime | None:
@@ -934,12 +940,15 @@ def _update_hitl_pending_cache(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if (
-        ENABLE_USER_AUTH
-        and APP_ENV in {"production", "prod"}
-        and USER_AUTH_SECRET == "dev-insecure-user-auth-secret-change-me"
-    ):
-        raise RuntimeError("USER_AUTH_SECRET must be set to a strong value in production.")
+    configured_secret = (_CONFIGURED_USER_AUTH_SECRET if ENABLE_USER_AUTH else os.getenv("AUTH_SECRET")) or ""
+    public_placeholder = (
+        configured_secret.strip().lower().startswith("replace-with-")
+        or configured_secret.strip() == "dev-insecure-user-auth-secret-change-me"
+    )
+    # A published example is never a signing key, even if its length meets the
+    # production minimum. Reject it before opening persistence or the agent.
+    if public_placeholder or (APP_ENV in {"production", "prod"} and len(configured_secret.strip()) < 32):
+        raise RuntimeError("Authentication requires a strong, privately generated secret; production requires at least 32 characters.")
     async with AsyncExitStack() as stack:
         saver, backend = await _open_checkpointer(stack)
         store_result = open_conversation_store(
@@ -982,12 +991,15 @@ app.include_router(code_agent_router)
 app.include_router(incident_router)
 app.include_router(create_workbench_router(CODE_AGENT_MANAGER, code_enabled=CODE_AGENT_ENABLED))
 app.include_router(create_document_router())
+app.add_middleware(RequestBodyLimitMiddleware, limit_for_scope=lambda scope:
+                   MAX_UPLOAD if scope["method"] == "POST" and scope["path"] == "/workbench/documents"
+                   and documents_enabled() else MAX_REQUEST_BYTES)
 
 
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
     start = time.perf_counter()
-    method = request.method
+    method = request.method if request.method in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} else "OTHER"
 
     try:
         response = await call_next(request)
@@ -1036,8 +1048,13 @@ async def request_guard_middleware(request: Request, call_next):
         lock = getattr(app.state, "rate_limit_lock", None)
         if lock is not None:
             async with lock:
-                bucket = buckets[key]
                 cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+                if len(buckets) >= 10000:
+                    for expired in [item for item, values in buckets.items() if not values or values[-1] < cutoff]:
+                        del buckets[expired]
+                    if key not in buckets and len(buckets) >= 10000:
+                        return Response(status_code=429, content="Rate limit capacity reached")
+                bucket = buckets[key]
                 while bucket and bucket[0] < cutoff:
                     bucket.popleft()
                 if len(bucket) >= RATE_LIMIT_REQUESTS:
@@ -1322,19 +1339,26 @@ async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.get("/evals/experiments")
-async def list_evaluation_experiments(limit: int = 50):
-    """List locally registered experiment reports when the admin feature is enabled."""
+def _require_evaluation_admin(request: Request) -> None:
     if not ENABLE_EVAL_API:
         raise HTTPException(status_code=404, detail="Evaluation API is disabled")
-    return {"experiments": await asyncio.to_thread(ExperimentStore(EVAL_RESULTS_DIR).list, limit)}
+    admins = {item.strip() for item in os.getenv("EVAL_ADMIN_USER_IDS", "").split(",") if item.strip()}
+    if _get_request_user_id(request) not in admins:
+        raise HTTPException(status_code=403, detail="Evaluation administrator access required")
+
+
+@app.get("/evals/experiments")
+async def list_evaluation_experiments(request: Request, limit: int = 50):
+    """List registered experiments for explicitly authorized administrators."""
+    _require_evaluation_admin(request)
+    rows = await asyncio.to_thread(ExperimentStore(EVAL_RESULTS_DIR).list, limit)
+    return {"experiments": [{key: value for key, value in row.items() if key != "report_path"} for row in rows]}
 
 
 @app.get("/evals/experiments/{experiment_id}")
-async def get_evaluation_experiment(experiment_id: str):
+async def get_evaluation_experiment(experiment_id: str, request: Request):
     """Return one portable evaluation report without accepting filesystem paths."""
-    if not ENABLE_EVAL_API:
-        raise HTTPException(status_code=404, detail="Evaluation API is disabled")
+    _require_evaluation_admin(request)
     if not re.fullmatch(r"[0-9a-fA-F-]{36}", experiment_id):
         raise HTTPException(status_code=400, detail="Invalid experiment ID")
     report = await asyncio.to_thread(ExperimentStore(EVAL_RESULTS_DIR).get, experiment_id)
@@ -1362,7 +1386,7 @@ async def check_auth_header(request: Request, call_next):
             auth_header = request.headers.get("Authorization")
             if not auth_header or not auth_header.startswith("Bearer "):
                 return Response(status_code=401, content="Missing or invalid token")
-            if auth_header[7:] != auth_secret:
+            if not hmac.compare_digest(auth_header[7:].encode(), auth_secret.encode()):
                 return Response(status_code=401, content="Invalid token")
     return await call_next(request)
 
