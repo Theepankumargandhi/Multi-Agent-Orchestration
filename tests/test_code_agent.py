@@ -33,7 +33,7 @@ def test_ephemeral_workspace_filters_secrets_confines_paths_and_builds_diff(tmp_
     root = workspace.prepare()
     try:
         assert workspace.list_files() == ["app.py"]
-        with pytest.raises(WorkspacePolicyError, match="escapes"):
+        with pytest.raises(WorkspacePolicyError, match="safe relative"):
             workspace.read_file("../.env")
         with pytest.raises(WorkspacePolicyError, match="secret"):
             workspace.write_file(".env", "NEW_SECRET=value")

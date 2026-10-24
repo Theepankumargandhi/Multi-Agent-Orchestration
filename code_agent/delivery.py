@@ -77,7 +77,7 @@ def safe_patch_paths(patch: str, limit: int) -> list[str]:
 
 
 def manifest(workspace) -> dict[str, str]:
-    return {path: hashlib.sha256(workspace.resolve(path).read_bytes()).hexdigest()
+    return {path: hashlib.sha256(workspace._read_bytes(path)).hexdigest()
             for path in workspace.list_files(limit=workspace.policy.max_files)
             if workspace.resolve(path).stat().st_size <= workspace.policy.max_file_bytes
             and (Path(path).suffix.lower() in ALLOWED_SUFFIXES or Path(path).name in ALLOWED_FILENAMES)}

@@ -9,6 +9,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from code_agent import safe_files
 from code_agent.models import (
     CodeTask,
     MutationProbeEvidence,
@@ -24,7 +25,7 @@ from code_agent.regression_challenges import (
     fingerprint,
 )
 from code_agent.sandbox import DockerSandbox
-from code_agent.workspace import EXCLUDED_PARTS, SECRET_SUFFIXES, EphemeralWorkspace
+from code_agent.workspace import EphemeralWorkspace, _walk_files
 
 
 def reference_fingerprint(root: Path, max_files: int = 5000, max_bytes: int = 50_000_000) -> str:
@@ -33,17 +34,13 @@ def reference_fingerprint(root: Path, max_files: int = 5000, max_bytes: int = 50
         raise ValueError("reference repository does not exist")
     digest = hashlib.sha256()
     count = total = 0
-    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+    for path in sorted(_walk_files(root, max_files * 4), key=lambda item: item.as_posix()):
         relative = path.relative_to(root)
-        name = path.name.lower()
-        if (not path.is_file() or path.is_symlink() or any(part in EXCLUDED_PARTS for part in relative.parts)
-                or name == ".env" or name.startswith(".env.") or path.suffix.lower() in SECRET_SUFFIXES):
-            continue
         count += 1
         total += path.stat().st_size
         if count > max_files or total > max_bytes:
             raise ValueError("reference repository exceeds identity limits")
-        data = path.read_bytes()
+        data = safe_files.read_bytes(root, relative.as_posix(), max_bytes)
         if b"\0" not in data[:4096]:
             data = data.replace(b"\r\n", b"\n")
         digest.update(relative.as_posix().encode() + b"\0" + data + b"\0")
