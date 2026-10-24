@@ -1107,6 +1107,17 @@ async def readyz():
     }
 
 
+def _default_chat_model() -> str:
+    # A configured key does not prove the account can pay for calls, so operators
+    # can pin the default; otherwise prefer OpenAI when its key is present.
+    explicit = os.getenv("DEFAULT_CHAT_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if os.getenv("GROQ_API_KEY") and not os.getenv("OPENAI_API_KEY"):
+        return os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b")
+    return os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+
+
 @app.get("/capabilities")
 async def capabilities():
     """Public, non-secret runtime capabilities used by thin clients."""
@@ -1117,6 +1128,9 @@ async def capabilities():
     if os.getenv("GROQ_API_KEY"):
         groq_model = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b")
         models.append({"id": groq_model, "label": f"Groq · {groq_model}"})
+    # Clients preselect the first model, so list the server default first.
+    default_model = _default_chat_model()
+    models.sort(key=lambda item: item["id"] != default_model)
     if (
         ADAPTIVE_MODEL_ROUTER_ENABLED
         and (
@@ -1630,6 +1644,7 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
     agent: CompiledGraph = app.state.agent
     user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
     effective_thread_id = user_input.thread_id or str(uuid4())
+    user_input.model = user_input.model or _default_chat_model()
     resume_value = await _resolve_native_resume(
         app, user_id, effective_thread_id, user_input.message, user_input.model
     )
@@ -1777,6 +1792,7 @@ async def message_generator(
     """
     agent: CompiledGraph = app.state.agent
     effective_thread_id = user_input.thread_id or str(uuid4())
+    user_input.model = user_input.model or _default_chat_model()
     resume_value = await _resolve_native_resume(
         app, user_id, effective_thread_id, user_input.message, user_input.model
     )

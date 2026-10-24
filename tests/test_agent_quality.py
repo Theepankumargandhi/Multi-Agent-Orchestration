@@ -15,6 +15,7 @@ from agent.research_assistant import (
     _evaluate_response_quality,
     _looks_like_math,
     _next_node_after_safety,
+    _sanitize_user_facing_answer,
     intent_router_agent,
     math_agent,
     response_agent,
@@ -46,6 +47,39 @@ async def test_safety_failure_blocks_and_clears_stale_evidence():
     assert _next_node_after_safety(update) == "response_agent"
     assert update["web_notes"] == update["rag_notes"] == update["kg_notes"] == ""
     assert update["math_result"] == ""
+
+
+def test_answers_replace_look_alike_hyphens_and_spaces():
+    # gpt-oss writes codes such as "TANGERINE‑42"; a copied code must still match.
+    raw = "Codeword: TANGERINE‑42, n = 10, cost $5 – done"
+    assert _sanitize_user_facing_answer(raw) == "Codeword: TANGERINE-42, n = 10, cost $5 – done"
+
+
+@pytest.mark.asyncio
+async def test_hybrid_answers_from_local_documents_when_live_search_fails():
+    state = {
+        "route": "hybrid",
+        "query": "how does web search approval work in this project?",
+        "web_notes": "Web retrieval failed: ddg.text: No results found.",
+        "rag_notes": "- source=docs/architecture/agent_runtime_flow.md, page=4: approval uses interrupts",
+    }
+    llm = AsyncMock(return_value="Approval pauses the graph with a native interrupt.")
+    with patch("agent.research_assistant._call_llm", llm):
+        reply = await response_agent(state, {"configurable": {}})
+    context = llm.await_args.args[1]
+    assert "agent_runtime_flow.md" in context and "Web retrieval failed" not in context
+    assert reply["final_response"].startswith("Approval pauses the graph")
+
+
+@pytest.mark.asyncio
+async def test_web_only_failure_is_still_reported_without_guessing():
+    state = {"route": "web", "query": "latest AI news", "web_notes": "Web retrieval failed: timeout",
+             "rag_notes": "- source=README.md, page=1: unrelated"}
+    llm = AsyncMock()
+    with patch("agent.research_assistant._call_llm", llm):
+        reply = await response_agent(state, {"configurable": {}})
+    llm.assert_not_awaited()
+    assert "could not complete live web retrieval" in reply["final_response"]
 
 
 @pytest.mark.asyncio

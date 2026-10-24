@@ -1108,10 +1108,13 @@ async def _llm_route_classify(query: str, config: RunnableConfig) -> tuple[str, 
         "- rewrite: vague but inferable and can be rewritten (e.g., 'news update').\n"
         "- math: arithmetic/calculation/equation solving.\n"
         "- web: latest/current/news/search intent from the web.\n"
-        "- rag: local project/docs/codebase/local knowledge intent.\n"
-        "- kg: relationship reasoning over local knowledge (entity-to-entity links).\n"
+        "- rag: questions about this project's own documents, codebase or uploaded files.\n"
+        "- kg: how components of this project's own documents relate to each other.\n"
         "- hybrid: needs both web and local/project context.\n"
-        "- general: regular non-time-sensitive Q&A/chat.\n"
+        "- general: regular non-time-sensitive Q&A/chat, including world knowledge.\n"
+        "rag and kg search only the local document store, never general knowledge. "
+        "World facts such as capitals, history, science or definitions are general, "
+        "even when they relate two entities (e.g., 'What is the capital of France?').\n"
         "Return the requested structured classification.\n"
     )
     suffix = _evaluation_instruction_suffix(config, "router_instruction_suffix")
@@ -1267,10 +1270,15 @@ def _build_response_context(state: AgentState) -> str:
     return "\n\n".join(parts).strip()
 
 
+# Some models emit look-alike characters (U+2011 in "gpt-4o", U+202F between numbers).
+# Copying such a name, code or command from an answer then silently fails.
+_COPY_SAFE_CHARACTERS = str.maketrans({"‐": "-", "‑": "-", " ": " ", " ": " ", " ": " "})
+
+
 def _sanitize_user_facing_answer(text: str) -> str:
     lines: list[str] = []
     previous_blank = False
-    for raw_line in (text or "").splitlines():
+    for raw_line in (text or "").translate(_COPY_SAFE_CHARACTERS).splitlines():
         line = raw_line.rstrip()
         stripped = line.strip()
         lower = stripped.lower()
@@ -2036,7 +2044,10 @@ async def response_agent(state: AgentState, config: RunnableConfig):
 
     route = (state.get("route") or "").lower()
     web_notes = state.get("web_notes", "")
-    if route in {"web", "hybrid"} and web_notes.startswith("Web retrieval failed:"):
+    web_failed = route in {"web", "hybrid"} and web_notes.startswith("Web retrieval failed:")
+    # A hybrid question can still be answered from local documents when live search fails.
+    local_fallback = web_failed and route == "hybrid" and "source=" in (state.get("rag_notes") or "")
+    if web_failed and not local_fallback:
         if "no topical results matching query terms" in web_notes:
             final = (
                 "I could not find recent web results that match your exact topic.\n\n"
@@ -2070,7 +2081,12 @@ async def response_agent(state: AgentState, config: RunnableConfig):
         )
         return _draft_response_update(final, "evidence_quality:abstain")
 
-    response_context = _build_response_context(state)
+    response_context = _build_response_context({**state, "web_notes": ""} if local_fallback else state)
+    if local_fallback:
+        response_context += (
+            "\n\nLive web results were unavailable for this request. Answer from the local "
+            "evidence and briefly say that live results could not be checked."
+        )
     if response_context:
         response_context += "\n\nAnswer the user directly. Do not include internal trace labels."
     else:

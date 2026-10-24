@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+# agent.local_rag reads CHROMA_PERSIST_DIR and friends at import, so load .env
+# first; otherwise ingestion writes to a different store than the service reads.
+load_dotenv()
 
 from agent.local_rag import ingest_pdfs_to_chroma  # noqa: E402
 
@@ -38,7 +41,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    load_dotenv()
     summary = ingest_pdfs_to_chroma(
         pdf_dir=args.pdf_dir,
         reset=args.reset,

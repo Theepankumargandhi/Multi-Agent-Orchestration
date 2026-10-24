@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from agent.rag_embeddings import build_embeddings, collection_name, embedding_model_name
 from agentforge_sdk._retrieval import (
     _bm25_rank_documents,
     _chunk_text,
@@ -189,13 +190,7 @@ def format_hybrid_context(candidates) -> str:
 
 
 def _build_embeddings():
-    from langchain_openai import OpenAIEmbeddings
-
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError(
-            "OPENAI_API_KEY is required to use ChromaDB embedding retrieval."
-        )
-    return OpenAIEmbeddings(model=OPENAI_EMBEDDING_MODEL)
+    return build_embeddings(OPENAI_EMBEDDING_MODEL)
 
 
 def _get_chroma_store():
@@ -210,7 +205,7 @@ def _get_chroma_store():
 
     os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
     _chroma_store_cache = Chroma(
-        collection_name=CHROMA_COLLECTION_NAME,
+        collection_name=collection_name(CHROMA_COLLECTION_NAME),
         persist_directory=CHROMA_PERSIST_DIR,
         embedding_function=_build_embeddings(),
     )
@@ -419,21 +414,7 @@ def ingest_pdfs_to_chroma(
         }
 
     try:
-        store = _get_chroma_store()
-        previous_ids: set[str] = set()
-        for source in {str(path) for path in pdf_files}:
-            try:
-                previous_ids.update(store.get(where={"source": source}).get("ids") or [])
-            except Exception:
-                continue
-        store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
-        stale_ids = list(previous_ids.difference(ids))
-        if stale_ids:
-            store.delete(ids=stale_ids)
-        persist = getattr(store, "persist", None)
-        if callable(persist):
-            persist()
-        _reset_local_rag_cache()
+        stale_count = _store_chunks(texts, metadatas, ids, {str(path) for path in pdf_files})
     except Exception as e:
         return {"ok": False, "message": f"ChromaDB ingestion failed: {e}"}
 
@@ -443,9 +424,102 @@ def ingest_pdfs_to_chroma(
         "pdf_count": len(pdf_files),
         "page_count": page_count,
         "chunk_count": len(texts),
-        "stale_chunks_removed": len(stale_ids),
+        "stale_chunks_removed": stale_count,
         "persist_dir": CHROMA_PERSIST_DIR,
-        "collection": CHROMA_COLLECTION_NAME,
+        "collection": collection_name(CHROMA_COLLECTION_NAME),
+    }
+
+
+def _store_chunks(texts: List[str], metadatas: List[Dict[str, Any]], ids: List[str], sources: set[str]) -> int:
+    """Upsert chunks and drop chunks of the same sources that no longer exist."""
+    store = _get_chroma_store()
+    previous_ids: set[str] = set()
+    for source in sources:
+        try:
+            previous_ids.update(store.get(where={"source": source}).get("ids") or [])
+        except Exception:
+            continue
+    store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+    stale_ids = list(previous_ids.difference(ids))
+    if stale_ids:
+        store.delete(ids=stale_ids)
+    persist = getattr(store, "persist", None)
+    if callable(persist):
+        persist()
+    _reset_local_rag_cache()
+    return len(stale_ids)
+
+
+_MARKDOWN_SECTION_RE = re.compile(r"(?m)^(?=#{1,3}\s)")
+
+
+def ingest_markdown_to_chroma(
+    paths: List[str],
+    reset: bool = False,
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
+) -> Dict[str, Any]:
+    """Ingest Markdown files into persistent ChromaDB.
+
+    Each heading section is stored as one "page", so citations point at the
+    section that supports an answer.
+    """
+    if not USE_CHROMA_RAG:
+        return {
+            "ok": False,
+            "message": "USE_CHROMA_RAG is disabled. Set USE_CHROMA_RAG=true in .env.",
+        }
+
+    md_files = sorted({Path(path) for path in paths if Path(path).suffix.lower() == ".md" and Path(path).is_file()})
+    if not md_files:
+        return {"ok": False, "message": "No Markdown files found."}
+
+    if reset and Path(CHROMA_PERSIST_DIR).exists():
+        shutil.rmtree(CHROMA_PERSIST_DIR, ignore_errors=True)
+        _reset_chroma_store_cache()
+        _reset_local_rag_cache()
+
+    texts: List[str] = []
+    metadatas: List[Dict[str, Any]] = []
+    ids: List[str] = []
+    section_count = 0
+    for md_file in md_files:
+        source = md_file.as_posix()
+        file_hash = _file_sha256(md_file)
+        content = md_file.read_text(encoding="utf-8", errors="replace")
+        sections = [item.strip() for item in _MARKDOWN_SECTION_RE.split(content) if item.strip()]
+        for section_no, section in enumerate(sections, start=1):
+            section_count += 1
+            heading = section.splitlines()[0].lstrip("#").strip()[:200]
+            for chunk_index, chunk in enumerate(_chunk_text(section, chunk_size=chunk_size, chunk_overlap=chunk_overlap)):
+                texts.append(chunk)
+                metadatas.append(
+                    {
+                        "source": source,
+                        "file_name": md_file.name,
+                        "page": section_no,
+                        "section": heading,
+                        "chunk_index": chunk_index,
+                        "file_sha256": file_hash,
+                        "document_id": file_hash,
+                    }
+                )
+                ids.append(_chunk_id(source, file_hash, section_no, chunk_index, chunk))
+
+    try:
+        stale_count = _store_chunks(texts, metadatas, ids, {path.as_posix() for path in md_files})
+    except Exception as e:
+        return {"ok": False, "message": f"ChromaDB ingestion failed: {e}"}
+
+    return {
+        "ok": True,
+        "message": "Markdown ingestion completed.",
+        "file_count": len(md_files),
+        "section_count": section_count,
+        "chunk_count": len(texts),
+        "stale_chunks_removed": stale_count,
+        "persist_dir": CHROMA_PERSIST_DIR,
+        "collection": collection_name(CHROMA_COLLECTION_NAME),
     }
 
 
@@ -465,8 +539,9 @@ def _search_chroma_knowledge(query: str, limit: int = 3) -> str | None:
 
     if not _chroma_has_documents(store):
         return (
-            "No ChromaDB knowledge found yet. Ingest PDFs first with "
-            "`python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs --reset`."
+            "No ChromaDB knowledge found yet. Ingest the repository docs with "
+            "`python scripts/ingestion/ingest_repo_docs.py` or PDFs with "
+            "`python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs`."
         )
 
     pairs: List[Tuple[Any, float]] = []
@@ -511,16 +586,22 @@ def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: 
         if active_capture():
             active_capture().reranker = "production_heuristic"
         return _heuristic_rerank(query, candidates, top_k)
-    if not RAG_ENABLE_LLM_RERANKER or not os.getenv("OPENAI_API_KEY"):
+    # Groq serves namespaced IDs such as openai/gpt-oss-20b; OpenAI IDs never contain "/".
+    groq = "/" in RAG_RERANK_MODEL or RAG_RERANK_MODEL.startswith(("llama-", "mixtral-", "gemma-"))
+    if not RAG_ENABLE_LLM_RERANKER or not os.getenv("GROQ_API_KEY" if groq else "OPENAI_API_KEY"):
         return fallback()
 
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
-        from langchain_openai import ChatOpenAI
+
+        if groq:
+            from langchain_groq import ChatGroq as ChatModel
+        else:
+            from langchain_openai import ChatOpenAI as ChatModel
     except Exception:
         return fallback()
 
-    model = ChatOpenAI(model=RAG_RERANK_MODEL, temperature=0)
+    model = ChatModel(model=RAG_RERANK_MODEL, temperature=0)
     candidate_lines: List[str] = []
     for i, c in enumerate(candidates, start=1):
         candidate_lines.append(
@@ -584,8 +665,9 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
 
     if not _chroma_has_documents(store):
         return (
-            "No ChromaDB knowledge found yet. Ingest PDFs first with "
-            "`python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs --reset`."
+            "No ChromaDB knowledge found yet. Ingest the repository docs with "
+            "`python scripts/ingestion/ingest_repo_docs.py` or PDFs with "
+            "`python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs`."
         )
 
     # Vector candidates
@@ -691,7 +773,7 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
                     "vector_ranking": ranking(vector_ranked), "lexical_ranking": ranking(bm25_ranked),
                     "fused_ranking": ranking([(number, scores["fused"]) for number, scores in fused_sorted]),
                     "reranker": active_capture().reranker, "rrf_k": RAG_RRF_K, "bm25_top_k": max(limit, RAG_BM25_TOP_K),
-                    "embedding_model": OPENAI_EMBEDDING_MODEL, "collection": CHROMA_COLLECTION_NAME, "vector_score_mode": vector_mode,
+                    "embedding_model": embedding_model_name(OPENAI_EMBEDDING_MODEL), "collection": collection_name(CHROMA_COLLECTION_NAME), "vector_score_mode": vector_mode,
                     "rerank_input_tokens": active_capture().reranker_usage.get("input_tokens"),
                     "rerank_output_tokens": active_capture().reranker_usage.get("output_tokens"),
                     "candidate_top_k": max(limit, RAG_RERANK_TOP_K), "packed_context": result}})

@@ -37,10 +37,10 @@ class UserInput(BaseModel):
         max_length=20000,
         examples=["What is the weather in Tokyo?"],
     )
-    model: str = Field(
-        description="LLM Model to use for the agent.",
-        default="gpt-4o-mini",
-        examples=["gpt-4o-mini", "llama-3.1-70b"],
+    model: str | None = Field(
+        description="LLM Model to use for the agent. Omit to use the server's default model.",
+        default=None,
+        examples=["openai/gpt-oss-120b", "gpt-4o-mini"],
         max_length=100,
     )
     thread_id: str | None = Field(
