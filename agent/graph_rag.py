@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from agent.rag_embeddings import build_embeddings, collection_name
+
 GRAPH_RAG_ENABLED = os.getenv("GRAPH_RAG_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 GRAPH_RAG_PDF_DIR = os.getenv("GRAPH_RAG_PDF_DIR", "graph_rag_docs")
 GRAPH_CHROMA_PERSIST_DIR = os.getenv("GRAPH_CHROMA_PERSIST_DIR", "graph_chroma_db")
@@ -24,11 +26,7 @@ _redis_disabled = False
 
 
 def _build_embeddings():
-    from langchain_openai import OpenAIEmbeddings
-
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is required for graph RAG Chroma retrieval.")
-    return OpenAIEmbeddings(model=GRAPH_OPENAI_EMBEDDING_MODEL)
+    return build_embeddings(GRAPH_OPENAI_EMBEDDING_MODEL)
 
 
 def _get_chroma_store():
@@ -43,7 +41,7 @@ def _get_chroma_store():
 
     os.makedirs(GRAPH_CHROMA_PERSIST_DIR, exist_ok=True)
     _graph_chroma_store_cache = Chroma(
-        collection_name=GRAPH_CHROMA_COLLECTION_NAME,
+        collection_name=collection_name(GRAPH_CHROMA_COLLECTION_NAME),
         persist_directory=GRAPH_CHROMA_PERSIST_DIR,
         embedding_function=_build_embeddings(),
     )
@@ -300,7 +298,7 @@ def ingest_pdfs_to_graph_chroma(
         "chunk_count": len(texts),
         "stale_chunks_removed": len(stale_ids),
         "persist_dir": GRAPH_CHROMA_PERSIST_DIR,
-        "collection": GRAPH_CHROMA_COLLECTION_NAME,
+        "collection": collection_name(GRAPH_CHROMA_COLLECTION_NAME),
     }
 
 
