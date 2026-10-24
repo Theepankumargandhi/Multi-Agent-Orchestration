@@ -19,8 +19,10 @@ from code_agent.models import (
     SandboxCommandResult,
     VerificationReport,
 )
+from code_agent.safe_files import read_bytes
 from code_agent.sandbox import DockerSandbox
 from code_agent.secret_patterns import SECRET_PATTERNS as _SECRET_PATTERNS
+from code_agent.workspace import _walk_files
 
 _TEST_PATHS = (
     re.compile(r"(^|/)tests?/", re.IGNORECASE),
@@ -49,13 +51,8 @@ def repository_fingerprint(root: Path, max_files: int, max_bytes: int) -> str:
     digest = hashlib.sha256()
     seen_files = 0
     seen_bytes = 0
-    excluded = {".git", ".venv", "venv", "env", "node_modules", "data", "__pycache__"}
-    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
-        if path.is_symlink() or not path.is_file():
-            continue
+    for path in sorted(_walk_files(root, max_files * 4), key=lambda item: item.as_posix()):
         relative = path.relative_to(root)
-        if any(part in excluded for part in relative.parts):
-            continue
         size = path.stat().st_size
         seen_files += 1
         seen_bytes += size
@@ -63,7 +60,7 @@ def repository_fingerprint(root: Path, max_files: int, max_bytes: int) -> str:
             raise ValueError("repository changed beyond configured integrity limits")
         digest.update(relative.as_posix().encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(read_bytes(root, relative.as_posix(), max_bytes))
         digest.update(b"\0")
     return digest.hexdigest()
 

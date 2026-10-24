@@ -65,11 +65,11 @@ def test_bounded_read_and_atomic_failure_leave_source_unchanged(workspace, monke
     with pytest.raises(WorkspacePolicyError):
         workspace.read_lines("app.py", 1, 201)
     receipt = workspace.read_lines("app.py", 1, 2)
-    monkeypatch.setattr("code_agent.workspace.os.replace", lambda *_args: (_ for _ in ()).throw(OSError("injected")))
+    monkeypatch.setattr("code_agent.workspace.os.replace", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected")))
     with pytest.raises(OSError):
         workspace.edit_file("app.py", receipt["file_sha256"], "return 1", "return 2")
     assert "return 1" in workspace.read_file("app.py")
-    assert not list(workspace.root.glob(".agentforge-edit-*"))
+    assert not list(workspace.root.glob(".agentforge-write-*"))
 
 
 @pytest.mark.asyncio

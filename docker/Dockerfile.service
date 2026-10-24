@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 COPY requirements-service.txt .
-RUN python -m pip install --no-cache-dir -r requirements-service.txt
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && python -m pip install --no-cache-dir -r requirements-service.txt
 
 ENV XDG_CACHE_HOME=/app/.cache
 COPY scripts/setup_code_parsers.py /tmp/setup_code_parsers.py

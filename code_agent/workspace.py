@@ -11,9 +11,14 @@ import shutil
 import stat
 import tempfile
 import threading
+import time
 from pathlib import Path
 
+import regex
+
+from code_agent import safe_files
 from code_agent.models import SandboxPolicy
+from code_agent.sensitive_paths import is_sensitive_path
 
 EXCLUDED_PARTS = {
     ".git",
@@ -29,7 +34,6 @@ EXCLUDED_PARTS = {
     "data",
     ".runtime_logs",
 }
-SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".crt"}
 ALLOWED_SUFFIXES = {
     ".py",
     ".pyi",
@@ -60,10 +64,25 @@ class WorkspacePolicyError(ValueError):
 
 
 def _is_secret_or_excluded(relative: Path) -> bool:
-    if any(part in EXCLUDED_PARTS for part in relative.parts):
+    if any(part.lower() in EXCLUDED_PARTS for part in relative.parts):
         return True
-    name = relative.name.lower()
-    return name == ".env" or name.startswith(".env.") or relative.suffix.lower() in SECRET_SUFFIXES
+    return is_sensitive_path(relative)
+
+
+def _walk_files(root: Path, max_entries: int):
+    count = 0
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for name in [*directories, *files]:
+            count += 1
+            if count > max_entries:
+                raise WorkspacePolicyError("repository exceeds directory-entry limits")
+        directories[:] = [name for name in directories
+                          if not _is_secret_or_excluded((Path(directory) / name).relative_to(root))
+                          and not safe_files.is_link((Path(directory) / name).lstat())]
+        for name in files:
+            path = Path(directory) / name
+            if not _is_secret_or_excluded(path.relative_to(root)) and not safe_files.is_link(path.lstat()):
+                yield path
 
 
 def _is_binary(data: bytes) -> bool:
@@ -75,33 +94,29 @@ class EphemeralWorkspace:
         self.source = source.resolve()
         self.policy = policy
         self.root: Path | None = None
+        self._temporary_root: Path | None = None
         self._original: dict[str, str] = {}
         self._edit_lock = threading.RLock()
 
     def prepare(self) -> Path:
         if not self.source.is_dir():
             raise WorkspacePolicyError(f"repository does not exist: {self.source}")
-        root = Path(tempfile.mkdtemp(prefix="agentforge-code-"))
-        self.root = root.resolve()
-        try:
-            self.root.chmod(0o777)
-        except OSError:
-            pass
+        if self.root is not None:
+            raise RuntimeError("workspace is already prepared")
+        # Only the inner directory is bind-mounted. The private outer directory
+        # prevents other host users from traversing the sandbox's writable files.
+        self._temporary_root = Path(tempfile.mkdtemp(prefix="agentforge-code-")).resolve()
+        self.root = self._temporary_root / "workspace"
         file_count = 0
         total_bytes = 0
         try:
-            for source_path in self.source.rglob("*"):
+            self.root.mkdir(mode=0o777)
+            self.root.chmod(0o777)
+            for source_path in _walk_files(self.source, self.policy.max_files * 4):
                 relative = source_path.relative_to(self.source)
                 if _is_secret_or_excluded(relative) or source_path.is_symlink():
                     continue
                 destination = self.root / relative
-                if source_path.is_dir():
-                    destination.mkdir(parents=True, exist_ok=True)
-                    try:
-                        destination.chmod(0o777)
-                    except OSError:
-                        pass
-                    continue
                 if not source_path.is_file():
                     continue
                 size = source_path.stat().st_size
@@ -114,10 +129,11 @@ class EphemeralWorkspace:
                     destination.parent.chmod(0o777)
                 except OSError:
                     pass
-                shutil.copy2(source_path, destination)
+                data = safe_files.read_bytes(self.source, relative.as_posix(), self.policy.max_repository_bytes)
+                destination.write_bytes(data)
                 try:
                     destination.chmod(
-                        destination.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+                        source_path.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
                     )
                 except OSError:
                     pass
@@ -134,9 +150,16 @@ class EphemeralWorkspace:
 
     def resolve(self, relative_path: str, *, allow_missing: bool = False) -> Path:
         root = self._require_root().resolve()
-        clean = (relative_path or "").strip().replace("\\", "/")
-        if not clean or clean.startswith("/") or "\x00" in clean:
-            raise WorkspacePolicyError("a safe relative file path is required")
+        try:
+            clean = "/".join(safe_files.relative_parts(relative_path or ""))
+        except ValueError as exc:
+            raise WorkspacePolicyError(str(exc)) from exc
+        raw = root / clean
+        for part in (raw, *raw.parents):
+            if part == root:
+                break
+            if part.is_symlink() or (part.exists() and safe_files.is_link(part.lstat())):
+                raise WorkspacePolicyError("workspace paths cannot traverse links")
         candidate = (root / clean).resolve(strict=False)
         try:
             candidate.relative_to(root)
@@ -150,7 +173,7 @@ class EphemeralWorkspace:
         root = self._require_root()
         files = [
             path.relative_to(root).as_posix()
-            for path in root.rglob("*")
+            for path in _walk_files(root, self.policy.max_files * 4)
             if path.is_file()
             and not path.is_symlink()
             and not _is_secret_or_excluded(path.relative_to(root))
@@ -159,12 +182,18 @@ class EphemeralWorkspace:
 
     def read_file(self, relative_path: str) -> str:
         path = self.resolve(relative_path)
-        if not path.is_file() or path.stat().st_size > self.policy.max_file_bytes:
-            raise WorkspacePolicyError("file is not readable within configured limits")
-        data = path.read_bytes()
+        if _is_secret_or_excluded(path.relative_to(self._require_root())):
+            raise WorkspacePolicyError("secret or excluded files are not exposed to the agent")
+        data = self._read_bytes(relative_path)
         if _is_binary(data):
             raise WorkspacePolicyError("binary files are not exposed to the agent")
         return data.decode("utf-8", errors="replace")
+
+    def _read_bytes(self, relative_path: str) -> bytes:
+        try:
+            return safe_files.read_bytes(self._require_root(), relative_path, self.policy.max_file_bytes)
+        except (OSError, ValueError) as exc:
+            raise WorkspacePolicyError("file is not readable within configured limits") from exc
 
     def read_lines(self, relative_path: str, start_line: int = 1, end_line: int = 100) -> dict:
         path = self.resolve(relative_path)
@@ -175,7 +204,7 @@ class EphemeralWorkspace:
             raise WorkspacePolicyError("read_lines permits an ordered range of at most 200 lines")
         if path.stat().st_size > self.policy.max_file_bytes:
             raise WorkspacePolicyError("file exceeds configured limit")
-        data = path.read_bytes()
+        data = self._read_bytes(relative_path)
         if _is_binary(data):
             raise WorkspacePolicyError("binary files are not exposed to the agent")
         try:
@@ -212,7 +241,7 @@ class EphemeralWorkspace:
             path = self.check_agent_edit_path(relative_path)
             if not path.is_file() or not old_text or max(len(old_text), len(new_text)) > 16000:
                 raise WorkspacePolicyError("edit requires a bounded nonempty block in an existing file")
-            data = path.read_bytes()
+            data = self._read_bytes(relative_path)
             if len(data) > self.policy.max_file_bytes or hashlib.sha256(data).hexdigest() != expected_sha256:
                 raise WorkspacePolicyError("stale or missing file hash; read current lines again")
             try:
@@ -227,38 +256,42 @@ class EphemeralWorkspace:
             encoded = (text[:first] + new_text + text[first + len(old_text):]).encode("utf-8")
             if len(encoded) > self.policy.max_file_bytes or b"\x00" in encoded:
                 raise WorkspacePolicyError("edited file exceeds text limits")
-            temporary = None
-            try:
-                with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".agentforge-edit-", delete=False) as stream:
-                    temporary = Path(stream.name)
-                    stream.write(encoded)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                temporary.chmod(path.stat().st_mode & 0o777)
-                # Recheck after preparing the replacement, before atomic publication.
-                if path.read_bytes() != data:
-                    raise WorkspacePolicyError("file changed during edit")
-                os.replace(temporary, path)
-            finally:
-                if temporary is not None and temporary.exists():
-                    temporary.unlink()
+            if self._read_bytes(relative_path) != data:
+                raise WorkspacePolicyError("file changed during edit")
+            safe_files.atomic_write(self._require_root(), relative_path, encoded)
             return hashlib.sha256(encoded).hexdigest()
 
     def search(self, pattern: str, limit: int = 100) -> list[str]:
         if not pattern or len(pattern) > 300:
             raise WorkspacePolicyError("search pattern must contain 1-300 characters")
+        # Matching has a deadline, but compilation expands counted repetitions.
+        # Conservatively bound their combined size before invoking the compiler.
+        expansion = 1
+        for lower, upper in re.findall(r"\{(\d+)(?:,(\d*))?\}", pattern):
+            expansion *= max(1, int(lower), int(upper or 0))
+            if expansion > 4096:
+                raise WorkspacePolicyError("search repetition limit exceeded")
         try:
-            expression = re.compile(pattern, re.IGNORECASE)
-        except re.error as exc:
+            expression = regex.compile(pattern, regex.IGNORECASE)
+        except regex.error as exc:
             raise WorkspacePolicyError(f"invalid search expression: {exc}") from exc
         matches: list[str] = []
+        deadline = time.monotonic() + 2.0
+        limit = max(1, min(limit, 100))
         for relative in self.list_files(limit=self.policy.max_files):
             try:
                 text = self.read_file(relative)
             except WorkspacePolicyError:
                 continue
             for number, line in enumerate(text.splitlines(), start=1):
-                if expression.search(line):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise WorkspacePolicyError("search time budget exhausted")
+                try:
+                    matched = expression.search(line, timeout=remaining)
+                except TimeoutError as exc:
+                    raise WorkspacePolicyError("search time budget exhausted") from exc
+                if matched:
                     matches.append(f"{relative}:{number}: {line[:300]}")
                     if len(matches) >= limit:
                         return matches
@@ -274,16 +307,15 @@ class EphemeralWorkspace:
         encoded = content.encode("utf-8")
         if len(encoded) > self.policy.max_file_bytes:
             raise WorkspacePolicyError("file content exceeds configured limit")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.agentforge-tmp")
-        temporary.write_bytes(encoded)
-        os.replace(temporary, path)
+        safe_files.atomic_write(self._require_root(), relative.as_posix(), encoded)
 
     def delete_file(self, relative_path: str) -> None:
         path = self.resolve(relative_path)
+        if _is_secret_or_excluded(path.relative_to(self._require_root())):
+            raise WorkspacePolicyError("deleting secret or excluded files is forbidden")
         if not path.is_file() or path.is_symlink():
             raise WorkspacePolicyError("only regular files can be deleted")
-        path.unlink()
+        safe_files.unlink(self._require_root(), relative_path)
 
     def _snapshot(self) -> dict[str, str]:
         snapshot: dict[str, str] = {}
@@ -292,7 +324,7 @@ class EphemeralWorkspace:
             path = root / relative
             if path.stat().st_size > self.policy.max_file_bytes:
                 continue
-            data = path.read_bytes()
+            data = self._read_bytes(relative)
             if _is_binary(data):
                 continue
             snapshot[relative] = data.decode("utf-8", errors="replace")
@@ -343,10 +375,12 @@ class EphemeralWorkspace:
     def cleanup(self) -> None:
         if self.root is None:
             return
-        root = self.root.resolve()
+        root = self._temporary_root
         temp_root = Path(tempfile.gettempdir()).resolve()
-        if root.parent != temp_root or not root.name.startswith("agentforge-code-"):
+        if (root is None or root.parent != temp_root or not root.name.startswith("agentforge-code-")
+                or root.is_symlink() or self.root != root / "workspace"):
             raise WorkspacePolicyError("refusing to remove an unexpected workspace path")
         if root.exists():
             shutil.rmtree(root)
         self.root = None
+        self._temporary_root = None

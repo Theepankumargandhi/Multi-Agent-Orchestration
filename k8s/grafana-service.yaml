@@ -4,11 +4,10 @@ metadata:
   name: grafana
   namespace: agent-platform
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: grafana
   ports:
     - name: http
       port: 3000
       targetPort: 3000
-      nodePort: 30300

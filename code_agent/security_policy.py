@@ -23,6 +23,13 @@ from code_agent.models import (
     ToolObservation,
 )
 from code_agent.secret_patterns import SECRET_PATTERNS as _SECRET_PATTERNS
+from code_agent.sensitive_paths import (
+    SECRET_NAMES,
+    SECRET_PARTS,
+    SECRET_SUFFIXES,
+    is_sensitive_path,
+    relative_parts,
+)
 
 POLICY_VERSION = "agentforge-security-v1"
 
@@ -67,7 +74,6 @@ _SENSITIVE_PARTS = {
     "secrets",
     "credentials",
 }
-_SECRET_NAMES = {".env", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"}
 
 
 def _canonical_hash(value: object) -> str:
@@ -129,6 +135,18 @@ class SecurityPolicyEngine:
             "version": self.version,
             "enabled": self.enabled,
             "credential_patterns": [(pattern.pattern, pattern.flags) for pattern in _SECRET_PATTERNS],
+            "patterns": {name: [(pattern.pattern, pattern.flags) for pattern in patterns]
+                         for name, patterns in {
+                             "injection": _INJECTION_PATTERNS, "execution": _UNSAFE_EXECUTION,
+                             "network": (_NETWORK_SINKS,), "sources": (_SENSITIVE_SOURCES,),
+                             "test_tampering": _TEST_TAMPERING, "resource_abuse": _RESOURCE_ABUSE,
+                         }.items()},
+            "sensitive_parts": sorted(_SENSITIVE_PARTS | SECRET_PARTS),
+            "secret_names": sorted(SECRET_NAMES),
+            "secret_suffixes": sorted(SECRET_SUFFIXES),
+            "privileged_actions": ["write", "edit", "delete", "test", "finish"],
+            "approval_enforcement": "hold_before_execution_v1",
+            "path_validation": "portable_components_v1",
             "rules": [
                 "AGENT-PATH-001",
                 "AGENT-SECRET-001",
@@ -161,14 +179,20 @@ class SecurityPolicyEngine:
 
         if self.enabled and action.kind in {"read", "read_lines", "write", "edit", "delete"}:
             pure = PurePosixPath(path)
+            try:
+                relative_parts(action.path)
+                invalid_components = False
+            except ValueError:
+                invalid_components = True
             unsafe_path = (
-                not path
+                invalid_components
+                or not path
                 or path.startswith("/")
                 or bool(re.match(r"^[A-Za-z]:/", path))
                 or ".." in pure.parts
                 or any(part.lower() in _SENSITIVE_PARTS for part in pure.parts)
-                or pure.name.lower() in _SECRET_NAMES
-                or pure.suffix.lower() in {".pem", ".key", ".p12", ".pfx"}
+                or is_sensitive_path(pure)
+                or "\x00" in path or ":" in path
             )
             if unsafe_path:
                 rules.append("AGENT-PATH-001")
@@ -198,7 +222,7 @@ class SecurityPolicyEngine:
                 severity = "high" if severity == "none" else severity
 
         injection_in_action = _matches(_INJECTION_PATTERNS, payload)
-        privileged_action = action.kind in {"write", "edit", "delete", "test"}
+        privileged_action = action.kind in {"write", "edit", "delete", "test", "finish"}
         if self.enabled and injection_in_action and privileged_action:
             rules.append("AGENT-INJECTION-001")
             categories.append("agent_goal_hijack")
@@ -212,17 +236,21 @@ class SecurityPolicyEngine:
             and "instruction_injection" in source_taints
         )
         if requires_approval:
-            # Suspicious context is recorded for the existing owner-approval boundary;
-            # content/path-specific high-confidence rules still block immediately.
+            # The dispatcher holds this action before touching the workspace.
             severity = "medium"
             categories.append("untrusted_context_influence")
 
         decision_payload = {
             "policy": self.version,
+            "policy_fingerprint": self.fingerprint(),
+            "proposal_sha256": _canonical_hash(action.model_dump(mode="json")),
+            "task_sha256": _canonical_hash(task.model_dump(mode="json")),
             "action": action.kind,
             "path": path,
             "stage": stage,
             "allowed": allowed,
+            "requires_approval": requires_approval,
+            "source_taints": source_taints,
             "rules": sorted(set(rules)),
             "categories": sorted(set(categories)),
             "source_hashes": sorted(item.sha256 for item in artifacts),

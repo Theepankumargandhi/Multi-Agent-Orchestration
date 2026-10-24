@@ -278,9 +278,11 @@ def test_revoke_missing_store_never_creates_database(tmp_path):
 async def test_server_sets_namespace_from_authenticated_identity(tmp_path):
     from code_agent.api import CodeTaskManager
     from code_agent.job_models import CodeTaskRequest
+    from code_agent.repository_access import RepositoryAccess
 
     (tmp_path / "repo").mkdir()
-    manager = CodeTaskManager(tmp_path, SandboxPolicy(repair_memory_enabled=True))
+    manager = CodeTaskManager(tmp_path, SandboxPolicy(repair_memory_enabled=True),
+                              repository_access=RepositoryAccess({"alice": ["repo"]}))
     captured = []
 
     async def run(_identifier, task):

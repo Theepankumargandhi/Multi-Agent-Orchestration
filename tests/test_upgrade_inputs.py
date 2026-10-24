@@ -162,6 +162,11 @@ def test_docker_output_is_decoded_as_utf8_not_the_windows_locale(monkeypatch, tm
     monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
     monkeypatch.setattr(locale, "getpreferredencoding", lambda _do_setlocale=True: "cp1252")
     monkeypatch.setattr("code_agent.bounded_process.subprocess.Popen", fake_popen)
+    lifecycle = []
+    def fake_lifecycle(command, **kwargs):
+        lifecycle.append(command)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr("code_agent.sandbox.subprocess.run", fake_lifecycle)
     sandbox = DockerSandbox(tmp_path, policy)
     sandbox.container_id = "authored-no-container-created"
     command = ["python", "-c", "pass"]
@@ -175,6 +180,8 @@ def test_docker_output_is_decoded_as_utf8_not_the_windows_locale(monkeypatch, tm
     assert result.stdout == "x" * 999 + "é"
     assert result.stderr == "\u20ac\ufffd"
     assert stdout.closed and stderr.closed
+    assert lifecycle == [["docker", "start", sandbox.container_id],
+                         ["docker", "stop", "--time", "0", sandbox.container_id]]
 
 
 @pytest.mark.asyncio

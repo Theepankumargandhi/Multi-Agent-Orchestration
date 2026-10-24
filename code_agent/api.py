@@ -24,6 +24,7 @@ from code_agent.execution import (
 )
 from code_agent.job_models import CodeTaskDecision, CodeTaskRequest, JobRecord
 from code_agent.models import CodeTask, SandboxPolicy
+from code_agent.repository_access import RepositoryAccess
 from code_agent.sandbox import DockerSandbox
 
 
@@ -36,6 +37,7 @@ class CodeTaskManager:
         policy: SandboxPolicy,
         max_concurrency: int = 1,
         max_records: int = 200,
+        repository_access: RepositoryAccess | None = None,
     ):
         if policy.counterfactual_verification_enabled:
             raise ValueError("legacy single-agent manager does not support counterfactual verification")
@@ -44,6 +46,7 @@ class CodeTaskManager:
         if policy.mutation_testing_mode != "off":
             raise ValueError("patch mutation testing requires a verified-PR workflow")
         self.repository_root = repository_root.resolve()
+        self.repository_access = repository_access or RepositoryAccess()
         self.policy = policy
         self.jobs: dict[str, JobRecord] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -83,6 +86,7 @@ class CodeTaskManager:
 
     async def submit(self, user_id: str, request: CodeTaskRequest) -> JobRecord:
         try:
+            self.repository_access.require(user_id, request.repository, self.repository_root)
             self._repository_path(request.repository)
             task = CodeTask(
                 repository=request.repository,
@@ -94,6 +98,8 @@ class CodeTaskManager:
             )
             if task.test_command[0] not in self.policy.allowed_test_executables:
                 raise ValueError("test executable is not allowlisted")
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="Repository access denied") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         now = datetime.now(UTC).isoformat()
@@ -123,6 +129,7 @@ class CodeTaskManager:
             record.status = "running"
             record.updated_at = datetime.now(UTC).isoformat()
             try:
+                self.repository_access.require(record.user_id, task.repository, self.repository_root)
                 repository = self._repository_path(task.repository)
                 sandbox = DockerSandbox(repository, task.policy)
                 await asyncio.to_thread(sandbox.start)
@@ -193,11 +200,13 @@ class DurableCodeTaskManager:
         max_attempts: int = 3,
         lease_seconds: int = 90,
         workflow: str = "verified_pr",
+        repository_access: RepositoryAccess | None = None,
     ):
         if execution_mode not in {"embedded", "external"}:
             raise ValueError("CODE_AGENT_EXECUTION_MODE must be embedded or external")
         self.store = store
         self.repository_root = repository_root.resolve()
+        self.repository_access = repository_access or RepositoryAccess()
         self.policy = policy
         self.execution_mode = execution_mode
         self.max_attempts = max(1, min(max_attempts, 20))
@@ -238,10 +247,13 @@ class DurableCodeTaskManager:
         self, user_id: str, request: CodeTaskRequest, idempotency_key: str = ""
     ) -> JobRecord:
         try:
+            self.repository_access.require(user_id, request.repository, self.repository_root)
             self._validate(request)
             record, created = await asyncio.to_thread(
                 self.store.enqueue, user_id, request, idempotency_key, self.max_attempts
             )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="Repository access denied") from exc
         except IdempotencyConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except JobStateError as exc:
@@ -264,6 +276,7 @@ class DurableCodeTaskManager:
                 self.policy,
                 lease_seconds=self.lease_seconds,
                 workflow=self.workflow,
+                repository_access=self.repository_access,
             )
             await worker.run_once()
 
@@ -277,6 +290,7 @@ class DurableCodeTaskManager:
             worker_id=f"embedded-{os.getpid()}-{slot}",
             lease_seconds=self.lease_seconds,
             workflow=self.workflow,
+            repository_access=self.repository_access,
         )
         await worker.run_forever()
 

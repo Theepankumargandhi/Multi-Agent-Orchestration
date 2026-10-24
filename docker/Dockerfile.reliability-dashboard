@@ -9,7 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     AGENTOPS_DATASETS_DIR=/app/evals/datasets
 
 COPY requirements-eval-dashboard.txt .
-RUN python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
 
 COPY evals/reliability_dashboard.py ./evals/reliability_dashboard.py
 COPY evals/datasets/genai_telemetry_smoke.jsonl ./evals/datasets/genai_telemetry_smoke.jsonl

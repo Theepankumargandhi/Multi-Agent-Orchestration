@@ -4,11 +4,10 @@ metadata:
   name: prometheus
   namespace: agent-platform
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: prometheus
   ports:
     - name: http
       port: 9090
       targetPort: 9090
-      nodePort: 30900

@@ -1,6 +1,6 @@
 pydantic==1.10.24
 typing_extensions==4.15.0
-pytest==8.4.2
+pytest==9.0.3
 iniconfig==2.3.0
 packaging==25.0
 pluggy==1.6.0

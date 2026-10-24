@@ -22,6 +22,7 @@ from code_agent.models import (
     SandboxPolicy,
     VerificationReport,
 )
+from code_agent.repository_access import RepositoryAccess
 from code_agent.worker import CodeAgentWorker
 
 
@@ -50,7 +51,8 @@ async def test_worker_binds_repair_memory_to_job_tenant(tmp_path, monkeypatch):
 
     monkeypatch.setattr("code_agent.worker.DockerSandbox", Sandbox)
     monkeypatch.setattr("code_agent.worker.build_verified_pr_agent", lambda _: Agent())
-    worker = CodeAgentWorker(make_store(tmp_path), root, SandboxPolicy(repair_memory_enabled=True))
+    worker = CodeAgentWorker(make_store(tmp_path), root, SandboxPolicy(repair_memory_enabled=True),
+                             repository_access=RepositoryAccess({"alice": ["repo"]}))
     job = JobRecord(task_id="job", user_id="alice", status="running", created_at="now", updated_at="now",
                     request=CodeTaskRequest(repository="repo", issue="Fix tax rounding precision"))
     await worker._solve(job)
@@ -268,6 +270,7 @@ async def test_worker_executes_claim_and_manager_survives_restart(tmp_path: Path
         repository_root,
         SandboxPolicy(),
         execution_mode="external",
+        repository_access=RepositoryAccess({"alice": ["fixture"]}),
     )
     submitted = await manager.submit("alice", request(), "durable-job-123")
 

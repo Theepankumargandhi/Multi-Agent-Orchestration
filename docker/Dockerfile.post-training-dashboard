@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POST_TRAINING_RESULTS_DIR=/app/data/evaluations/post-training
 
 COPY requirements-eval-dashboard.txt .
-RUN python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
 
 COPY post_training/__init__.py ./post_training/__init__.py
 COPY post_training/models.py ./post_training/models.py

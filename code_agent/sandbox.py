@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -48,6 +49,7 @@ class DockerSandbox:
         self.policy = policy
         self.workspace = EphemeralWorkspace(self.repository, policy)
         self.container_id: str | None = None
+        self._execution_lock = threading.Lock()
 
     @staticmethod
     def available(timeout_seconds: int = 5) -> bool:
@@ -104,6 +106,10 @@ class DockerSandbox:
             "--pids-limit",
             str(self.policy.pids_limit),
             "--read-only",
+            "--log-driver",
+            "none",
+            "--memory-swap",
+            self.policy.memory,
             "--tmpfs",
             "/tmp:rw,noexec,nosuid,size=128m",
             "--cap-drop",
@@ -122,6 +128,7 @@ class DockerSandbox:
             f"type=bind,source={workspace},target=/workspace",
             self.policy.image,
             "python",
+            "-I",
             "-c",
             "import time; time.sleep(10**9)",
         ]
@@ -157,14 +164,22 @@ class DockerSandbox:
             raise WorkspacePolicyError("test command exceeds configured limits")
 
     def run(self, command: list[str]) -> SandboxCommandResult:
+        with self._execution_lock:
+            return self._run(command)
+
+    def _run(self, command: list[str]) -> SandboxCommandResult:
         self._validate_command(command)
         if not self.container_id:
             raise RuntimeError("sandbox is not running")
         started = time.perf_counter()
         try:
+            restarted = subprocess.run(["docker", "start", self.container_id], capture_output=True,
+                                       text=True, timeout=30, check=False)
+            if restarted.returncode:
+                raise DockerUnavailableError("sandbox could not be started for execution")
             result = run_bounded(
                 ["docker", "exec", "--user", "65532:65532", self.container_id, *command],
-                timeout=self.policy.command_timeout_seconds,
+                timeout=min(600, self.policy.command_timeout_seconds),
                 max_chars=self.policy.max_output_chars,
             )
             duration = (time.perf_counter() - started) * 1000
@@ -188,23 +203,34 @@ class DockerSandbox:
                 duration_ms=duration,
                 timed_out=True,
             )
+        finally:
+            # A timed-out docker exec client leaves the actual test running.
+            # Even successful tests can leave children behind. Stop the complete
+            # container before any controller-side reads, edits, or verification.
+            stopped = subprocess.run(["docker", "stop", "--time", "0", self.container_id],
+                                     capture_output=True, text=True, timeout=30, check=False)
+            if stopped.returncode:
+                raise DockerUnavailableError("sandbox process termination could not be confirmed")
 
     def close(self) -> None:
-        container_id, self.container_id = self.container_id, None
+        with self._execution_lock:
+            self._close()
+
+    def _close(self) -> None:
+        container_id = self.container_id
         workspace_root = self.workspace.root
+        if container_id:
+            try:
+                removed = subprocess.run(
+                    ["docker", "rm", "--force", container_id],
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise DockerUnavailableError("sandbox removal could not be confirmed; workspace retained") from exc
+            if removed.returncode:
+                raise DockerUnavailableError("sandbox removal could not be confirmed; workspace retained")
+            self.container_id = None
         try:
-            if container_id:
-                try:
-                    subprocess.run(
-                        ["docker", "rm", "--force", container_id],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        check=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-        finally:
             if workspace_root and workspace_root.exists():
                 try:
                     subprocess.run(
@@ -243,6 +269,7 @@ class DockerSandbox:
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     pass
+        finally:
             self.workspace.cleanup()
 
     def __enter__(self) -> "DockerSandbox":

@@ -14,6 +14,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from code_agent.job_models import CodeTaskRequest
+from code_agent.repository_access import RepositoryAccess
 
 
 def _owner(request: Request) -> str:
@@ -92,7 +93,8 @@ def create_workbench_router(manager: Any, *, code_enabled: bool) -> APIRouter:
         response.headers["Cache-Control"] = "no-store"
         documents = os.getenv('WORKBENCH_DOCUMENTS_ENABLED', 'false').lower() == 'true'
         return {"version": "0.11.0", "evidence_mode": "configured_backend", "identity": user, "code_enabled": code_enabled,
-                "repositories": configured_repositories() if code_enabled else [],
+                "repositories": [name for name in configured_repositories()
+                                 if getattr(manager, "repository_access", RepositoryAccess()).allows(user, name)] if code_enabled else [],
                 "coding_models": configured_coding_models() if code_enabled else [],
                 "workflow": getattr(manager, "workflow", "unavailable"),
                 "test_command": ["python", "-m", "pytest", "-q"],

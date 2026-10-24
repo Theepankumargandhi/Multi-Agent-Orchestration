@@ -62,7 +62,9 @@ async def test_worker_dispatches_tournament_without_an_unused_parent_container(t
 
     monkeypatch.setattr("code_agent.repair_tournament.build_repair_tournament", lambda model: Solver())
     monkeypatch.setattr("code_agent.worker.DockerSandbox", lambda *_: pytest.fail("unused parent container"))
-    worker = CodeAgentWorker(store, repositories, SandboxPolicy(), workflow="repair_tournament")
+    from code_agent.repository_access import RepositoryAccess
+    worker = CodeAgentWorker(store, repositories, SandboxPolicy(), workflow="repair_tournament",
+                              repository_access=RepositoryAccess({"owner": ["fixture"]}))
     assert (await worker._solve(job)).status == "completed"
     assert observed[0][1] == (repositories / "fixture").resolve()
 

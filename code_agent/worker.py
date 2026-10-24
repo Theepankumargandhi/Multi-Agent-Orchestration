@@ -16,6 +16,7 @@ from code_agent.agent import CodingAgent, build_coding_model
 from code_agent.execution import LocalArtifactStore, SQLiteJobStore
 from code_agent.job_models import JobRecord
 from code_agent.models import CodeAgentResult, CodeTask, SandboxPolicy
+from code_agent.repository_access import RepositoryAccess
 from code_agent.sandbox import DockerSandbox
 from code_agent.verified_pr import build_verified_pr_agent
 
@@ -49,9 +50,11 @@ class CodeAgentWorker:
         lease_seconds: int = 90,
         solver: Solver | None = None,
         workflow: str = "verified_pr",
+        repository_access: RepositoryAccess | None = None,
     ):
         self.store = store
         self.repository_root = repository_root.resolve()
+        self.repository_access = repository_access or RepositoryAccess()
         self.policy = policy
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:8]}"
         self.lease_seconds = max(15, lease_seconds)
@@ -67,6 +70,7 @@ class CodeAgentWorker:
         self.solver = solver or self._solve
 
     async def _solve(self, job: JobRecord) -> CodeAgentResult:
+        self.repository_access.require(job.user_id, job.request.repository, self.repository_root)
         task = CodeTask(
             repository=job.request.repository,
             repair_memory_namespace=job.user_id,
@@ -124,7 +128,7 @@ class CodeAgentWorker:
             await asyncio.to_thread(self.store.release, job.task_id, self.worker_id)
             raise
         except Exception as exc:
-            retryable = not isinstance(exc, ValueError)
+            retryable = not isinstance(exc, (ValueError, PermissionError))
             message = f"Sandbox coding task failed: {type(exc).__name__}"
             return await asyncio.to_thread(
                 self.store.fail, job.task_id, self.worker_id, message, retryable
