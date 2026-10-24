@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CODE_CONTEXT_EVAL_DIR=/app/data/evaluations/code-context
 
 COPY requirements-eval-dashboard.txt .
-RUN python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && python -m pip install --no-cache-dir -r requirements-eval-dashboard.txt
 
 COPY code_agent/__init__.py ./code_agent/__init__.py
 COPY code_agent/models.py ./code_agent/models.py

@@ -1,8 +1,9 @@
 FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
 RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
-RUN python -m pip install --no-cache-dir 'pydantic==2.13.4' 'pdfplumber==0.11.10' \
-    'pypdfium2==5.14.0' 'Pillow==12.3.0'
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' 'setuptools>=83' \
+    && python -m pip install --no-cache-dir 'pydantic==2.13.4' 'pdfplumber==0.11.10' \
+    'pypdfium2==5.14.0' 'Pillow==13.0.0'
 WORKDIR /app
 COPY agentforge_sdk /app/agentforge_sdk
 COPY service/document_worker.py /app/document_worker.py

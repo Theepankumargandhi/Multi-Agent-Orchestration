@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 COPY requirements-app.txt .
-RUN python -m pip install --no-cache-dir -r requirements-app.txt
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && python -m pip install --no-cache-dir -r requirements-app.txt
 
 COPY client/ ./client/
 COPY schema/ ./schema/

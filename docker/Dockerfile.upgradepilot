@@ -3,6 +3,10 @@ FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab0
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 COPY docker/upgradepilot-v1.txt docker/upgradepilot-v2.txt docker/upgradepilot-codemod.txt /opt/locks/
 RUN python -m venv /opt/v1 && python -m venv /opt/v2 && python -m venv /opt/codemod \
+    && python -m pip install --upgrade 'pip>=26.2,<27' 'setuptools>=83' \
+    && /opt/v1/bin/pip install --upgrade 'pip>=26.2,<27' 'setuptools>=83' \
+    && /opt/v2/bin/pip install --upgrade 'pip>=26.2,<27' 'setuptools>=83' \
+    && /opt/codemod/bin/pip install --upgrade 'pip>=26.2,<27' 'setuptools>=83' \
     && /opt/v1/bin/pip install --only-binary=:all: -r /opt/locks/upgradepilot-v1.txt \
     && /opt/v2/bin/pip install --only-binary=:all: -r /opt/locks/upgradepilot-v2.txt \
     && /opt/codemod/bin/pip install --only-binary=:all: -r /opt/locks/upgradepilot-codemod.txt
