@@ -20,7 +20,9 @@ def resolve_model(identifier: str) -> tuple[str, str]:
         if provider not in {"openai", "groq"} or not model or ":" in model:
             raise ValueError("supported explicit identifiers are openai:<model> and groq:<model>")
         return provider, model
-    return ("groq" if identifier.startswith(("llama-", "mixtral-", "gemma-")) else "openai"), identifier
+    # OpenAI model IDs are never namespaced; Groq serves IDs like "openai/gpt-oss-120b".
+    groq = identifier.startswith(("llama-", "mixtral-", "gemma-")) or "/" in identifier
+    return ("groq" if groq else "openai"), identifier
 
 
 class ValidatedStructuredModel:

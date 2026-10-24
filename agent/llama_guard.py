@@ -69,7 +69,7 @@ def _get_guard_model():
             from langchain_groq import ChatGroq
 
             _model = ChatGroq(
-                model=os.getenv("GROQ_GUARD_MODEL", "llama-guard-3-8b"),
+                model=os.getenv("GROQ_GUARD_MODEL", "openai/gpt-oss-safeguard-20b"),
                 temperature=0.0,
             )
         elif os.getenv("OPENAI_API_KEY"):

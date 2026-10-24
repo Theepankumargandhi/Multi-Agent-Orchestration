@@ -39,8 +39,9 @@ def _content_to_text(result: Any) -> str:
 
 class _PersistentMCPClient:
     def __init__(self) -> None:
-        self._stack: AsyncExitStack | None = None
         self._session: Any = None
+        self._owner: asyncio.Task | None = None
+        self._stop: asyncio.Event | None = None
         self._lock: asyncio.Lock | None = None
 
     def _get_lock(self) -> asyncio.Lock:
@@ -49,26 +50,41 @@ class _PersistentMCPClient:
         return self._lock
 
     async def _connect(self) -> None:
-        if self._session is not None:
+        if self._session is not None and self._owner is not None and not self._owner.done():
             return
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-
         script = Path(MCP_TOOL_SERVER_SCRIPT)
         if not script.exists():
             raise RuntimeError(f"MCP tool server script not found: {script}")
         args = [str(script), *shlex.split(MCP_TOOL_SERVER_ARGS, posix=os.name != "nt")]
-        stack = AsyncExitStack()
+        ready: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._stop = asyncio.Event()
+        self._owner = asyncio.create_task(self._own_session(args, ready, self._stop))
+        self._session = await ready
+
+    async def _own_session(self, args: list[str], ready: asyncio.Future, stop: asyncio.Event) -> None:
+        # The stdio transport uses anyio cancel scopes, which must be exited by the
+        # task that entered them. Requests and shutdown run in different tasks, so
+        # one long-lived task opens, holds and closes the session.
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
         try:
-            read, write = await stack.enter_async_context(
-                stdio_client(StdioServerParameters(command=MCP_TOOL_SERVER_COMMAND, args=args))
-            )
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-        except Exception:
-            await stack.aclose()
+            async with AsyncExitStack() as stack:
+                read, write = await stack.enter_async_context(
+                    stdio_client(StdioServerParameters(command=MCP_TOOL_SERVER_COMMAND, args=args))
+                )
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                ready.set_result(session)
+                await stop.wait()
+        except Exception as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+                return
             raise
-        self._stack, self._session = stack, session
+        finally:
+            if not ready.done():
+                ready.cancel()
 
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         async with self._get_lock():
@@ -85,9 +101,16 @@ class _PersistentMCPClient:
             return _content_to_text(result)
 
     async def close(self) -> None:
-        stack, self._stack, self._session = self._stack, None, None
-        if stack is not None:
-            await stack.aclose()
+        owner, stop = self._owner, self._stop
+        self._owner, self._stop, self._session = None, None, None
+        if owner is None:
+            return
+        stop.set()
+        try:
+            await owner
+        except Exception:
+            # Transport teardown failures must not replace the caller's original error.
+            pass
 
 
 _persistent_client = _PersistentMCPClient()

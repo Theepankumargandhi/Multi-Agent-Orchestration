@@ -76,7 +76,8 @@ logger = logging.getLogger("agentforge.research")
 
 
 class AgentState(MessagesState):
-    safety: LlamaGuardOutput
+    # Plain JSON so checkpoints never need custom-class deserialization.
+    safety: dict
     route: str
     route_confidence: float
     route_reason: str
@@ -230,7 +231,7 @@ _gateway_call_config: contextvars.ContextVar[RunnableConfig | None] = contextvar
     "agentforge_gateway_call_config", default=None
 )
 OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini").strip()
-GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile").strip()
+GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b").strip()
 DEFAULT_VAGUE_NEWS_TOPIC = os.getenv("DEFAULT_VAGUE_NEWS_TOPIC", "ai").strip().lower()
 HYBRID_ROUTER_ENABLE = os.getenv("HYBRID_ROUTER_ENABLE", "true").strip().lower() in {"1", "true", "yes", "on"}
 HYBRID_ROUTER_MIN_CONFIDENCE = float(os.getenv("HYBRID_ROUTER_MIN_CONFIDENCE", "0.75"))
@@ -392,9 +393,17 @@ MODEL_GATEWAY_ONLINE_EVENT_PATH = os.getenv("MODEL_GATEWAY_ONLINE_EVENT_PATH", "
 ONLINE_EVAL_INTEGRITY_KEY = os.getenv("ONLINE_EVAL_INTEGRITY_KEY", "").encode() or None
 
 
+def _is_groq_model(model_name: str) -> bool:
+    # OpenAI model IDs are never namespaced; Groq serves IDs like "openai/gpt-oss-120b".
+    return (
+        model_name in {GROQ_CHAT_MODEL, "llama-3.1-70b", "llama-3.1-70b-versatile"}
+        or model_name.startswith(("llama-", "mixtral-", "gemma-"))
+        or "/" in model_name
+    )
+
+
 def _build_model(model_name: str) -> BaseChatModel:
-    groq_names = {GROQ_CHAT_MODEL, "llama-3.1-70b", "llama-3.1-70b-versatile"}
-    if model_name in groq_names or model_name.startswith(("llama-", "mixtral-", "gemma-")):
+    if _is_groq_model(model_name):
         try:
             from langchain_groq import ChatGroq
         except Exception as exc:
@@ -494,7 +503,7 @@ def estimate_tokens(text: str) -> int:
 
 def _gateway_provider_for_model(model_name: str) -> str:
     resolved = _resolve_model_name(model_name)
-    return "groq" if resolved == GROQ_CHAT_MODEL or resolved.startswith(("llama-", "mixtral-", "gemma-")) else "openai"
+    return "groq" if _is_groq_model(resolved) else "openai"
 
 
 def _get_inference_gateway() -> InferenceGateway:
@@ -1279,7 +1288,7 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         safety_output.safety_assessment == SafetyAssessment.ERROR and SAFETY_FAIL_CLOSED
     )
     return {
-        "safety": safety_output,
+        "safety": safety_output.model_dump(mode="json"),
         "safety_blocked": blocked,
         "query": query,
         "route_confidence": 0.0,
@@ -1322,6 +1331,14 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "evidence_quality_report": {},
         "adjudicated_evidence": [],
     }
+
+
+def _safety_from_state(state: AgentState) -> LlamaGuardOutput | None:
+    value = state.get("safety")
+    if isinstance(value, LlamaGuardOutput):
+        # Checkpoints written before safety was stored as JSON.
+        return value
+    return LlamaGuardOutput.model_validate(value) if value else None
 
 
 def _next_node_after_safety(state: AgentState) -> str:
@@ -1975,7 +1992,7 @@ def _draft_response_update(final: str, source_meta: str, *, force_release: bool 
 
 
 async def response_agent(state: AgentState, config: RunnableConfig):
-    safety: LlamaGuardOutput = state.get("safety")
+    safety = _safety_from_state(state)
     preserved_source_meta = (state.get("answer_source_meta") or "").strip()
     if bool(state.get("safety_blocked")):
         if safety and safety.safety_assessment == SafetyAssessment.UNSAFE:
@@ -2746,7 +2763,7 @@ def _evaluate_response_quality(state: AgentState) -> tuple[int, str]:
     rag_notes = (state.get("rag_notes") or "").strip()
     kg_notes = (state.get("kg_notes") or "").strip()
     math_result = (state.get("math_result") or "").strip()
-    safety: LlamaGuardOutput | None = state.get("safety")
+    safety = _safety_from_state(state)
     grounding = state.get("grounding_report") or {}
     uncertainty = state.get("uncertainty_receipt") or {}
     adaptive_compute = state.get("adaptive_compute_receipt") or {}

@@ -102,7 +102,8 @@ def test_edit_security_has_the_same_dangerous_execution_checks_as_write():
 
 
 @pytest.mark.parametrize("identifier,expected", [("groq:openai/gpt-oss-20b", ("groq", "openai/gpt-oss-20b")),
-    ("openai:gpt-example", ("openai", "gpt-example")), ("llama-example", ("groq", "llama-example"))])
+    ("openai:gpt-example", ("openai", "gpt-example")), ("llama-example", ("groq", "llama-example")),
+    ("openai/gpt-oss-120b", ("groq", "openai/gpt-oss-120b")), ("gpt-example", ("openai", "gpt-example"))])
 def test_explicit_provider_resolution(identifier, expected):
     assert resolve_model(identifier) == expected
 

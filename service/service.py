@@ -1115,7 +1115,7 @@ async def capabilities():
         openai_model = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
         models.append({"id": openai_model, "label": f"OpenAI · {openai_model}"})
     if os.getenv("GROQ_API_KEY"):
-        groq_model = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
+        groq_model = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b")
         models.append({"id": groq_model, "label": f"Groq · {groq_model}"})
     if (
         ADAPTIVE_MODEL_ROUTER_ENABLED
