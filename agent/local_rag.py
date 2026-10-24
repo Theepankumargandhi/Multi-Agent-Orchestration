@@ -586,16 +586,22 @@ def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: 
         if active_capture():
             active_capture().reranker = "production_heuristic"
         return _heuristic_rerank(query, candidates, top_k)
-    if not RAG_ENABLE_LLM_RERANKER or not os.getenv("OPENAI_API_KEY"):
+    # Groq serves namespaced IDs such as openai/gpt-oss-20b; OpenAI IDs never contain "/".
+    groq = "/" in RAG_RERANK_MODEL or RAG_RERANK_MODEL.startswith(("llama-", "mixtral-", "gemma-"))
+    if not RAG_ENABLE_LLM_RERANKER or not os.getenv("GROQ_API_KEY" if groq else "OPENAI_API_KEY"):
         return fallback()
 
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
-        from langchain_openai import ChatOpenAI
+
+        if groq:
+            from langchain_groq import ChatGroq as ChatModel
+        else:
+            from langchain_openai import ChatOpenAI as ChatModel
     except Exception:
         return fallback()
 
-    model = ChatOpenAI(model=RAG_RERANK_MODEL, temperature=0)
+    model = ChatModel(model=RAG_RERANK_MODEL, temperature=0)
     candidate_lines: List[str] = []
     for i, c in enumerate(candidates, start=1):
         candidate_lines.append(
