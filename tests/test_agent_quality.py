@@ -49,6 +49,35 @@ async def test_safety_failure_blocks_and_clears_stale_evidence():
     assert update["math_result"] == ""
 
 
+@pytest.mark.asyncio
+async def test_internal_llm_calls_accept_a_langgraph_callback_manager(monkeypatch):
+    # Inside a node, config["callbacks"] is a manager; iterating it crashed every
+    # non-streamed call (query rewrites, grounding drafts, adaptive deliberation).
+    import importlib
+
+    from langchain_core.callbacks import (
+        AsyncCallbackManager,
+        BaseCallbackHandler,
+        UsageMetadataCallbackHandler,
+    )
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+    class ClientStream(BaseCallbackHandler):
+        started = 0
+
+        def on_chat_model_start(self, *_args, **_kwargs):
+            self.started += 1
+
+    research = importlib.import_module("agent.research_assistant")
+    monkeypatch.setattr(research, "MODEL_GATEWAY_ENABLED", False)
+    monkeypatch.setattr(research, "_get_model", lambda _config: FakeListChatModel(responses=["draft answer"]))
+    stream = ClientStream()
+    config = {"configurable": {}, "callbacks": AsyncCallbackManager(handlers=[UsageMetadataCallbackHandler(), stream])}
+
+    assert await research._call_llm("system", "user", config) == "draft answer"
+    assert stream.started == 0
+
+
 def test_answers_replace_look_alike_hyphens_and_spaces():
     # gpt-oss writes codes such as "TANGERINE‑42"; a copied code must still match.
     raw = "Codeword: TANGERINE‑42, n = 10, cost $5 – done"
