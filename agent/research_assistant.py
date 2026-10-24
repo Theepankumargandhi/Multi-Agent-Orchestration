@@ -76,7 +76,8 @@ logger = logging.getLogger("agentforge.research")
 
 
 class AgentState(MessagesState):
-    safety: LlamaGuardOutput
+    # Plain JSON so checkpoints never need custom-class deserialization.
+    safety: dict
     route: str
     route_confidence: float
     route_reason: str
@@ -1287,7 +1288,7 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         safety_output.safety_assessment == SafetyAssessment.ERROR and SAFETY_FAIL_CLOSED
     )
     return {
-        "safety": safety_output,
+        "safety": safety_output.model_dump(mode="json"),
         "safety_blocked": blocked,
         "query": query,
         "route_confidence": 0.0,
@@ -1330,6 +1331,14 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "evidence_quality_report": {},
         "adjudicated_evidence": [],
     }
+
+
+def _safety_from_state(state: AgentState) -> LlamaGuardOutput | None:
+    value = state.get("safety")
+    if isinstance(value, LlamaGuardOutput):
+        # Checkpoints written before safety was stored as JSON.
+        return value
+    return LlamaGuardOutput.model_validate(value) if value else None
 
 
 def _next_node_after_safety(state: AgentState) -> str:
@@ -1983,7 +1992,7 @@ def _draft_response_update(final: str, source_meta: str, *, force_release: bool 
 
 
 async def response_agent(state: AgentState, config: RunnableConfig):
-    safety: LlamaGuardOutput = state.get("safety")
+    safety = _safety_from_state(state)
     preserved_source_meta = (state.get("answer_source_meta") or "").strip()
     if bool(state.get("safety_blocked")):
         if safety and safety.safety_assessment == SafetyAssessment.UNSAFE:
@@ -2754,7 +2763,7 @@ def _evaluate_response_quality(state: AgentState) -> tuple[int, str]:
     rag_notes = (state.get("rag_notes") or "").strip()
     kg_notes = (state.get("kg_notes") or "").strip()
     math_result = (state.get("math_result") or "").strip()
-    safety: LlamaGuardOutput | None = state.get("safety")
+    safety = _safety_from_state(state)
     grounding = state.get("grounding_report") or {}
     uncertainty = state.get("uncertainty_receipt") or {}
     adaptive_compute = state.get("adaptive_compute_receipt") or {}

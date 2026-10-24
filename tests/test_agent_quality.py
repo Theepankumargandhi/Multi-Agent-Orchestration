@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from agent.research_assistant import (
     _next_node_after_safety,
     intent_router_agent,
     math_agent,
+    response_agent,
     safety_agent,
     web_hitl_gate_agent,
 )
@@ -44,6 +46,17 @@ async def test_safety_failure_blocks_and_clears_stale_evidence():
     assert _next_node_after_safety(update) == "response_agent"
     assert update["web_notes"] == update["rag_notes"] == update["kg_notes"] == ""
     assert update["math_result"] == ""
+
+
+@pytest.mark.asyncio
+async def test_safety_state_is_plain_json_and_still_explains_the_block():
+    # Custom classes in checkpoints will be rejected by future LangGraph releases.
+    unsafe = LlamaGuardOutput(safety_assessment=SafetyAssessment.UNSAFE, unsafe_categories=["Violent Crimes"])
+    with patch("agent.research_assistant.llama_guard", AsyncMock(return_value=unsafe)):
+        update = await safety_agent({"messages": [HumanMessage(content="threat")]}, {"configurable": {}})
+    assert json.loads(json.dumps(update["safety"])) == update["safety"]
+    reply = await response_agent({**update, "messages": []}, {"configurable": {}})
+    assert "Violent Crimes" in reply["final_response"]
 
 
 @pytest.mark.asyncio
