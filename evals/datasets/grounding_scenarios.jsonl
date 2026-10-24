@@ -10,3 +10,5 @@
 {"id":"general-chat-bypass","kind":"general_not_required","expected_action":"not_required","description":"Non-evidence-bound general conversation is not over-gated."}
 {"id":"safe-retrieval-failure","kind":"safe_failure_message","expected_action":"pass","description":"An honest retrieval-failure response is released without inventing facts."}
 {"id":"receipt-integrity","kind":"artifact_integrity","expected_action":"pass","description":"Any modification to a grounding report invalidates its receipt."}
+{"id":"negated-claim","kind":"negated_claim","expected_action":"abstain","description":"A claim that negates its matching evidence is not released despite high word overlap."}
+{"id":"contradicted-claim-repair","kind":"contradicted_claim_repair","expected_action":"repair","description":"A claim contradicting its evidence is removed while the supported claim is kept."}

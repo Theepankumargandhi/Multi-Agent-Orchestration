@@ -42,6 +42,8 @@ class GroundingEvalScenario(BaseModel):
         "general_not_required",
         "safe_failure_message",
         "artifact_integrity",
+        "negated_claim",
+        "contradicted_claim_repair",
     ]
     expected_action: Literal["pass", "repair", "abstain", "not_required"]
     description: str
@@ -163,6 +165,16 @@ def _inputs(kind: str) -> tuple[str, str, dict[str, str]]:
             "AgentForge uses LangGraph for agent orchestration.",
             web,
         ),
+        "negated_claim": (
+            "web",
+            "AgentForge does not use LangGraph for agent orchestration.",
+            web,
+        ),
+        "contradicted_claim_repair": (
+            "rag",
+            "AgentForge uses LangGraph for orchestration. AgentForge is not built on FastAPI.",
+            {"rag_notes": "AgentForge uses LangGraph for orchestration. AgentForge is built on FastAPI."},
+        ),
     }
     return cases[kind]
 
@@ -181,6 +193,9 @@ def _execute(scenario: GroundingEvalScenario) -> GroundingEvalOutcome:
     if scenario.kind == "partial_repair":
         repaired = repair_answer(report, evidence)
         repair_ok = "uses LangGraph" in repaired and "Moon" not in repaired
+    if scenario.kind == "contradicted_claim_repair":
+        repaired = repair_answer(report, evidence)
+        repair_ok = "uses LangGraph" in repaired and "not built on FastAPI" not in repaired
     if scenario.kind == "artifact_integrity":
         tampered = GroundingReport.model_validate(report.model_dump())
         tampered.confidence = 0.123456

@@ -13,7 +13,7 @@ from evals.grounding_evaluation import (
 
 def test_grounding_gate_passes_all_controls_without_unsafe_release():
     report = evaluate_grounding(load_scenarios(), DEFAULT_DATASET.as_posix())
-    assert report.total == report.passed == 12
+    assert report.total == report.passed == 14
     assert report.pass_rate == 1
     assert report.unsafe_release_rate == 0
     assert report.fabricated_citation_escape_rate == 0
