@@ -12,8 +12,10 @@ from agent.research_assistant import (
     _build_response_context,
     _ensure_web_citations,
     _evaluate_response_quality,
+    _looks_like_math,
     _next_node_after_safety,
     intent_router_agent,
+    math_agent,
     safety_agent,
     web_hitl_gate_agent,
 )
@@ -53,6 +55,10 @@ async def test_safety_failure_blocks_and_clears_stale_evidence():
         ("explain this repository architecture", "rag"),
         ("latest news compared with this codebase", "hybrid"),
         ("how does FastAPI connect to LangGraph in this project", "kg"),
+        ("latest AI news in 2025", "web"),
+        ("compare python 3.12 and 3.13 in this repo", "kg"),
+        ("what is 2^10?", "math"),
+        ("(3+4)*2", "math"),
     ],
 )
 async def test_deterministic_router_paths(query, expected):
@@ -61,6 +67,22 @@ async def test_deterministic_router_paths(query, expected):
         {"configurable": {"model": "unused"}},
     )
     assert result["route"] == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["latest AI news in 2025", "python 3.12 vs 3.13", "2025-10-24 release notes",
+     "24/7 support news", "gpt-4 vs gpt-3", "solve error 404"],
+)
+def test_years_versions_and_dates_are_not_math(query):
+    assert not _looks_like_math(query)
+
+
+@pytest.mark.asyncio
+async def test_caret_is_exponentiation_not_xor():
+    with patch("agent.research_assistant.mcp_calculator", AsyncMock(return_value=(None, "disabled"))):
+        result = await math_agent({"route": "math", "query": "what is 2^10?"}, {})
+    assert result["math_result"] == "2^10 = 1024"
 
 
 def test_hybrid_context_keeps_web_and_rag_but_not_stale_kg():
