@@ -91,6 +91,41 @@ def test_years_versions_and_dates_are_not_math(query):
     assert not _looks_like_math(query)
 
 
+@pytest.mark.parametrize(
+    "query",
+    # Every math case in the routing benchmark, arena and seed datasets.
+    ["calculate (125 * 8) / 4", "calculate 144 divided by 12", "calculate the average of 12, 16, and 20",
+     "compute 15 factorial", "compute the square root of 625", "evaluate (32 * 7) - 19",
+     "solve 3x + 9 = 30", "solve the equation 4x + 8 = 24", "What is 17 percent of 850?",
+     "what is 7 cubed"],
+)
+def test_worded_and_keyword_math_routes_to_the_calculator(query):
+    assert _looks_like_math(query)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [("What is 17 percent of 850?", "(17/100*850) = 144.5"), ("calculate 144 divided by 12", "144 / 12 = 12.0"),
+     ("compute the square root of 625", "(625**0.5) = 25.0"), ("what is 7 cubed", "(7**3) = 343"),
+     ("calculate (73 * 9) + 11", "(73 * 9) + 11 = 668")],
+)
+async def test_calculator_evaluates_worded_arithmetic(query, expected):
+    with patch("agent.research_assistant.mcp_calculator", AsyncMock(return_value=(None, "disabled"))):
+        result = await math_agent({"route": "math", "query": query}, {})
+    assert result["math_result"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["compute 15 factorial", "solve the equation 4x + 8 = 24",
+                                   "calculate the average of 12, 16, and 20"])
+async def test_calculator_declines_instead_of_answering_a_different_expression(query):
+    # Stripping letters used to turn "compute 15 factorial" into "15 = 15".
+    with patch("agent.research_assistant.mcp_calculator", AsyncMock(return_value=(None, "disabled"))):
+        result = await math_agent({"route": "math", "query": query}, {})
+    assert " = " not in result["math_result"]
+
+
 @pytest.mark.asyncio
 async def test_caret_is_exponentiation_not_xor():
     with patch("agent.research_assistant.mcp_calculator", AsyncMock(return_value=(None, "disabled"))):

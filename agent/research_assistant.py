@@ -713,21 +713,47 @@ def _strip_local_prefix(query: str) -> str:
 _ARITHMETIC_RE = re.compile(
     r"\(?\s*\d+(?:\.\d+)?\s*\)?(?:\s*[+\-*/^]\s*\(?\s*\d+(?:\.\d+)?\s*\)?)+"
 )
-_MATH_KEYWORDS = ("calculate", "compute", "evaluate")
+_NUMBER = r"\d+(?:\.\d+)?"
+# Worded arithmetic, e.g. "17 percent of 850", "7 cubed" or "square root of 625".
+_MATH_PHRASE_RE = re.compile(
+    rf"{_NUMBER}\s*(?:%|percent)\s+of\s+{_NUMBER}|{_NUMBER}\s+(?:squared|cubed|factorial)\b"
+    rf"|\bsquare root of\s+{_NUMBER}|\bfactorial of\s+{_NUMBER}"
+)
+_CALCULATE_KEYWORDS = ("calculate", "compute", "evaluate")
+_EQUATION_KEYWORDS = ("solve", "equation")
 _MATH_FILLER_RE = re.compile(r"\b(?:what|whats|what's|is|equals?|the|value|of|result)\b|[=?\s]")
 
 
 def _looks_like_math(query: str) -> bool:
-    # Years, versions and dates ("in 2025", "3.12", "2025-10-24") are not arithmetic.
-    # Require an operator between numbers, plus either an explicit math keyword or
-    # a query that is nothing but the expression, so prose like "24/7 support" stays out.
+    # Years, versions and dates ("in 2025", "3.12", "2025-10-24") are not arithmetic,
+    # and "solve error 404" is not an equation.
     q = (query or "").strip().lower()
-    match = _ARITHMETIC_RE.search(q)
-    if not match:
+    if not re.search(r"\d", q):
         return False
-    if any(k in q for k in _MATH_KEYWORDS):
+    if any(k in q for k in _CALCULATE_KEYWORDS) or _MATH_PHRASE_RE.search(q):
         return True
-    return not _MATH_FILLER_RE.sub("", q[: match.start()] + q[match.end() :])
+    if any(k in q for k in _EQUATION_KEYWORDS) and "=" in q:
+        return True
+    # Otherwise only a bare expression such as "what is 2^10?" counts, so prose
+    # like "24/7 support" stays out.
+    match = _ARITHMETIC_RE.search(q)
+    return bool(match) and not _MATH_FILLER_RE.sub("", q[: match.start()] + q[match.end() :])
+
+
+# Applied before letters are stripped, so worded arithmetic keeps its meaning.
+_WORD_OPERATORS = (
+    (re.compile(rf"({_NUMBER})\s*(?:%|percent)\s+of\s+({_NUMBER})"), r"(\1/100*\2)"),
+    (re.compile(rf"\bsquare root of\s+({_NUMBER})"), r"(\1**0.5)"),
+    (re.compile(rf"({_NUMBER})\s+squared\b"), r"(\1**2)"),
+    (re.compile(rf"({_NUMBER})\s+cubed\b"), r"(\1**3)"),
+    (re.compile(r"\bdivided by\b"), "/"),
+    (re.compile(r"\b(?:times|multiplied by)\b"), "*"),
+    (re.compile(r"\bplus\b"), "+"),
+    (re.compile(r"\bminus\b"), "-"),
+)
+# Requests the calculator cannot answer honestly. Stripping letters from them would
+# produce a different expression ("compute 15 factorial" -> "15").
+_UNSUPPORTED_MATH_RE = re.compile(r"\d[a-z]\b|\b[a-z]\s*=|=\s*[a-z]\b|factorial|average|\bmean\b|median")
 
 
 def _extract_expression(query: str) -> str:
@@ -1922,8 +1948,13 @@ async def math_agent(state: AgentState, config: RunnableConfig):
     if route != "math":
         return {"math_result": "Not required for non-math route."}
 
-    expr = _extract_expression(query)
-    if not expr:
+    text = query.lower()
+    if _UNSUPPORTED_MATH_RE.search(text):
+        return {"math_result": "The calculator does not support algebra, factorials or statistics."}
+    for pattern, replacement in _WORD_OPERATORS:
+        text = pattern.sub(replacement, text)
+    expr = _extract_expression(text)
+    if not re.search(r"\d", expr) or not re.search(r"[+\-*/^]", expr):
         return {"math_result": "Could not extract a valid math expression."}
 
     # numexpr reads "^" as bitwise XOR (2^10 == 8); users mean exponentiation.
