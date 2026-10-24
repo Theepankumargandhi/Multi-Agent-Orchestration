@@ -15,6 +15,7 @@ from code_agent.workbench import create_workbench_router
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKBENCH_REPOSITORIES", "example,team/approved")
+    monkeypatch.setenv("CODE_AGENT_REPOSITORY_GRANTS", '{"alice":["example","team/approved"]}')
     monkeypatch.setenv("OPENAI_API_KEY", "authored-offline-key")
     monkeypatch.setenv("OPENAI_CHAT_MODEL", "authored-model")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)

@@ -65,7 +65,9 @@ async def test_worker_dispatches_opt_in_supervisor_without_parent_container(tmp_
             return completed_result()
     monkeypatch.setattr("code_agent.repair_tournament.build_adaptive_supervisor", lambda _: Solver())
     monkeypatch.setattr("code_agent.worker.DockerSandbox", lambda *_: pytest.fail("unused parent container"))
-    worker = CodeAgentWorker(store, root, SandboxPolicy(), workflow="adaptive_supervisor")
+    from code_agent.repository_access import RepositoryAccess
+    worker = CodeAgentWorker(store, root, SandboxPolicy(), workflow="adaptive_supervisor",
+                              repository_access=RepositoryAccess({"owner": ["fixture"]}))
     assert (await worker._solve(job)).status == "completed" and seen == [(root / "fixture").resolve()]
 
 
