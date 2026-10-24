@@ -700,11 +700,25 @@ def _strip_local_prefix(query: str) -> str:
     return re.sub(r"(?i)^local\s*:\s*", "", q, count=1).strip()
 
 
+# Two or more numbers joined by arithmetic operators, e.g. "19 * 7" or "(3+4)*2".
+_ARITHMETIC_RE = re.compile(
+    r"\(?\s*\d+(?:\.\d+)?\s*\)?(?:\s*[+\-*/^]\s*\(?\s*\d+(?:\.\d+)?\s*\)?)+"
+)
+_MATH_KEYWORDS = ("calculate", "compute", "evaluate")
+_MATH_FILLER_RE = re.compile(r"\b(?:what|whats|what's|is|equals?|the|value|of|result)\b|[=?\s]")
+
+
 def _looks_like_math(query: str) -> bool:
-    q = (query or "").lower()
-    if any(k in q for k in ["calculate", "math", "equation", "solve"]):
+    # Years, versions and dates ("in 2025", "3.12", "2025-10-24") are not arithmetic.
+    # Require an operator between numbers, plus either an explicit math keyword or
+    # a query that is nothing but the expression, so prose like "24/7 support" stays out.
+    q = (query or "").strip().lower()
+    match = _ARITHMETIC_RE.search(q)
+    if not match:
+        return False
+    if any(k in q for k in _MATH_KEYWORDS):
         return True
-    return bool(re.search(r"[\d\s\+\-\*/\(\)\.\^]{3,}", q))
+    return not _MATH_FILLER_RE.sub("", q[: match.start()] + q[match.end() :])
 
 
 def _extract_expression(query: str) -> str:
@@ -1895,12 +1909,14 @@ async def math_agent(state: AgentState, config: RunnableConfig):
     if not expr:
         return {"math_result": "Could not extract a valid math expression."}
 
-    mcp_value, mcp_error = await mcp_calculator(expr)
+    # numexpr reads "^" as bitwise XOR (2^10 == 8); users mean exponentiation.
+    evaluable = expr.replace("^", "**")
+    mcp_value, mcp_error = await mcp_calculator(evaluable)
     if mcp_value is not None and mcp_value != "":
         return {"math_result": f"{expr} = {mcp_value}", "answer_source_meta": "calculator via mcp"}
 
     try:
-        value = numexpr.evaluate(expr, global_dict={}, local_dict={"pi": 3.141592653589793, "e": 2.718281828459045})
+        value = numexpr.evaluate(evaluable, global_dict={}, local_dict={"pi": 3.141592653589793, "e": 2.718281828459045})
         math_result = f"{expr} = {str(value).strip('[]')}"
     except Exception as e:
         math_result = f"Math evaluation failed for '{expr}': {e}"
