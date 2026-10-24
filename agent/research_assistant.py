@@ -230,7 +230,7 @@ _gateway_call_config: contextvars.ContextVar[RunnableConfig | None] = contextvar
     "agentforge_gateway_call_config", default=None
 )
 OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini").strip()
-GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile").strip()
+GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b").strip()
 DEFAULT_VAGUE_NEWS_TOPIC = os.getenv("DEFAULT_VAGUE_NEWS_TOPIC", "ai").strip().lower()
 HYBRID_ROUTER_ENABLE = os.getenv("HYBRID_ROUTER_ENABLE", "true").strip().lower() in {"1", "true", "yes", "on"}
 HYBRID_ROUTER_MIN_CONFIDENCE = float(os.getenv("HYBRID_ROUTER_MIN_CONFIDENCE", "0.75"))
@@ -392,9 +392,17 @@ MODEL_GATEWAY_ONLINE_EVENT_PATH = os.getenv("MODEL_GATEWAY_ONLINE_EVENT_PATH", "
 ONLINE_EVAL_INTEGRITY_KEY = os.getenv("ONLINE_EVAL_INTEGRITY_KEY", "").encode() or None
 
 
+def _is_groq_model(model_name: str) -> bool:
+    # OpenAI model IDs are never namespaced; Groq serves IDs like "openai/gpt-oss-120b".
+    return (
+        model_name in {GROQ_CHAT_MODEL, "llama-3.1-70b", "llama-3.1-70b-versatile"}
+        or model_name.startswith(("llama-", "mixtral-", "gemma-"))
+        or "/" in model_name
+    )
+
+
 def _build_model(model_name: str) -> BaseChatModel:
-    groq_names = {GROQ_CHAT_MODEL, "llama-3.1-70b", "llama-3.1-70b-versatile"}
-    if model_name in groq_names or model_name.startswith(("llama-", "mixtral-", "gemma-")):
+    if _is_groq_model(model_name):
         try:
             from langchain_groq import ChatGroq
         except Exception as exc:
@@ -494,7 +502,7 @@ def estimate_tokens(text: str) -> int:
 
 def _gateway_provider_for_model(model_name: str) -> str:
     resolved = _resolve_model_name(model_name)
-    return "groq" if resolved == GROQ_CHAT_MODEL or resolved.startswith(("llama-", "mixtral-", "gemma-")) else "openai"
+    return "groq" if _is_groq_model(resolved) else "openai"
 
 
 def _get_inference_gateway() -> InferenceGateway:

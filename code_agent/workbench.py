@@ -62,7 +62,7 @@ def configured_repositories() -> tuple[str, ...]:
 def configured_coding_models() -> tuple[str, ...]:
     models = []
     for key, setting, default in (("OPENAI_API_KEY", "OPENAI_CHAT_MODEL", "gpt-4o-mini"),
-                                  ("GROQ_API_KEY", "GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")):
+                                  ("GROQ_API_KEY", "GROQ_CHAT_MODEL", "openai/gpt-oss-120b")):
         if os.getenv(key):
             model = os.getenv(setting, default).strip()
             if not re.fullmatch(r"[A-Za-z0-9_./:-]{1,100}", model):
