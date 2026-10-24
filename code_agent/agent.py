@@ -302,6 +302,9 @@ class CodingAgent:
                 if not security_decision.allowed:
                     rules = ", ".join(security_decision.rule_ids) or "unspecified rule"
                     raise WorkspacePolicyError(f"security policy blocked action ({rules})")
+                if security_decision.requires_human_approval:
+                    status = "failed"
+                    raise WorkspacePolicyError("security review required before executing this action; task held")
                 if action.kind == "list":
                     output = "\n".join(await asyncio.to_thread(sandbox.workspace.list_files, 500))
                 elif action.kind == "read":

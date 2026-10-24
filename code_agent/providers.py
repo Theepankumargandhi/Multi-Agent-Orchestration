@@ -5,6 +5,8 @@ import os
 
 from pydantic import ValidationError
 
+from code_agent.secret_patterns import require_secret_free_prompt
+
 
 class StructuredOutputError(ValueError):
     """Content-free terminal schema failure; never retain provider output in errors."""
@@ -29,6 +31,7 @@ class ValidatedStructuredModel:
         self.runnable = base.with_structured_output(schema, method="function_calling", include_raw=True)
 
     async def ainvoke(self, messages, config=None):
+        require_secret_free_prompt(messages)
         response = await self.runnable.ainvoke(messages, config=config)
         if not isinstance(response, dict) or response.get("parsing_error") is not None or response.get("parsed") is None:
             raise StructuredOutputError("provider did not return a valid structured result")
