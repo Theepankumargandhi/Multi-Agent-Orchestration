@@ -11,6 +11,7 @@ It reads GROQ_API_KEY from the environment or .env and makes a handful of small 
 import importlib
 import json
 import os
+import re
 import urllib.request
 import uuid
 
@@ -91,4 +92,27 @@ async def test_unsafe_request_is_blocked_with_a_category(graph):
 async def test_calculator_answers_exponentiation(graph):
     state = await _ask(graph, "what is 2^10?")
     assert state["route"] == "math"
-    assert "1024" in state["final_response"]
+    # The model may format the calculator's result as "1,024".
+    assert "1024" in re.sub(r"[,\s]", "", state["final_response"])
+
+
+@pytest.mark.asyncio
+async def test_project_question_is_answered_from_ingested_documents(graph, monkeypatch, tmp_path):
+    from agent import local_rag, rag_embeddings
+
+    # A temporary store with free on-device embeddings; the fact exists nowhere else.
+    monkeypatch.setattr(rag_embeddings, "RAG_EMBEDDING_BACKEND", "local")
+    monkeypatch.setattr(local_rag, "CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
+    monkeypatch.setattr(local_rag, "_chroma_store_cache", None)
+    local_rag._reset_local_rag_cache()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "release.md").write_text(
+        "# Release process\n\nThe release codeword for this project is TANGERINE-42.\n", encoding="utf-8"
+    )
+    assert local_rag.ingest_markdown_to_chroma(["release.md"])["ok"]
+
+    state = await _ask(graph, "What is the release codeword for this project?")
+
+    assert state["route"] == "rag"
+    assert "TANGERINE-42" in state["final_response"]
+    local_rag._reset_chroma_store_cache()
