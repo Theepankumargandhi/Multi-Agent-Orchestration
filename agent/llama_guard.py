@@ -68,10 +68,16 @@ def _get_guard_model():
         if os.getenv("GROQ_API_KEY"):
             from langchain_groq import ChatGroq
 
-            _model = ChatGroq(
-                model=os.getenv("GROQ_GUARD_MODEL", "openai/gpt-oss-safeguard-20b"),
-                temperature=0.0,
+            model_name = os.getenv("GROQ_GUARD_MODEL", "openai/gpt-oss-safeguard-20b")
+            # gpt-oss models reason before answering. Low effort cut reasoning on unsafe
+            # requests from 144 to 53 tokens with the same verdicts; other models reject
+            # the parameter, so it is only sent to gpt-oss.
+            extra = (
+                {"reasoning_effort": os.getenv("GROQ_GUARD_REASONING_EFFORT", "low")}
+                if model_name.startswith("openai/gpt-oss")
+                else {}
             )
+            _model = ChatGroq(model=model_name, temperature=0.0, **extra)
         elif os.getenv("OPENAI_API_KEY"):
             from langchain_openai import ChatOpenAI
 
@@ -110,28 +116,58 @@ def parse_llama_guard_output(output: str) -> LlamaGuardOutput:
         )
 
 
-async def llama_guard(role: str, messages: List[AnyMessage]) -> LlamaGuardOutput:
+# Every request is moderated, and Groq's free tier allows the safeguard model 2,000
+# tokens per minute: resending the last 12 messages made a few turns of long answers
+# exceed that in one request (HTTP 413), so fail-closed safety refused the thread.
+_CONTEXT_TURNS = 4
+_CONTEXT_CHARS = 400
+_WINDOW_CHARS = 4000
+_WINDOW_OVERLAP = 200
+
+
+def _windows(text: str) -> List[str]:
+    # The newest message is checked in full; a harmful request after the first
+    # window must not escape moderation.
+    if len(text) <= _WINDOW_CHARS:
+        return [text]
+    step = _WINDOW_CHARS - _WINDOW_OVERLAP
+    return [text[start:start + _WINDOW_CHARS] for start in range(0, len(text) - _WINDOW_OVERLAP, step)]
+
+
+def _conversations(messages: List[AnyMessage]) -> List[str]:
+    """One moderation input per window of the newest message, with short prior context.
+
+    Earlier user messages were already checked in full when they were newest.
+    """
     role_mapping = {"ai": "Agent", "human": "User"}
-    # Bound moderation context so a long-lived thread cannot cause unbounded spend.
-    messages_str = [
-        f"{role_mapping[m.type]}: {str(m.content)[:4000]}"
-        for m in messages[-12:]
-        if m.type in ["ai", "human"]
-    ]
-    conversation_history = "\n\n".join(messages_str)
-    compiled_prompt = llama_guard_prompt.format(
-        role=role,
-        conversation_history=conversation_history,
-        categories_text=categories_text,
-    )
-    try:
-        result = await _get_guard_model().ainvoke([SystemMessage(content=compiled_prompt)])
-    except Exception as exc:
-        return LlamaGuardOutput(
-            safety_assessment=SafetyAssessment.ERROR,
-            error_message=str(exc)[:300],
+    turns = [m for m in messages if m.type in role_mapping]
+    if not turns:
+        return [""]
+    *previous, newest = turns
+    context = [f"{role_mapping[m.type]}: {str(m.content)[:_CONTEXT_CHARS]}" for m in previous[-_CONTEXT_TURNS:]]
+    label = role_mapping[newest.type]
+    return ["\n\n".join([*context, f"{label}: {window}"]) for window in _windows(str(newest.content))]
+
+
+async def llama_guard(role: str, messages: List[AnyMessage]) -> LlamaGuardOutput:
+    for conversation_history in _conversations(messages):
+        compiled_prompt = llama_guard_prompt.format(
+            role=role,
+            conversation_history=conversation_history,
+            categories_text=categories_text,
         )
-    return parse_llama_guard_output(result.content)
+        try:
+            result = await _get_guard_model().ainvoke([SystemMessage(content=compiled_prompt)])
+        except Exception as exc:
+            return LlamaGuardOutput(
+                safety_assessment=SafetyAssessment.ERROR,
+                error_message=str(exc)[:300],
+            )
+        output = parse_llama_guard_output(result.content)
+        # Any unsafe or unparseable window decides the whole message.
+        if output.safety_assessment != SafetyAssessment.SAFE:
+            return output
+    return LlamaGuardOutput(safety_assessment=SafetyAssessment.SAFE)
 
 
 if __name__ == "__main__":
