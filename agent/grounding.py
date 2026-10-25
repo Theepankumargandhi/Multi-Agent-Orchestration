@@ -37,6 +37,42 @@ _NON_CLAIM_PREFIXES = (
     "i cannot",
     "i don't have enough verified evidence",
 )
+# Includes words that negate by meaning: "insufficiently independent" ~ "not independent".
+_NEGATION_CUES = {
+    "not", "no", "never", "neither", "nor", "none", "cannot", "without",
+    "insufficient", "insufficiently", "lack", "lacks", "lacking", "unable", "missing", "absent",
+}
+# Words skipped when finding what a negation governs, as in "is not even available".
+_NEGATION_FILLERS = _STOP_WORDS | {
+    "be", "been", "being", "do", "does", "did", "had", "can", "could", "would", "should",
+    "may", "might", "must", "ever", "even", "yet", "any", "also", "always", "only",
+}
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+# Citation markers and retrieval metadata carry page numbers and scores, not facts:
+# "\u3010source=README.md, page=22\u3011" and "source=x, page=3, fused=0.03, bm25=6.6:".
+_CITATION_MARKER_RE = re.compile(r"\u3010[^\u3011]*\u3011|\b(?:source|page|fused|bm25|vector|relevance|distance)=[^\s,:]+[,:]?")
+# Clause boundaries; "1,000" and "10:30" stay intact.
+_CLAUSE_RE = re.compile(r"[,;]\s+|:\s+|\s+(?:but|while|whereas|although|though|however)\s+", re.I)
+# A claim that uses one side while the matching evidence uses only the other
+# side states the opposite of that evidence.
+_OPPOSITE_FAMILIES = (
+    ({"rise", "rises", "rose", "risen", "rising", "increase", "increases", "increased", "grew", "higher"},
+     {"fall", "falls", "fell", "fallen", "falling", "decrease", "decreases", "decreased", "declined",
+      "dropped", "lower"}),
+    ({"pass", "passes", "passed", "succeeded", "succeeds"}, {"fail", "fails", "failed"}),
+    ({"enable", "enables", "enabled"}, {"disable", "disables", "disabled"}),
+    ({"available"}, {"unavailable"}),
+    ({"supported"}, {"unsupported"}),
+    ({"allowed"}, {"blocked", "forbidden", "disallowed"}),
+    ({"valid"}, {"invalid"}),
+    ({"safe"}, {"unsafe"}),
+    ({"secure"}, {"insecure"}),
+    ({"true"}, {"false"}),
+    ({"accepted", "approved"}, {"rejected", "denied"}),
+)
+_POLARITY_WORDS = {word for left, right in _OPPOSITE_FAMILIES for word in left | right} | {
+    "not", "no", "never", "neither", "nor", "none", "cannot", "without",
+}
 
 
 def _canonical(value: object) -> bytes:
@@ -71,8 +107,102 @@ def _cosine(left: dict[int, float], right: dict[int, float]) -> float:
     return sum(value * right.get(index, 0) for index, value in left.items())
 
 
+def _content_tokens(value: str) -> set[str]:
+    return {item for item in _tokens(value) if not item.isdigit() and item not in _POLARITY_WORDS}
+
+
+def _numbers(value: str) -> set[str]:
+    return {item.replace(",", "") for item in _NUMBER_RE.findall(_URL_RE.sub(" ", value))}
+
+
+def _clauses(text: str) -> list[str]:
+    return [item for item in _CLAUSE_RE.split(text) if item and item.strip()]
+
+
+def _stem(word: str) -> str:
+    # Enough to match "use"/"uses"/"used" and "store"/"stored"/"storing".
+    if len(word) > 3:
+        for suffix in ("ing", "ed", "es", "s"):
+            if word.endswith(suffix) and not word.endswith("ss") and len(word) - len(suffix) >= 2:
+                word = word[: -len(suffix)]
+                break
+    return word[:-1] if len(word) >= 3 and word.endswith("e") else word
+
+
+def _negation(text: str) -> tuple[bool, set[str]]:
+    """Return whether text contains a negation and the words its negations govern."""
+    normalized = re.sub(r"n't\b", " not", text.casefold().replace(chr(0x2019), "'"))
+    words = _TOKEN_RE.findall(normalized)
+    negated, governed = False, set()
+    for index, word in enumerate(words):
+        if word not in _NEGATION_CUES:
+            continue
+        negated = True
+        for following in words[index + 1:index + 4]:
+            if following not in _NEGATION_FILLERS and following not in _NEGATION_CUES:
+                governed.add(following)
+                break
+    return negated, governed
+
+
+def _best_match(content: set[str], candidates: list[str]) -> tuple[str, float]:
+    return max(
+        ((item, len(content & _content_tokens(item)) / len(content)) for item in candidates),
+        key=lambda pair: pair[1],
+        default=("", 0.0),
+    )
+
+
+def _part_contradiction(part: str, evidence_sentences: list[str]) -> str:
+    content = _content_tokens(part)
+    # Too short to judge, e.g. a markdown fragment such as "`code_agent/`".
+    if not content or len(_tokens(part)) < 3:
+        return ""
+    sentence, overlap = _best_match(content, evidence_sentences)
+    # Only evidence about the same subject can contradict this part of the claim.
+    if overlap < 0.5:
+        return ""
+    # Numbers are read across the whole sentence ("In 2024, revenue rose by 5%").
+    part_numbers, sentence_numbers = _numbers(part), _numbers(sentence)
+    if part_numbers and sentence_numbers and not part_numbers <= sentence_numbers:
+        return "numeric"
+    # A negation contradicts only when the other side is not negated and contains the
+    # word it governs: "not available" against "available", but "runs tests, not
+    # shell commands" still supports "runs tests".
+    part_negated, part_governed = _negation(part)
+    sentence_negated, sentence_governed = _negation(sentence)
+    if part_negated != sentence_negated:
+        governed, plain = (part_governed, sentence) if part_negated else (sentence_governed, part)
+        if {_stem(word) for word in governed} & {_stem(word) for word in _TOKEN_RE.findall(plain.casefold())}:
+            return "negation"
+    part_words, sentence_words = set(_tokens(part)), set(_tokens(sentence))
+    for left, right in _OPPOSITE_FAMILIES:
+        # A part that uses both sides ("failed before, passed after") is not one-sided.
+        if part_words & left and part_words & right:
+            continue
+        for mine, other in ((left, right), (right, left)):
+            if part_words & mine and sentence_words & other and not sentence_words & mine:
+                return "opposite"
+    return ""
+
+
+def _contradiction(claim: str, evidence_text: str) -> str:
+    """Name how evidence about the same subject states the opposite of the claim, if it does.
+
+    Word overlap alone scores "X is not available" as strong support for
+    "X is available"; this checks numbers, negation and opposite words for each
+    clause of the claim.
+    """
+    evidence_sentences = [item for item in _SENTENCE_RE.split(_CITATION_MARKER_RE.sub(" ", evidence_text)) if item.strip()]
+    for part in _clauses(_CITATION_MARKER_RE.sub(" ", _MARKDOWN_LINK_RE.sub(" ", claim))):
+        found = _part_contradiction(part, evidence_sentences)
+        if found:
+            return found
+    return ""
+
+
 class GroundingPolicy(BaseModel):
-    version: str = "grounding-policy-v1"
+    version: str = "grounding-policy-v2"
     required_routes: set[str] = Field(
         default_factory=lambda: {"web", "hybrid", "rag", "kg", "math"}
     )
@@ -98,6 +228,7 @@ class ClaimAssessment(BaseModel):
     support_score: float = 0
     supported: bool = False
     high_risk: bool = False
+    contradiction: Literal["", "numeric", "negation", "opposite"] = ""
     citation_urls: list[str] = Field(default_factory=list)
     invalid_citation_urls: list[str] = Field(default_factory=list)
 
@@ -115,6 +246,7 @@ class GroundingReport(BaseModel):
     total_claims: int
     supported_claims: int
     unsupported_high_risk_claims: int
+    contradicted_claims: int = 0
     evidence_count: int
     evidence_fingerprints: list[str]
     claims: list[ClaimAssessment]
@@ -239,7 +371,14 @@ def verify_grounding(
         claim_invalid = sorted(set(claim_urls) - allowed_urls)
         high_risk = bool(_HIGH_RISK_RE.search(_MARKDOWN_LINK_RE.sub("", claim)))
         threshold = policy.min_high_risk_claim_score if high_risk else policy.min_claim_score
-        supported = best_score >= threshold and not claim_invalid
+        # Any qualifying evidence that states the opposite blocks the claim, even
+        # if another item appears to support it.
+        contradiction = next(
+            (found for item, score in scored if score >= threshold
+             for found in [_contradiction(claim, item.text)] if found),
+            "",
+        )
+        supported = best_score >= threshold and not claim_invalid and not contradiction
         assessments.append(
             ClaimAssessment(
                 claim_index=index,
@@ -249,6 +388,7 @@ def verify_grounding(
                 support_score=round(best_score, 6),
                 supported=supported,
                 high_risk=high_risk,
+                contradiction=contradiction,
                 citation_urls=claim_urls,
                 invalid_citation_urls=claim_invalid,
             )
@@ -261,7 +401,9 @@ def verify_grounding(
     coverage = supported_weight / total_weight if total_weight else 1.0
     supported_count = sum(item.supported for item in assessments)
     unsupported_high_risk = sum(item.high_risk and not item.supported for item in assessments)
-    passed = coverage >= policy.min_coverage and not invalid_urls
+    contradicted = sum(bool(item.contradiction) for item in assessments)
+    # A claim that states the opposite of the evidence is never averaged away by coverage.
+    passed = coverage >= policy.min_coverage and not invalid_urls and not contradicted
     if passed:
         action: GroundingAction = "pass"
         reason = "claim_coverage_and_citations_passed"
@@ -269,8 +411,12 @@ def verify_grounding(
         action = "abstain"
         reason = "insufficient_support_for_high_risk_or_majority_claims"
     else:
+        # Repair keeps only supported claims, so a contradicted claim is never released.
         action = "repair"
-        reason = "remove_unsupported_claims_or_invalid_citations"
+        reason = (
+            "remove_contradicted_claims" if contradicted
+            else "remove_unsupported_claims_or_invalid_citations"
+        )
     confidence = max(0.0, min(1.0, coverage * citation_precision))
     report = GroundingReport(
         policy_version=policy.version,
@@ -284,6 +430,7 @@ def verify_grounding(
         total_claims=len(assessments),
         supported_claims=supported_count,
         unsupported_high_risk_claims=unsupported_high_risk,
+        contradicted_claims=contradicted,
         evidence_count=len(evidence),
         evidence_fingerprints=[item.fingerprint for item in evidence],
         claims=assessments,

@@ -624,10 +624,11 @@ async def _call_llm(
     if not stream_to_client:
         # The service callback is reserved for final-answer tokens. Without this,
         # router and rewrite output is accidentally exposed to the user.
+        callbacks = config.get("callbacks") or []
+        # Inside a graph node LangGraph passes a callback manager, not a list.
+        handlers = getattr(callbacks, "handlers", callbacks)
         call_config["callbacks"] = [
-            callback
-            for callback in (config.get("callbacks") or [])
-            if isinstance(callback, UsageMetadataCallbackHandler)
+            callback for callback in handlers if isinstance(callback, UsageMetadataCallbackHandler)
         ]
     if MODEL_GATEWAY_ENABLED:
         from agent.incident_runtime import hold_capture

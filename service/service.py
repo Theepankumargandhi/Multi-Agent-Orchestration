@@ -1284,7 +1284,7 @@ async def capabilities():
             ],
         },
         "grounding_verification": {
-            "version": "grounding-policy-v1",
+            "version": "grounding-policy-v2",
             "enabled": os.getenv("GROUNDING_VERIFICATION_ENABLED", "false").lower()
             in {"1", "true", "yes", "on"},
             "controls": [
