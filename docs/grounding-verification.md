@@ -1,6 +1,6 @@
 # Claim-level grounding and hallucination control
 
-AgentForge includes an opt-in release gate between answer generation and evaluation. When enabled,
+CiteRight includes an opt-in release gate between answer generation and evaluation. When enabled,
 the response node creates a private draft without streaming it to the client. A grounding verifier
 maps factual claims to retrieved web, local-RAG, knowledge-graph, or calculator evidence. Only a
 verified, repaired, or explicit abstention message is released.
@@ -86,8 +86,7 @@ python -m evals.grounding_evaluation \
 
 The 14 checked-in cases exercise supported releases, unsupported facts, fabricated citations,
 partial repair, unsupported numerical claims, web/RAG/graph/math evidence, missing evidence,
-general-chat bypass, honest retrieval failure, artifact tampering, and contradicted claims. CI publishes the report, and
-the AgentOps command center displays it under **Grounding gate**.
+general-chat bypass, honest retrieval failure, artifact tampering, and contradicted claims. CI publishes the report.
 
 This suite validates policy mechanics against synthetic cases. It does not establish a universal
 hallucination rate or factuality score. Publish externally meaningful results only after independent

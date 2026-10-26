@@ -1,6 +1,6 @@
 # Evidence intelligence and conflict-aware RAG
 
-Retrieval success does not imply evidence quality. Search results can repeat the same article, contain stale claims, disagree on numbers, carry prompt injections, or create the appearance of corroboration through copied content. AgentForge therefore has an optional pre-synthesis evidence adjudication node.
+Retrieval success does not imply evidence quality. Search results can repeat the same article, contain stale claims, disagree on numbers, carry prompt injections, or create the appearance of corroboration through copied content. CiteRight therefore has an optional pre-synthesis evidence adjudication node.
 
 ## Control flow
 
@@ -12,7 +12,7 @@ For web, hybrid, RAG, knowledge-graph, and calculator routes, `evidence_adjudica
 4. enforces independent-source requirements;
 5. validates dated evidence against the requested recency window;
 6. builds numeric and negation conflict edges between semantically overlapping statements;
-7. passes only the adjudicated evidence objects to synthesis, citation completion, grounding, conformal control, and adaptive deliberation.
+7. passes only the adjudicated evidence objects to synthesis, citation completion, and grounding.
 
 The original retrieved text remains available for operational debugging but cannot re-enter the model context after a quality report exists. If adjudication errors, every source is removed and the response fails closed.
 
