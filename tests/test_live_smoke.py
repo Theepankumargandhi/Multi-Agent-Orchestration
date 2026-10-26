@@ -3,7 +3,7 @@
 Every other test replaces the model with a fake, so a retired provider model can
 break every request while the suite stays green. Run before a release:
 
-    AGENTFORGE_LIVE_SMOKE=1 python -m pytest tests/test_live_smoke.py -m integration
+    CITERIGHT_LIVE_SMOKE=1 python -m pytest tests/test_live_smoke.py -m integration
 
 It reads GROQ_API_KEY from the environment or .env and makes a handful of small calls.
 """
@@ -17,7 +17,7 @@ import uuid
 
 import pytest
 
-if os.getenv("AGENTFORGE_LIVE_SMOKE") == "1":
+if os.getenv("CITERIGHT_LIVE_SMOKE") == "1":
     from dotenv import load_dotenv
 
     load_dotenv(override=False)
@@ -25,8 +25,8 @@ if os.getenv("AGENTFORGE_LIVE_SMOKE") == "1":
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        os.getenv("AGENTFORGE_LIVE_SMOKE") != "1" or not os.getenv("GROQ_API_KEY"),
-        reason="set AGENTFORGE_LIVE_SMOKE=1 and GROQ_API_KEY to call the real provider",
+        os.getenv("CITERIGHT_LIVE_SMOKE") != "1" or not os.getenv("GROQ_API_KEY"),
+        reason="set CITERIGHT_LIVE_SMOKE=1 and GROQ_API_KEY to call the real provider",
     ),
 ]
 
@@ -35,7 +35,7 @@ def _served_groq_models() -> set[str]:
     request = urllib.request.Request(
         "https://api.groq.com/openai/v1/models",
         # Groq's edge rejects the default urllib user agent with 403.
-        headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}", "User-Agent": "agentforge-smoke/1.0"},
+        headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}", "User-Agent": "citeright-smoke/1.0"},
     )
     with urllib.request.urlopen(request, timeout=20) as response:
         return {item["id"] for item in json.load(response)["data"]}

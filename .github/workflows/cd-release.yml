@@ -56,15 +56,15 @@ jobs:
           file: docker/Dockerfile.service
           push: true
           tags: |
-            ${{ steps.tags.outputs.namespace }}/multi-agent-orchestration-service:${{ steps.tags.outputs.version }}
-            ${{ steps.tags.outputs.namespace }}/multi-agent-orchestration-service:latest
+            ${{ steps.tags.outputs.namespace }}/citeright-service:${{ steps.tags.outputs.version }}
+            ${{ steps.tags.outputs.namespace }}/citeright-service:latest
 
-      - name: Build and push app image
+      - name: Build and push web image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile.app
+          file: docker/Dockerfile.web
           push: true
           tags: |
-            ${{ steps.tags.outputs.namespace }}/multi-agent-orchestration-app:${{ steps.tags.outputs.version }}
-            ${{ steps.tags.outputs.namespace }}/multi-agent-orchestration-app:latest
+            ${{ steps.tags.outputs.namespace }}/citeright-web:${{ steps.tags.outputs.version }}
+            ${{ steps.tags.outputs.namespace }}/citeright-web:latest

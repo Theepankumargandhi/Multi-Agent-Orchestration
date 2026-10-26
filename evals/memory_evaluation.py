@@ -54,7 +54,7 @@ class MemoryEvalOutcome(BaseModel):
 
 class MemoryEvalReport(BaseModel):
     schema_version: str = "1.0"
-    generated_by: str = "agentforge-memory-eval"
+    generated_by: str = "citeright-memory-eval"
     dataset_path: str
     dataset_fingerprint: str
     total: int
@@ -209,7 +209,7 @@ def _execute(scenario: MemoryEvalScenario, root: Path) -> MemoryEvalOutcome:
 def evaluate_memory(
     scenarios: list[MemoryEvalScenario], dataset_path: str = ""
 ) -> MemoryEvalReport:
-    with tempfile.TemporaryDirectory(prefix="agentforge-memory-eval-") as directory:
+    with tempfile.TemporaryDirectory(prefix="citeright-memory-eval-") as directory:
         outcomes = [_execute(item, Path(directory)) for item in scenarios]
     by_kind = {item.kind: item for item in outcomes}
     passed = sum(item.passed for item in outcomes)

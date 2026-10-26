@@ -10,21 +10,14 @@ COPY requirements-service.txt .
 RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
     && python -m pip install --no-cache-dir -r requirements-service.txt
 
-ENV XDG_CACHE_HOME=/app/.cache
-COPY scripts/setup_code_parsers.py /tmp/setup_code_parsers.py
-RUN python /tmp/setup_code_parsers.py
-
 COPY agent/ ./agent/
-COPY agentforge_sdk/ ./agentforge_sdk/
-COPY code_agent/ ./code_agent/
-COPY evals/ ./evals/
-COPY post_training/ ./post_training/
 COPY schema/ ./schema/
 COPY service/ ./service/
+COPY scripts/ingestion/ ./scripts/ingestion/
 COPY run_service.py .
 
-# Import the shared retrieval dependency during the build, not on the first request.
-RUN python -c "from agentforge_sdk import DocumentRAG; import agent.local_rag"
+# Import the retrieval stack during the build, not on the first request.
+RUN python -c "import agent.local_rag"
 
 RUN addgroup --system app && adduser --system --ingroup app --uid 10001 app \
     && mkdir -p /app/data/checkpoints /app/data/store /app/data/rag /app/data/chroma_db /app/data/graph_chroma_db \

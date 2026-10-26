@@ -2,7 +2,7 @@
 
 ## Assets and trust boundaries
 
-Assets include model-provider keys, user credentials/tokens, conversation data, checkpoints, ingested documents, source repositories, generated patches, tool outputs, and trace data. Trust boundaries exist at the public HTTP API, retrieved web/PDF content, MCP subprocess transport, persistence backends, model providers, temporary coding workspaces, and the Docker sandbox runtime.
+Assets include model-provider keys, user credentials/tokens, conversation data, checkpoints, ingested documents, tool outputs, and trace data. Trust boundaries exist at the public HTTP API, retrieved web/PDF content, MCP subprocess transport, persistence backends, model providers, temporary coding workspaces, and the Docker sandbox runtime.
 
 ## Principal threats and controls
 
@@ -19,8 +19,6 @@ Assets include model-provider keys, user credentials/tokens, conversation data, 
 | Cross-user data access | Authenticated user ID is required in conversation, checkpoint, and memory queries; API tests attempt cross-tenant list, search, export, and deletion | Replace the SQLite reference backend with database row-level security and defense-in-depth authorization policy |
 | Long-term memory poisoning or stale facts | Explicit-consent extraction, confidence/TTL gates, PII redaction, instruction/secret quarantine, untrusted prompt boundaries, conflict lineage, correction/deletion, and a deterministic governance suite | Add human-authored adaptive attacks, calibrated classifiers, encrypted storage, retention enforcement, and independent policy review |
 | Hallucinated claims or fabricated citations | Optional pre-release claim/evidence alignment, retrieved-URL allowlisting, stricter high-risk thresholds, draft withholding, bounded repair/abstention, integrity receipts, and a CI regression corpus | Calibrate NLI/judge ensembles on independently labelled domain claims and continuously evaluate adversarial paraphrases and fresh sources |
-| Overconfident verifier release or calibration tampering | Route-aware split-conformal correctness sets, singleton-only release, fail-closed artifact loading, HMAC/SHA integrity, selective-risk evaluation, and confidence-distribution drift alerts | Use representative time/user/document-separated labels, protected calibration storage, minimum slice sizes, scheduled recalibration, and operator-reviewed risk targets |
-| Runaway deliberation, hidden-draft leakage, or confident candidate collusion | Adaptive inference has hard candidate/provider-token/latency ceilings; drafts never stream or enter receipts; every candidate is independently grounded and, when enabled, conformal-filtered; evidence disagreement and receipt tampering fail closed | Enforce distributed tenant cost quotas, diversify providers for failure independence, and calibrate consensus on adversarial human-labelled live traces |
 | Resource exhaustion | Pydantic length bounds, HTTP body limit, bounded caches/corpora, timeouts, process-local rate limit | Use gateway/Redis distributed limits and per-user cost budgets |
 | Arbitrary calculator execution | `numexpr` receives empty globals and a small local constant set | Add expression AST allowlisting and complexity limits if expanded |
 | Secret leakage | Backend-only credentials, `.env` excluded from Docker context/git, generic client errors | Use a managed secret store and automated secret scanning |

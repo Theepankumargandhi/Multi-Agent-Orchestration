@@ -1,6 +1,0 @@
---- a/app.py
-+++ b/app.py
-@@ -8,2 +8,2 @@
- def discount(quantity):
--    return quantity // 10
-+    return int(quantity // 10)

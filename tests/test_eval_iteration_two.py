@@ -2,13 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from evals.adaptive_router import (
-    CostAwareRouter,
-    RoutingObservation,
-    evaluate_router,
-    train_router,
-    tune_threshold,
-)
 from evals.build_seed_dataset import build_cases
 from evals.calibration import JudgeDecision, PairwiseCase, calibrate_pairwise_judge
 from evals.retrieval_metrics import RetrievalCase, evaluate_rankings, reciprocal_rank_fusion
@@ -66,82 +59,6 @@ def test_retrieval_metrics_and_reciprocal_rank_fusion():
     assert report.mrr == 0.75
     assert set(report.slices) == {"easy", "multi-hop"}
     assert reciprocal_rank_fusion([["a", "b"], ["b", "c"]])[0] == "b"
-
-
-def _observations() -> list[RoutingObservation]:
-    return [
-        RoutingObservation(
-            id="simple-1",
-            query="hello",
-            small_success=True,
-            strong_success=True,
-            small_cost_usd=0.001,
-            strong_cost_usd=0.01,
-            split="train",
-        ),
-        RoutingObservation(
-            id="simple-2",
-            query="calculate 2 + 2",
-            small_success=True,
-            strong_success=True,
-            small_cost_usd=0.001,
-            strong_cost_usd=0.01,
-            split="train",
-        ),
-        RoutingObservation(
-            id="hard-1",
-            query="analyze the multi-step architecture and dependency impact in this codebase",
-            small_success=False,
-            strong_success=True,
-            small_cost_usd=0.001,
-            strong_cost_usd=0.01,
-            split="train",
-        ),
-        RoutingObservation(
-            id="risk-1",
-            query="review this security credential deletion plan",
-            small_success=False,
-            strong_success=True,
-            small_cost_usd=0.001,
-            strong_cost_usd=0.01,
-            split="train",
-            high_risk=True,
-        ),
-        RoutingObservation(
-            id="simple-v",
-            query="say hello",
-            small_success=True,
-            strong_success=True,
-            small_cost_usd=0.001,
-            strong_cost_usd=0.01,
-            split="validation",
-        ),
-        RoutingObservation(
-            id="hard-v",
-            query="trace the multi-step API database dependency impact",
-            small_success=False,
-            strong_success=True,
-            small_cost_usd=0.001,
-            strong_cost_usd=0.01,
-            split="validation",
-        ),
-    ]
-
-
-def test_learned_cost_router_tunes_threshold_and_round_trips(tmp_path: Path):
-    observations = _observations()
-    router = train_router(observations)
-    validation = [item for item in observations if item.split == "validation"]
-    tuned = tune_threshold(router, validation, minimum_success_rate=1.0)
-    assert tuned.success_rate == 1.0
-    assert tuned.cost_reduction > 0
-    assert router.select("delete production credentials", high_risk=True) == "strong"
-
-    path = tmp_path / "router.json"
-    router.save(path)
-    restored = CostAwareRouter.load(path)
-    assert restored.training_fingerprint == router.training_fingerprint
-    assert evaluate_router(restored, validation).success_rate == 1.0
 
 
 def test_human_review_round_trip_preserves_audit_metadata(tmp_path: Path):

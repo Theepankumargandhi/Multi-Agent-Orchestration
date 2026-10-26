@@ -16,7 +16,7 @@ def jobs():
 
 @pytest.mark.parametrize(
     "job_id,minimum,maximum",
-    [("tests", 30, 45), ("ai-evaluations", 30, 45), ("lint", 5, 10), ("dependency-audit", 10, 20)],
+    [("tests", 15, 30), ("ai-evaluations", 10, 20), ("lint", 5, 10), ("dependency-audit", 10, 20)],
 )
 def test_checks_have_independent_bounded_budgets(jobs, job_id, minimum, maximum):
     job = jobs[job_id]
@@ -41,8 +41,6 @@ def test_execution_jobs_prepare_their_own_runtime(jobs, job_id):
     assert "python -m pip install -r requirements.txt" in script
     assert "python -m pip install --no-deps --editable ." in script
     assert "mkdir -p data/checkpoints data/store data/rag" in script
-    assert "python scripts/setup_code_parsers.py" in script
-    assert "docker build -f docker/Dockerfile.code-sandbox -t agentforge-code-sandbox:local ." in script
     assert not any("download-artifact" in step.get("uses", "") for step in job["steps"])
 
 
@@ -67,20 +65,17 @@ def test_pytest_retains_coverage_annotations_and_local_reports(jobs):
     }
 
 
-def test_evaluation_job_keeps_reproducibility_quality_and_post_training_gates(jobs):
+def test_evaluation_job_keeps_the_quality_gates(jobs):
     steps = jobs["ai-evaluations"]["steps"]
-    script = "\n".join(step.get("run", "") for step in steps)
+    script = " ".join(step.get("run", "") for step in steps)
     assert "python -m pytest" not in script
     assert "pip-audit" not in script and "python -m ruff" not in script
     for gate in (
-        "python -m evals.oracle_calibration_evaluation",
-        "python -m code_agent.retrieval_learning train-fusion",
-        "--check evals/experiments/code_context_fusion.json",
         "python -m evals.run_offline_evals --min-score 0.95",
         "python -m evals.run_experiments --no-store --min-score 0.95",
-        "python -m evals.ensemble_outcome_evaluation drill --require-gate",
-        "python -m post_training.cli smoke",
-        "python -m post_training.cli register",
+        "python -m evals.grounding_evaluation",
+        "python -m evals.evidence_quality_evaluation",
+        "python -m evals.memory_evaluation",
     ):
         assert gate in script
     gate_step = next(step for step in steps if step.get("name") == "Run offline AI evaluation gates")
@@ -115,6 +110,5 @@ def test_artifact_names_remain_unique_and_with_their_producing_job(jobs):
                 owners[name] = job_id
     assert all(count == 1 for count in Counter(names).values())
     assert owners["coverage-xml"] == owners["pytest-junit"] == "tests"
-    assert owners["experimental-retrieval-decision"] == "ai-evaluations"
-    assert owners["ensemble-final-outcome-validation"] == "ai-evaluations"
+    assert owners["offline-evaluation-reports"] == "ai-evaluations"
     assert jobs["docker-build-check"]["needs"] == "tests"

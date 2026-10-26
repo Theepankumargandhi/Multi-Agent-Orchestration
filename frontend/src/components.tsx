@@ -8,30 +8,6 @@ export function Icon({ name, size = 20 }: { name: string; size?: number }) {
         <path d="M8 8h8M8 12h5" />
       </>
     ),
-    coding: (
-      <>
-        <path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18" />
-      </>
-    ),
-    overview: (
-      <>
-        <rect x="3" y="3" width="7" height="7" rx="1" />
-        <rect x="14" y="3" width="7" height="7" rx="1" />
-        <rect x="3" y="14" width="7" height="7" rx="1" />
-        <rect x="14" y="14" width="7" height="7" rx="1" />
-      </>
-    ),
-    documents: (
-      <>
-        <path d="M6 3h8l4 4v14H6Z" />
-        <path d="M14 3v5h4M9 12h6m-6 4h6" />
-      </>
-    ),
-    evaluations: (
-      <>
-        <path d="M4 20h16M7 16v-5m5 5V5m5 11V8" />
-      </>
-    ),
     shield: (
       <>
         <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z" />

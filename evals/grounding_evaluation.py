@@ -65,7 +65,7 @@ class GroundingEvalOutcome(BaseModel):
 
 class GroundingEvalReport(BaseModel):
     schema_version: str = "1.0"
-    generated_by: str = "agentforge-grounding-eval"
+    generated_by: str = "citeright-grounding-eval"
     dataset_path: str
     dataset_fingerprint: str
     total: int

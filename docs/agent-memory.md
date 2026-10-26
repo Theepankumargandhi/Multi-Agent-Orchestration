@@ -1,6 +1,6 @@
 # Trustworthy long-term agent memory
 
-AgentForge includes an opt-in memory subsystem that turns explicit user requests into typed,
+CiteRight includes an opt-in memory subsystem that turns explicit user requests into typed,
 tenant-isolated records. It is disabled by default, and the graph behaves as before when it is off.
 
 ## Architecture

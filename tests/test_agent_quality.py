@@ -69,7 +69,6 @@ async def test_internal_llm_calls_accept_a_langgraph_callback_manager(monkeypatc
             self.started += 1
 
     research = importlib.import_module("agent.research_assistant")
-    monkeypatch.setattr(research, "MODEL_GATEWAY_ENABLED", False)
     monkeypatch.setattr(research, "_get_model", lambda _config: FakeListChatModel(responses=["draft answer"]))
     stream = ClientStream()
     config = {"configurable": {}, "callbacks": AsyncCallbackManager(handlers=[UsageMetadataCallbackHandler(), stream])}

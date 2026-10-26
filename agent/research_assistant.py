@@ -1,14 +1,10 @@
 import asyncio
 import base64
-import contextvars
-import hashlib
 import logging
 import os
 import re
-import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs
 
@@ -21,21 +17,7 @@ from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
-from agent.adaptive_compute import (
-    ComputePlan,
-    ComputePolicy,
-    ComputeSignals,
-    attach_search_plan,
-    candidate_assessment,
-    plan_compute,
-    seal_plan,
-    select_candidate,
-    verify_plan,
-)
-from agent.distilled_policy import DistilledPlanningPolicy
-from agent.ensemble_outcome_shadow import EnsembleOutcomeShadowStore
 from agent.evidence_quality import EvidenceQualityPolicy, adjudicate_evidence
-from agent.execution_replay import ExecutionReplayStore
 from agent.grounding import (
     GroundingPolicy,
     GroundingReport,
@@ -48,31 +30,9 @@ from agent.llama_guard import LlamaGuardOutput, SafetyAssessment, llama_guard
 from agent.local_rag import init_local_knowledge_store, search_local_knowledge
 from agent.mcp_client import mcp_calculator, mcp_web_search
 from agent.memory import extract_memory_candidates, get_memory_store
-from agent.model_gateway import (
-    GatewayPolicy,
-    GatewayRejectedError,
-    InferenceGateway,
-    InferenceReceipt,
-    InferenceRequest,
-    ProviderResult,
-    ProviderSpec,
-)
-from agent.offline_rl import ConservativePlanningPolicy
-from agent.online_evaluation import append_online_event, event_from_gateway_receipt
-from agent.preference_deployment import PreferenceDeploymentStore
-from agent.preference_ranking import PreferenceRanker
-from agent.preference_shadow import PreferenceShadowStore, validate_approval
-from agent.process_reward import ProcessRewardScorer, ProcessStep
-from agent.process_supervision import ProcessSupervisionStore
-from agent.search_planner import SearchPlan, SearchPolicy, SearchRequest, VerifierGuidedMCTS
 from agent.tools import perform_web_search
-from agent.uncertainty import assess_grounding_report, load_calibrator
-from agent.verifier_active_learning import VerifierActiveLearningQueue
-from agent.verifier_ensemble import EnsembleProcessRewardScorer
-from agent.verifier_shadow import VerifierShadowStore
-from agent.world_model import AgentWorldModel
 
-logger = logging.getLogger("agentforge.research")
+logger = logging.getLogger("citeright.research")
 
 
 class AgentState(MessagesState):
@@ -123,20 +83,11 @@ class AgentState(MessagesState):
     grounding_report: dict
     grounding_confidence: float
     grounding_action: str
-    uncertainty_receipt: dict
-    adaptive_compute_plan: dict
-    adaptive_compute_receipt: dict
-    execution_replay_event_ids: list[str]
-    preference_shadow_receipt: dict
-    preference_deployment_receipt: dict
-    process_supervision_receipt: dict
-    verifier_shadow_receipt: dict
-    ensemble_outcome_shadow_receipt: dict
     evidence_quality_report: dict
     adjudicated_evidence: list[dict]
 
 
-# 18 specialized agents in this orchestration graph.
+# 17 specialized agents in this orchestration graph.
 SPECIALIZED_AGENTS = [
     "safety_agent",
     "memory_retrieval_agent",
@@ -152,7 +103,6 @@ SPECIALIZED_AGENTS = [
     "evidence_adjudication_agent",
     "response_agent",
     "grounding_verifier_agent",
-    "adaptive_deliberation_agent",
     "grounding_repair_agent",
     "evaluation_agent",
     "memory_write_agent",
@@ -226,10 +176,6 @@ def _with_agent_trace(agent_name: str, handler):
 # NOTE: models with streaming=True will send tokens as they are generated
 # if the /stream endpoint is called with stream_tokens=True (the default)
 _model_cache = {}
-_inference_gateway: InferenceGateway | None = None
-_gateway_call_config: contextvars.ContextVar[RunnableConfig | None] = contextvars.ContextVar(
-    "agentforge_gateway_call_config", default=None
-)
 OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b").strip()
 DEFAULT_VAGUE_NEWS_TOPIC = os.getenv("DEFAULT_VAGUE_NEWS_TOPIC", "ai").strip().lower()
@@ -251,121 +197,6 @@ GROUNDING_FAIL_CLOSED = os.getenv("GROUNDING_FAIL_CLOSED", "true").strip().lower
     "1", "true", "yes", "on"
 }
 GROUNDING_INTEGRITY_KEY = os.getenv("GROUNDING_INTEGRITY_KEY", "").encode() or None
-UNCERTAINTY_CALIBRATION_ENABLED = os.getenv(
-    "UNCERTAINTY_CALIBRATION_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-UNCERTAINTY_CALIBRATOR_PATH = Path(
-    os.getenv("UNCERTAINTY_CALIBRATOR_PATH", "data/evaluations/uncertainty/calibrator.json")
-)
-UNCERTAINTY_INTEGRITY_KEY = os.getenv("UNCERTAINTY_INTEGRITY_KEY", "").encode() or None
-_uncertainty_calibrator = None
-_uncertainty_calibrator_mtime_ns = -1
-ADAPTIVE_COMPUTE_ENABLED = os.getenv(
-    "ADAPTIVE_COMPUTE_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-ADAPTIVE_COMPUTE_MAX_CANDIDATES = max(
-    2, min(int(os.getenv("ADAPTIVE_COMPUTE_MAX_CANDIDATES", "3")), 5)
-)
-ADAPTIVE_COMPUTE_MAX_EXTRA_TOKENS = max(
-    128, min(int(os.getenv("ADAPTIVE_COMPUTE_MAX_EXTRA_TOKENS", "1800")), 8192)
-)
-ADAPTIVE_COMPUTE_MAX_LATENCY_MS = max(
-    100.0, min(float(os.getenv("ADAPTIVE_COMPUTE_MAX_LATENCY_MS", "15000")), 120000.0)
-)
-ADAPTIVE_COMPUTE_INTEGRITY_KEY = (
-    os.getenv("ADAPTIVE_COMPUTE_INTEGRITY_KEY", "").encode() or None
-)
-PROCESS_REWARD_MODEL_ENABLED = os.getenv(
-    "PROCESS_REWARD_MODEL_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-PROCESS_REWARD_MODEL_PATH = Path(
-    os.getenv("PROCESS_REWARD_MODEL_PATH", "data/evaluations/process-reward/model.json")
-)
-VERIFIER_MCTS_ENABLED = os.getenv(
-    "VERIFIER_MCTS_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-VERIFIER_MCTS_ITERATIONS = max(
-    8, min(int(os.getenv("VERIFIER_MCTS_ITERATIONS", "96")), 2048)
-)
-VERIFIER_MCTS_MAX_NODES = max(
-    8, min(int(os.getenv("VERIFIER_MCTS_MAX_NODES", "128")), 4096)
-)
-VERIFIER_ENSEMBLE_ENABLED = os.getenv(
-    "VERIFIER_ENSEMBLE_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-VERIFIER_ENSEMBLE_PATH = Path(
-    os.getenv(
-        "VERIFIER_ENSEMBLE_PATH",
-        "data/evaluations/verifier-uncertainty/ensemble.json",
-    )
-)
-VERIFIER_ACTIVE_LEARNING_ENABLED = os.getenv(
-    "VERIFIER_ACTIVE_LEARNING_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-VERIFIER_ACTIVE_LEARNING_PATH = Path(
-    os.getenv(
-        "VERIFIER_ACTIVE_LEARNING_PATH",
-        "data/verifier-review/verifier-review.sqlite3",
-    )
-)
-VERIFIER_REVIEW_UNCERTAINTY_THRESHOLD = max(
-    0.001,
-    min(float(os.getenv("VERIFIER_REVIEW_UNCERTAINTY_THRESHOLD", "0.08")), 0.5),
-)
-WORLD_MODEL_ENABLED = os.getenv("WORLD_MODEL_ENABLED", "false").strip().lower() in {
-    "1", "true", "yes", "on"
-}
-WORLD_MODEL_PATH = Path(
-    os.getenv(
-        "WORLD_MODEL_PATH",
-        "data/evaluations/world-model/world-model.json",
-    )
-)
-OFFLINE_RL_POLICY_ENABLED = os.getenv(
-    "OFFLINE_RL_POLICY_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-OFFLINE_RL_POLICY_PATH = Path(
-    os.getenv(
-        "OFFLINE_RL_POLICY_PATH",
-        "data/evaluations/offline-rl/offline-rl-policy.json",
-    )
-)
-_process_reward_scorer = None
-_process_reward_mtime_ns = -1
-_verifier_review_queue = None
-_world_model = None
-_world_model_mtime_ns = -1
-_offline_rl_policy = None
-_offline_rl_policy_mtime_ns = -1
-SEARCH_DISTILLATION_ENABLED = os.getenv(
-    "SEARCH_DISTILLATION_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-SEARCH_DISTILLATION_PATH = Path(os.getenv(
-    "SEARCH_DISTILLATION_PATH", "data/evaluations/distillation/policy.json"
-))
-_distilled_policy = None
-_distilled_policy_mtime_ns = -1
-EXECUTION_REPLAY_ENABLED = os.getenv("EXECUTION_REPLAY_ENABLED", "false").strip().lower() in {
-    "1", "true", "yes", "on"
-}
-EXECUTION_REPLAY_PATH = Path(os.getenv("EXECUTION_REPLAY_PATH", "data/execution-replay/replay.sqlite3"))
-EXECUTION_REPLAY_KEY = os.getenv("EXECUTION_REPLAY_KEY", "").encode()
-PREFERENCE_RANKING_ENABLED = os.getenv("PREFERENCE_RANKING_ENABLED", "false").strip().lower() in {
-    "1", "true", "yes", "on"
-}
-PREFERENCE_RANKING_PATH = Path(os.getenv("PREFERENCE_RANKING_PATH", "data/evaluations/preferences/active.json"))
-PREFERENCE_RANKING_KEY = os.getenv("PREFERENCE_RANKING_KEY", "").encode()
-PREFERENCE_SHADOW_ENABLED = os.getenv("PREFERENCE_SHADOW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-PREFERENCE_SHADOW_STUDY_ID = os.getenv("PREFERENCE_SHADOW_STUDY_ID", "").strip()
-PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL = os.getenv("PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL", "false").strip().lower() in {"1", "true", "yes", "on"}
-PREFERENCE_SHADOW_APPROVAL_PATH = Path(os.getenv("PREFERENCE_SHADOW_APPROVAL_PATH", "data/evaluations/preference-shadow/approval.json"))
-PREFERENCE_DEPLOYMENT_ENABLED = os.getenv("PREFERENCE_DEPLOYMENT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-PROCESS_SUPERVISION_ENABLED = os.getenv("PROCESS_SUPERVISION_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-VERIFIER_SHADOW_ENABLED = os.getenv("VERIFIER_SHADOW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-VERIFIER_SHADOW_STUDY_ID = os.getenv("VERIFIER_SHADOW_STUDY_ID", "").strip()
-ENSEMBLE_OUTCOME_SHADOW_ENABLED = os.getenv("ENSEMBLE_OUTCOME_SHADOW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-ENSEMBLE_OUTCOME_SHADOW_STUDY_ID = os.getenv("ENSEMBLE_OUTCOME_SHADOW_STUDY_ID", "").strip()
-PROCESS_SUPERVISION_MODEL_KEY = os.getenv("PROCESS_SUPERVISION_MODEL_KEY", "").encode()
 EVIDENCE_QUALITY_ENABLED = os.getenv(
     "EVIDENCE_QUALITY_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -386,11 +217,6 @@ EVIDENCE_QUALITY_INTEGRITY_KEY = (
     os.getenv("EVIDENCE_QUALITY_INTEGRITY_KEY", "").encode() or None
 )
 ALLOW_LEGACY_HITL_CONTROL = os.getenv("ALLOW_LEGACY_HITL_CONTROL", "false").strip().lower() in {"1", "true", "yes", "on"}
-MODEL_GATEWAY_ENABLED = os.getenv("MODEL_GATEWAY_ENABLED", "false").strip().lower() in {
-    "1", "true", "yes", "on"
-}
-MODEL_GATEWAY_ONLINE_EVENT_PATH = os.getenv("MODEL_GATEWAY_ONLINE_EVENT_PATH", "").strip()
-ONLINE_EVAL_INTEGRITY_KEY = os.getenv("ONLINE_EVAL_INTEGRITY_KEY", "").encode() or None
 
 
 def _is_groq_model(model_name: str) -> bool:
@@ -476,142 +302,6 @@ def _get_model(config: RunnableConfig) -> BaseChatModel:
     return _get_model_by_name(config["configurable"].get("model", OPENAI_CHAT_MODEL))
 
 
-class _LangChainGatewayProvider:
-    def __init__(self, model_name: str) -> None:
-        self.model_name = model_name
-
-    async def generate(self, request, spec, max_completion_tokens):
-        model = _get_model_by_name(self.model_name).bind(max_tokens=max_completion_tokens)
-        runnable = RunnableLambda(
-            lambda _: [SystemMessage(content=request.system), ("human", request.prompt)]
-        ) | model
-        call_config = _gateway_call_config.get() or RunnableConfig(configurable={})
-        started = time.perf_counter()
-        response = await runnable.ainvoke({}, call_config)
-        usage = getattr(response, "usage_metadata", None) or {}
-        return ProviderResult(
-            content=(response.content or "").strip(),
-            prompt_tokens=int(usage.get("input_tokens") or estimate_tokens(request.system + request.prompt)),
-            completion_tokens=int(usage.get("output_tokens") or estimate_tokens(str(response.content or ""))),
-            latency_ms=(time.perf_counter() - started) * 1000,
-        )
-
-
-def estimate_tokens(text: str) -> int:
-    return max(1, (len(text) + 3) // 4)
-
-
-def _gateway_provider_for_model(model_name: str) -> str:
-    resolved = _resolve_model_name(model_name)
-    return "groq" if _is_groq_model(resolved) else "openai"
-
-
-def _get_inference_gateway() -> InferenceGateway:
-    global _inference_gateway
-    if _inference_gateway is not None:
-        return _inference_gateway
-    configured: list[tuple[str, str, float, float]] = []
-    if os.getenv("OPENAI_API_KEY"):
-        configured.append(
-            (
-                "openai",
-                OPENAI_CHAT_MODEL,
-                float(os.getenv("MODEL_GATEWAY_OPENAI_INPUT_COST_PER_MILLION", "0")),
-                float(os.getenv("MODEL_GATEWAY_OPENAI_OUTPUT_COST_PER_MILLION", "0")),
-            )
-        )
-    if os.getenv("GROQ_API_KEY"):
-        configured.append(
-            (
-                "groq",
-                GROQ_CHAT_MODEL,
-                float(os.getenv("MODEL_GATEWAY_GROQ_INPUT_COST_PER_MILLION", "0")),
-                float(os.getenv("MODEL_GATEWAY_GROQ_OUTPUT_COST_PER_MILLION", "0")),
-            )
-        )
-    if not configured:
-        raise RuntimeError("MODEL_GATEWAY_ENABLED requires at least one configured model provider")
-    fingerprint_key = os.getenv("MODEL_GATEWAY_FINGERPRINT_KEY", "").encode()
-    if len(fingerprint_key) < 16:
-        raise RuntimeError(
-            "MODEL_GATEWAY_ENABLED requires MODEL_GATEWAY_FINGERPRINT_KEY with at least 16 bytes"
-        )
-    specs = [
-        ProviderSpec(
-            name=name,
-            model=model,
-            input_cost_per_million=input_price,
-            output_cost_per_million=output_price,
-            timeout_ms=int(os.getenv("MODEL_GATEWAY_TIMEOUT_MS", "30000")),
-            failure_threshold=int(os.getenv("MODEL_GATEWAY_FAILURE_THRESHOLD", "3")),
-            cooldown_seconds=float(os.getenv("MODEL_GATEWAY_COOLDOWN_SECONDS", "30")),
-        )
-        for name, model, input_price, output_price in configured
-    ]
-    names = [item.name for item in specs]
-    canary = os.getenv("MODEL_GATEWAY_CANARY_PROVIDER", "").strip()
-    shadow = os.getenv("MODEL_GATEWAY_SHADOW_PROVIDER", "").strip()
-    policy = GatewayPolicy(
-        version=os.getenv("MODEL_GATEWAY_POLICY_VERSION", "inference-policy-v1"),
-        daily_budget_usd=float(os.getenv("MODEL_GATEWAY_DAILY_BUDGET_USD", "5")),
-        max_prompt_tokens=int(os.getenv("MODEL_GATEWAY_MAX_PROMPT_TOKENS", "16000")),
-        max_completion_tokens=int(os.getenv("MODEL_GATEWAY_MAX_COMPLETION_TOKENS", "1024")),
-        semantic_cache_enabled=os.getenv(
-            "MODEL_GATEWAY_SEMANTIC_CACHE_ENABLED", "false"
-        ).strip().lower() in {"1", "true", "yes", "on"},
-        semantic_cache_threshold=float(
-            os.getenv("MODEL_GATEWAY_SEMANTIC_CACHE_THRESHOLD", "0.92")
-        ),
-        semantic_cache_ttl_seconds=float(
-            os.getenv("MODEL_GATEWAY_SEMANTIC_CACHE_TTL_SECONDS", "900")
-        ),
-        semantic_cache_max_entries=int(
-            os.getenv("MODEL_GATEWAY_SEMANTIC_CACHE_MAX_ENTRIES", "1000")
-        ),
-        canary_provider=canary,
-        canary_percentage=float(os.getenv("MODEL_GATEWAY_CANARY_PERCENTAGE", "0")),
-        shadow_provider=shadow,
-        shadow_enabled=bool(shadow)
-        and os.getenv("MODEL_GATEWAY_SHADOW_ENABLED", "false").strip().lower()
-        in {"1", "true", "yes", "on"},
-        fallback_providers=names,
-    )
-    _inference_gateway = InferenceGateway(
-        policy,
-        specs,
-        {item.name: _LangChainGatewayProvider(item.model) for item in specs},
-        fingerprint_key=fingerprint_key,
-    )
-    return _inference_gateway
-
-
-def _capture_gateway_receipt(receipt: InferenceReceipt, configurable: dict) -> None:
-    receipts = configurable.setdefault("model_gateway_receipts", [])
-    if isinstance(receipts, list):
-        receipts.append(receipt.model_dump(mode="json"))
-        del receipts[:-8]
-    logger.info(
-        "model_gateway outcome=%s provider=%s cache_hit=%s cost_usd=%.8f receipt=%s",
-        receipt.outcome,
-        receipt.selected_provider,
-        receipt.cache_hit,
-        receipt.cost_usd,
-        receipt.receipt_fingerprint[:16],
-    )
-    if MODEL_GATEWAY_ONLINE_EVENT_PATH:
-        try:
-            if ONLINE_EVAL_INTEGRITY_KEY is None or len(ONLINE_EVAL_INTEGRITY_KEY) < 16:
-                raise ValueError("ONLINE_EVAL_INTEGRITY_KEY must contain at least 16 bytes")
-            append_online_event(
-                event_from_gateway_receipt(receipt, integrity_key=ONLINE_EVAL_INTEGRITY_KEY),
-                Path(MODEL_GATEWAY_ONLINE_EVENT_PATH),
-            )
-        except Exception as exc:
-            # Monitoring is deliberately non-blocking; the receipt remains attached
-            # to request state so a durable exporter can retry.
-            logger.warning("online_eval_event_write_failed error_type=%s", type(exc).__name__)
-
-
 async def _call_llm(
     system: str,
     user: str,
@@ -630,58 +320,11 @@ async def _call_llm(
         call_config["callbacks"] = [
             callback for callback in handlers if isinstance(callback, UsageMetadataCallbackHandler)
         ]
-    if MODEL_GATEWAY_ENABLED:
-        from agent.incident_runtime import hold_capture
-        hold_capture("gateway_generation_capture_not_supported")
-        gateway = _get_inference_gateway()
-        configurable = config.get("configurable") or {}
-        model_name = str(configurable.get("model") or OPENAI_CHAT_MODEL)
-        run_id = str(config.get("run_id") or configurable.get("thread_id") or "agent")
-        request_fingerprint = hashlib.sha256(f"{system}\n{user}".encode()).hexdigest()[:16]
-        high_risk = bool(
-            re.search(
-                r"(?i)\b(credential|secret|private key|medical|legal|financial|security incident)\b",
-                user,
-            )
-        )
-        token = _gateway_call_config.set(call_config)
-        try:
-            try:
-                result = await gateway.execute(
-                    InferenceRequest(
-                        request_id=f"{run_id}-{request_fingerprint}",
-                        tenant_id=str(configurable.get("user_id") or "anonymous"),
-                        system=system,
-                        prompt=user,
-                        preferred_provider=_gateway_provider_for_model(model_name),
-                        high_risk=high_risk,
-                        allow_cache=not stream_to_client,
-                        allow_canary=True,
-                        allow_shadow=not stream_to_client,
-                        max_completion_tokens=max_completion_tokens,
-                    )
-                )
-            except GatewayRejectedError as exc:
-                _capture_gateway_receipt(exc.receipt, configurable)
-                raise
-        finally:
-            _gateway_call_config.reset(token)
-        _capture_gateway_receipt(result.receipt, configurable)
-        return result.content
     model = _get_model(config)
     if max_completion_tokens is not None:
         model = model.bind(max_tokens=max_completion_tokens)
     runnable = RunnableLambda(lambda _: [SystemMessage(content=system), ("human", user)]) | model
     response = await runnable.ainvoke({}, call_config)
-    from agent.incident_runtime import active_capture
-    capture = active_capture()
-    if capture:
-        model_name = str((config.get("configurable") or {}).get("model") or OPENAI_CHAT_MODEL)
-        resolved = _resolve_model_name(model_name)
-        if resolved == "llama-3.1-70b":
-            resolved = GROQ_CHAT_MODEL
-        actual = (getattr(response, "response_metadata", None) or {}).get("model_name") or resolved
-        capture.model_response(system, user, response, _gateway_provider_for_model(resolved) + ":" + actual)
     return (response.content or "").strip()
 
 
@@ -1145,8 +788,6 @@ def _build_execution_flow(state: AgentState) -> list[str]:
     evidence_flow = ["evidence_adjudication_agent"] if EVIDENCE_QUALITY_ENABLED else []
     if GROUNDING_VERIFICATION_ENABLED:
         response_flow.append("grounding_verifier_agent")
-        if (state.get("adaptive_compute_plan") or {}).get("action") == "deliberate":
-            response_flow.append("adaptive_deliberation_agent")
         if state.get("grounding_action") in {"repair", "abstain"}:
             response_flow.append("grounding_repair_agent")
     response_flow.append("evaluation_agent")
@@ -1354,15 +995,6 @@ async def safety_agent(state: AgentState, config: RunnableConfig):
         "grounding_report": {},
         "grounding_confidence": 0.0,
         "grounding_action": "",
-        "uncertainty_receipt": {},
-        "adaptive_compute_plan": {},
-        "adaptive_compute_receipt": {},
-        "execution_replay_event_ids": [],
-        "preference_shadow_receipt": {},
-        "preference_deployment_receipt": {},
-        "process_supervision_receipt": {},
-        "verifier_shadow_receipt": {},
-        "ensemble_outcome_shadow_receipt": {},
         "evidence_quality_report": {},
         "adjudicated_evidence": [],
     }
@@ -2097,9 +1729,6 @@ async def response_agent(state: AgentState, config: RunnableConfig):
     suffix = _evaluation_instruction_suffix(config, "response_instruction_suffix")
     if suffix:
         system_instructions += f"\n\nEvaluation candidate policy:\n{suffix}"
-    from agent.incident_runtime import active_capture
-    if active_capture():
-        active_capture().before_generation(system_instructions, response_context, state)
     final = await _call_llm(
         system_instructions,
         response_context,
@@ -2133,197 +1762,6 @@ def _grounding_policy() -> GroundingPolicy:
     )
 
 
-def _adaptive_compute_policy() -> ComputePolicy:
-    return ComputePolicy(
-        max_candidates=ADAPTIVE_COMPUTE_MAX_CANDIDATES,
-        max_extra_tokens=ADAPTIVE_COMPUTE_MAX_EXTRA_TOKENS,
-        max_latency_ms=ADAPTIVE_COMPUTE_MAX_LATENCY_MS,
-    )
-
-
-def _adaptive_compute_plan(
-    report: GroundingReport, uncertainty: dict
-) -> ComputePlan:
-    uncertainty_decision = str(uncertainty.get("decision") or "not_evaluated")
-    if uncertainty.get("status") == "calibrator_unavailable":
-        uncertainty_decision = "unavailable"
-    high_risk = any(item.high_risk for item in report.claims)
-    plan = plan_compute(
-        ComputeSignals(
-            route=report.route,
-            grounding_action=report.action,
-            grounding_confidence=report.confidence,
-            uncertainty_decision=uncertainty_decision,
-            out_of_distribution=bool(uncertainty.get("out_of_distribution")),
-            high_risk=high_risk,
-            evidence_count=report.evidence_count,
-        ),
-        _adaptive_compute_policy(),
-        ADAPTIVE_COMPUTE_INTEGRITY_KEY,
-    )
-    if not VERIFIER_MCTS_ENABLED or plan.action != "deliberate":
-        return plan
-
-    try:
-        search_request = SearchRequest(
-            request_id=report.report_fingerprint[:16] or "grounding-report",
-            route=report.route,
-            evidence_count=report.evidence_count,
-            confidence=report.confidence,
-            high_risk=high_risk,
-            retrieval_available=False,
-            verification_available=True,
-            max_additional_evidence=0,
-            token_budget=plan.token_budget,
-        )
-        search_plan = VerifierGuidedMCTS(
-            _load_process_reward_scorer(),
-            SearchPolicy(
-                iterations=VERIFIER_MCTS_ITERATIONS,
-                max_nodes=VERIFIER_MCTS_MAX_NODES,
-            ),
-            world_model=_load_world_model() if WORLD_MODEL_ENABLED else None,
-            planning_policy=(
-                _load_offline_rl_policy() if OFFLINE_RL_POLICY_ENABLED else None
-            ),
-            distilled_policy=_load_distilled_policy() if SEARCH_DISTILLATION_ENABLED else None,
-        ).plan(search_request)
-        _queue_verifier_review(search_plan, search_request)
-        return attach_search_plan(
-            plan, search_plan, ADAPTIVE_COMPUTE_INTEGRITY_KEY
-        )
-    except (OSError, ValueError):
-        logger.exception("Verifier-guided reasoning search failed; abstaining")
-        failed = plan.model_copy(deep=True)
-        failed.action = "abstain"
-        failed.candidate_budget = 0
-        failed.token_budget = 0
-        failed.latency_budget_ms = 0
-        failed.reason = "verifier_guided_search_unavailable"
-        return seal_plan(failed, ADAPTIVE_COMPUTE_INTEGRITY_KEY)
-
-
-def _load_uncertainty_calibrator():
-    global _uncertainty_calibrator, _uncertainty_calibrator_mtime_ns
-    stat = UNCERTAINTY_CALIBRATOR_PATH.stat()
-    if (
-        _uncertainty_calibrator is None
-        or _uncertainty_calibrator_mtime_ns != stat.st_mtime_ns
-    ):
-        _uncertainty_calibrator = load_calibrator(
-            UNCERTAINTY_CALIBRATOR_PATH, UNCERTAINTY_INTEGRITY_KEY
-        )
-        _uncertainty_calibrator_mtime_ns = stat.st_mtime_ns
-    return _uncertainty_calibrator
-
-
-def _load_process_reward_scorer() -> ProcessRewardScorer | EnsembleProcessRewardScorer:
-    global _process_reward_scorer, _process_reward_mtime_ns
-    path = VERIFIER_ENSEMBLE_PATH if VERIFIER_ENSEMBLE_ENABLED else PROCESS_REWARD_MODEL_PATH
-    stat = path.stat()
-    if _process_reward_scorer is None or _process_reward_mtime_ns != stat.st_mtime_ns:
-        _process_reward_scorer = (
-            EnsembleProcessRewardScorer.load(path)
-            if VERIFIER_ENSEMBLE_ENABLED
-            else ProcessRewardScorer.load(path)
-        )
-        _process_reward_mtime_ns = stat.st_mtime_ns
-    return _process_reward_scorer
-
-
-def _queue_verifier_review(
-    search_plan: SearchPlan, search_request: SearchRequest
-) -> None:
-    global _verifier_review_queue
-    if not VERIFIER_ACTIVE_LEARNING_ENABLED:
-        return
-    try:
-        if _verifier_review_queue is None:
-            _verifier_review_queue = VerifierActiveLearningQueue(
-                VERIFIER_ACTIVE_LEARNING_PATH
-            )
-        _verifier_review_queue.enqueue(
-            search_plan,
-            search_request,
-            uncertainty_threshold=VERIFIER_REVIEW_UNCERTAINTY_THRESHOLD,
-        )
-    except (OSError, sqlite3.Error, ValueError):
-        logger.exception("Unable to persist verifier review candidate")
-
-
-def _load_world_model() -> AgentWorldModel:
-    global _world_model, _world_model_mtime_ns
-    stat = WORLD_MODEL_PATH.stat()
-    if _world_model is None or _world_model_mtime_ns != stat.st_mtime_ns:
-        _world_model = AgentWorldModel.load(WORLD_MODEL_PATH)
-        _world_model_mtime_ns = stat.st_mtime_ns
-    return _world_model
-
-
-def _load_offline_rl_policy() -> ConservativePlanningPolicy:
-    global _offline_rl_policy, _offline_rl_policy_mtime_ns
-    stat = OFFLINE_RL_POLICY_PATH.stat()
-    if (
-        _offline_rl_policy is None
-        or _offline_rl_policy_mtime_ns != stat.st_mtime_ns
-    ):
-        _offline_rl_policy = ConservativePlanningPolicy.load(OFFLINE_RL_POLICY_PATH)
-        _offline_rl_policy_mtime_ns = stat.st_mtime_ns
-    return _offline_rl_policy
-
-
-def _load_distilled_policy() -> DistilledPlanningPolicy:
-    global _distilled_policy, _distilled_policy_mtime_ns
-    stat = SEARCH_DISTILLATION_PATH.stat()
-    if _distilled_policy is None or _distilled_policy_mtime_ns != stat.st_mtime_ns:
-        _distilled_policy = DistilledPlanningPolicy.load(SEARCH_DISTILLATION_PATH)
-        _distilled_policy_mtime_ns = stat.st_mtime_ns
-    return _distilled_policy
-
-
-def _candidate_process_steps(report: GroundingReport) -> list[ProcessStep]:
-    """The same observed workflow proxies are scored and snapshotted pre-review."""
-    has_evidence = report.evidence_count > 0
-    citations_valid = report.citation_precision >= 0.999 and not any(
-        claim.invalid_citation_urls for claim in report.claims
-    )
-    return [
-        ProcessStep(
-            step_id="retrieve",
-            kind="retrieve",
-            has_evidence=has_evidence,
-            confidence=min(1.0, report.evidence_count / 3),
-        ),
-        ProcessStep(
-            step_id="reason",
-            kind="reason",
-            has_evidence=has_evidence,
-            confidence=report.confidence,
-        ),
-        ProcessStep(
-            step_id="verify",
-            kind="verify",
-            has_evidence=has_evidence,
-            citation_valid=citations_valid,
-            error=report.action == "abstain",
-            confidence=report.claim_coverage,
-        ),
-        ProcessStep(
-            step_id="answer",
-            kind="answer",
-            has_evidence=has_evidence,
-            citation_valid=citations_valid,
-            confidence=report.confidence,
-        ),
-    ]
-
-
-def _candidate_process_reward(report: GroundingReport, high_risk: bool) -> float | None:
-    if not PROCESS_REWARD_MODEL_ENABLED:
-        return None
-    return _load_process_reward_scorer().score_steps(_candidate_process_steps(report), high_risk)
-
-
 def _next_node_after_response(state: AgentState) -> str:
     return (
         "grounding_verifier_agent"
@@ -2333,8 +1771,6 @@ def _next_node_after_response(state: AgentState) -> str:
 
 
 def _next_node_after_grounding(state: AgentState) -> str:
-    if (state.get("adaptive_compute_plan") or {}).get("action") == "deliberate":
-        return "adaptive_deliberation_agent"
     return (
         "evaluation_agent"
         if state.get("grounding_action") in {"pass", "not_required"}
@@ -2365,429 +1801,18 @@ async def grounding_verifier_agent(state: AgentState, config: RunnableConfig):
         "grounding_report": report.model_dump(mode="json"),
         "grounding_confidence": report.confidence,
         "grounding_action": report.action,
-        "uncertainty_receipt": {},
-        "adaptive_compute_plan": {},
-        "adaptive_compute_receipt": {},
-        "execution_replay_event_ids": [],
     }
-    if UNCERTAINTY_CALIBRATION_ENABLED and report.action == "pass":
-        try:
-            uncertainty = await asyncio.to_thread(
-                assess_grounding_report,
-                report,
-                _load_uncertainty_calibrator(),
-                UNCERTAINTY_INTEGRITY_KEY,
-            )
-            update["uncertainty_receipt"] = uncertainty.model_dump(mode="json")
-            if uncertainty.decision == "abstain":
-                update["grounding_action"] = "abstain"
-        except Exception as exc:
-            logger.warning("uncertainty_calibration_failed error_type=%s", type(exc).__name__)
-            update["uncertainty_receipt"] = {"status": "calibrator_unavailable"}
-            update["grounding_action"] = "abstain"
-    if ADAPTIVE_COMPUTE_ENABLED:
-        plan = _adaptive_compute_plan(report, update["uncertainty_receipt"])
-        update["adaptive_compute_plan"] = plan.model_dump(mode="json")
-        if plan.action == "deliberate":
-            update["grounding_action"] = "deliberate"
-        elif plan.action == "abstain":
-            update["grounding_action"] = "abstain"
     if update["grounding_action"] in {"pass", "not_required"}:
         update["messages"] = [AIMessage(content=final)]
     return update
 
 
-async def adaptive_deliberation_agent(state: AgentState, config: RunnableConfig):
-    """Spend bounded extra inference only when the first answer is uncertain."""
-    try:
-        plan = ComputePlan.model_validate(state.get("adaptive_compute_plan") or {})
-        if not verify_plan(plan, ADAPTIVE_COMPUTE_INTEGRITY_KEY):
-            raise ValueError("adaptive compute plan integrity verification failed")
-    except Exception:
-        final = "I don’t have enough verified confidence to release this answer."
-        return {
-            "final_response": final,
-            "messages": [AIMessage(content=final)],
-            "grounding_action": "adaptive_abstain",
-            "adaptive_compute_receipt": {"status": "invalid_plan"},
-        }
-
-    evidence = evidence_from_state(state)
-    response_context = _build_response_context(state)
-    policy = _adaptive_compute_policy()
-    candidates = []
-    candidate_outputs: dict[str, tuple[str, GroundingReport, dict]] = {}
-    attempted_calls = 0
-    verifier_incumbents = set()
-    consumed_tokens = 0
-    started = time.perf_counter()
-    system = (
-        _base_instructions()
-        + "\n\nReconstruct an independent answer from the supplied evidence. "
-        "Prefer fewer fully supported claims over broader speculation. Preserve only "
-        "citations present in the evidence. Do not mention this deliberation process."
-    )
-    for index in range(plan.candidate_budget):
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        remaining_seconds = max(0.0, (plan.latency_budget_ms - elapsed_ms) / 1000)
-        if remaining_seconds <= 0:
-            break
-        remaining_tokens = plan.token_budget - consumed_tokens
-        remaining_candidates = plan.candidate_budget - index
-        if remaining_tokens <= 0:
-            break
-        completion_limit = max(1, remaining_tokens // remaining_candidates)
-        candidate_id = f"candidate-{index + 1}"
-        prompt = (
-            f"{response_context}\n\nProduce independent candidate {index + 1} of "
-            f"{plan.candidate_budget}."
-        )
-        call_started = time.perf_counter()
-        attempted_calls += 1
-        try:
-            answer = await asyncio.wait_for(
-                _call_llm(
-                    system,
-                    prompt,
-                    config,
-                    stream_to_client=False,
-                    max_completion_tokens=completion_limit,
-                ),
-                timeout=remaining_seconds,
-            )
-            answer = _finalize_user_output(answer, state)
-            token_count = max(1, (len(answer) + 3) // 4)
-            consumed_tokens += token_count
-            report = await asyncio.to_thread(
-                verify_grounding,
-                route=str(state.get("route") or "general"),
-                answer=answer,
-                evidence=evidence,
-                policy=_grounding_policy(),
-                integrity_key=GROUNDING_INTEGRITY_KEY,
-            )
-            uncertainty: dict = {}
-            conformal_decision = "not_evaluated"
-            if UNCERTAINTY_CALIBRATION_ENABLED and report.action == "pass":
-                decision = await asyncio.to_thread(
-                    assess_grounding_report,
-                    report,
-                    _load_uncertainty_calibrator(),
-                    UNCERTAINTY_INTEGRITY_KEY,
-                )
-                uncertainty = decision.model_dump(mode="json")
-                conformal_decision = (
-                    "abstain" if decision.out_of_distribution else decision.decision
-                )
-            latency_ms = (time.perf_counter() - call_started) * 1000
-            process_reward = _candidate_process_reward(report, plan.high_risk)
-            if VERIFIER_SHADOW_ENABLED or ENSEMBLE_OUTCOME_SHADOW_ENABLED:
-                verifier_incumbents.add(_process_reward_scorer.artifact.artifact_fingerprint
-                                        if PROCESS_REWARD_MODEL_ENABLED else "confidence-only")
-            assessment = candidate_assessment(
-                candidate_id=candidate_id,
-                answer=answer,
-                confidence=report.confidence,
-                grounded=report.action in {"pass", "not_required"},
-                conformal_decision=conformal_decision,
-                claim_keys=[
-                    item.best_evidence_id
-                    for item in report.claims
-                    if item.supported and item.best_evidence_id
-                ],
-                token_count=token_count,
-                latency_ms=latency_ms,
-                process_reward=process_reward,
-            )
-            candidates.append(assessment)
-            candidate_outputs[candidate_id] = (answer, report, uncertainty)
-        except Exception as exc:
-            logger.warning(
-                "adaptive_candidate_failed candidate=%s error_type=%s",
-                candidate_id,
-                type(exc).__name__,
-            )
-
-    ranker, ranker_unavailable = None, False
-    deployment_state, deployment_receipt = None, {}
-    configurable = config.get("configurable") or {}
-    tenant = str(configurable.get("user_id") or "").strip()
-    shadow_enabled = (
-        PREFERENCE_SHADOW_ENABLED
-        and not PREFERENCE_RANKING_ENABLED
-        and EXECUTION_REPLAY_ENABLED
-        and configurable.get("execution_replay_consent") is True
-        and bool(tenant)
-        and bool(configurable.get("execution_replay_request_id") or config.get("run_id"))
-    )
-    if PREFERENCE_RANKING_ENABLED or shadow_enabled:
-        try:
-            if not tenant:
-                raise ValueError("preference ranking requires tenant identity")
-            if PREFERENCE_RANKING_ENABLED and PREFERENCE_DEPLOYMENT_ENABLED:
-                if (not EXECUTION_REPLAY_ENABLED or configurable.get("execution_replay_consent") is not True
-                        or not (configurable.get("execution_replay_request_id") or config.get("run_id"))
-                        or not (configurable.get("execution_replay_task_family") or configurable.get("execution_replay_task_family_fingerprint"))):
-                    raise ValueError("deployment requires consented replay with preassigned task family")
-
-                def admit_deployment():
-                    replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
-                    return PreferenceDeploymentStore(replay, PREFERENCE_RANKING_KEY).admit(
-                        tenant, policy, route=plan.route, high_risk=plan.high_risk,
-                    )
-
-                ranker, deployment_state, monitor_report = await asyncio.to_thread(admit_deployment)
-                deployment_receipt = {"status": "admitted", "deployment_id": deployment_state.deployment_id,
-                                      "revision": deployment_state.revision,
-                                      "monitor_fingerprint": monitor_report["fingerprint"]}
-            else:
-                ranker = await asyncio.to_thread(
-                    PreferenceRanker.load, PREFERENCE_RANKING_PATH, PREFERENCE_RANKING_KEY, tenant,
-                )
-            if PREFERENCE_RANKING_ENABLED and not PREFERENCE_DEPLOYMENT_ENABLED and PREFERENCE_RANKING_REQUIRE_SHADOW_APPROVAL:
-                await asyncio.to_thread(
-                    validate_approval, PREFERENCE_SHADOW_APPROVAL_PATH, ranker,
-                    PREFERENCE_RANKING_KEY, policy, route=plan.route, high_risk=plan.high_risk,
-                )
-        except (OSError, ValueError, sqlite3.Error):
-            logger.warning("preference_ranker_unavailable; preserving existing release policy")
-            ranker_unavailable = True
-            ranker = None
-            if PREFERENCE_RANKING_ENABLED and PREFERENCE_DEPLOYMENT_ENABLED:
-                deployment_receipt = {"status": "baseline_fallback"}
-    receipt = select_candidate(
-        plan,
-        candidates,
-        policy,
-        ADAPTIVE_COMPUTE_INTEGRITY_KEY,
-        attempted_calls,
-        preference_ranker=ranker if PREFERENCE_RANKING_ENABLED else None,
-        preference_unavailable=ranker_unavailable if PREFERENCE_RANKING_ENABLED else False,
-    )
-    if deployment_state is not None:
-        try:
-            def capture_deployed():
-                replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
-                return PreferenceDeploymentStore(replay, PREFERENCE_RANKING_KEY).capture(
-                    deployment_state, plan, receipt, tenant=tenant,
-                    request_id=str(configurable.get("execution_replay_request_id") or config.get("run_id")),
-                    consent=configurable.get("execution_replay_consent") is True,
-                    task_family=configurable.get("execution_replay_task_family"),
-                    task_family_fingerprint=configurable.get("execution_replay_task_family_fingerprint"),
-                    compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY,
-                )
-
-            replay_event_ids = await asyncio.to_thread(capture_deployed)
-            deployment_receipt["status"] = "captured"
-        except (OSError, ValueError, sqlite3.Error):
-            # The observer and serving binding roll back together. Do not serve
-            # the learned choice if revocation raced or its audit cannot commit.
-            receipt = select_candidate(plan, candidates, policy, ADAPTIVE_COMPUTE_INTEGRITY_KEY,
-                                       attempted_calls, preference_unavailable=True)
-            deployment_receipt = {"status": "baseline_fallback"}
-            replay_event_ids = await _capture_execution_replay(plan, receipt, config)
-    else:
-        replay_event_ids = await _capture_execution_replay(plan, receipt, config)
-    shadow_receipt = {}
-    if shadow_enabled and ranker is not None and replay_event_ids:
-        shadow = select_candidate(
-            plan, candidates, policy, ADAPTIVE_COMPUTE_INTEGRITY_KEY,
-            attempted_calls, preference_ranker=ranker,
-        )
-        shadow_receipt = await _capture_preference_shadow(plan, receipt, shadow, policy, config)
-    elif shadow_enabled:
-        shadow_receipt = {"status": "unavailable"}
-    selected = candidate_outputs.get(receipt.selected_candidate_id)
-    process_supervision_receipt = {}
-    if PROCESS_SUPERVISION_ENABLED and replay_event_ids:
-        process_supervision_receipt = await _capture_process_supervision(
-            {name: _candidate_process_steps(report) for name, (_, report, _) in candidate_outputs.items()},
-            replay_event_ids, config,
-        )
-    verifier_shadow_receipt = {}
-    if VERIFIER_SHADOW_ENABLED and replay_event_ids:
-        verifier_shadow_receipt = await _capture_verifier_shadow(
-            plan, receipt, candidates, policy, config, verifier_incumbents,
-        )
-    ensemble_outcome_shadow_receipt = {}
-    if ENSEMBLE_OUTCOME_SHADOW_ENABLED and replay_event_ids:
-        ensemble_outcome_shadow_receipt = await _capture_verifier_shadow(
-            plan, receipt, candidates, policy, config, verifier_incumbents, ensemble=True,
-        )
-    source_meta = (state.get("answer_source_meta") or "").strip()
-    if selected is None:
-        final = (
-            "I used the available reasoning budget but could not obtain enough "
-            "independent, grounded agreement to release an answer."
-        )
-        return {
-            "final_response": final,
-            "messages": [AIMessage(content=final)],
-            "grounding_action": "adaptive_abstain",
-            "answer_source_meta": " | ".join(
-                item for item in (source_meta, "adaptive_compute:abstain") if item
-            ),
-            "adaptive_compute_receipt": receipt.model_dump(mode="json"),
-            "execution_replay_event_ids": replay_event_ids,
-            "preference_shadow_receipt": shadow_receipt,
-            "preference_deployment_receipt": deployment_receipt,
-            "process_supervision_receipt": process_supervision_receipt,
-            "verifier_shadow_receipt": verifier_shadow_receipt,
-            "ensemble_outcome_shadow_receipt": ensemble_outcome_shadow_receipt,
-        }
-
-    answer, report, uncertainty = selected
-    return {
-        "final_response": answer,
-        "messages": [AIMessage(content=answer)],
-        "grounding_report": report.model_dump(mode="json"),
-        "grounding_confidence": report.confidence,
-        "grounding_action": "pass",
-        "uncertainty_receipt": uncertainty,
-        "answer_source_meta": " | ".join(
-            item for item in (source_meta, "adaptive_compute:released") if item
-        ),
-        "adaptive_compute_receipt": receipt.model_dump(mode="json"),
-        "execution_replay_event_ids": replay_event_ids,
-        "preference_shadow_receipt": shadow_receipt,
-        "preference_deployment_receipt": deployment_receipt,
-        "process_supervision_receipt": process_supervision_receipt,
-        "verifier_shadow_receipt": verifier_shadow_receipt,
-        "ensemble_outcome_shadow_receipt": ensemble_outcome_shadow_receipt,
-    }
-
-
-async def _capture_verifier_shadow(plan, receipt, candidates, policy, config, incumbent_fingerprints, *, ensemble=False) -> dict:
-    configurable = config.get("configurable") or {}
-    tenant = str(configurable.get("user_id") or "").strip()
-    request = str(configurable.get("execution_replay_request_id") or config.get("run_id") or "")
-    enabled = ENSEMBLE_OUTCOME_SHADOW_ENABLED if ensemble else VERIFIER_SHADOW_ENABLED
-    study_id = ENSEMBLE_OUTCOME_SHADOW_STUDY_ID if ensemble else VERIFIER_SHADOW_STUDY_ID
-    store_class = EnsembleOutcomeShadowStore if ensemble else VerifierShadowStore
-    if (not enabled or not PROCESS_SUPERVISION_ENABLED or not EXECUTION_REPLAY_ENABLED
-            or PREFERENCE_RANKING_ENABLED or configurable.get("execution_replay_consent") is not True
-            or not tenant or not request):
-        return {}
-
-    def capture():
-        if len(incumbent_fingerprints) != 1:
-            raise ValueError("incumbent changed during candidate scoring")
-        replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
-        shadow = store_class(replay, PROCESS_SUPERVISION_MODEL_KEY)
-        row = shadow.capture(study_id, tenant, request, plan, receipt, candidates, policy,
-                             consent=True, incumbent_fingerprint=next(iter(incumbent_fingerprints)),
-                             compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY)
-        return {"status": "captured", "comparison_fingerprint": row.fingerprint}
-
-    try:
-        return await asyncio.to_thread(capture)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        logger.warning("verifier_shadow_unavailable error_type=%s", type(exc).__name__)
-        return {"status": "unavailable"}
-
-
-async def _capture_process_supervision(steps_by_candidate: dict, event_ids: list[str], config: RunnableConfig) -> dict:
-    configurable = config.get("configurable") or {}
-    tenant = str(configurable.get("user_id") or "").strip()
-    if (not PROCESS_SUPERVISION_ENABLED or not EXECUTION_REPLAY_ENABLED
-            or configurable.get("execution_replay_consent") is not True or not tenant or not event_ids):
-        return {}
-
-    def capture():
-        from agent.execution_replay import digest
-
-        replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
-        process = ProcessSupervisionStore(replay)
-        mapped = {digest(replay.key, "candidate", name): steps for name, steps in steps_by_candidate.items()}
-        fingerprints = []
-        for observation, _ in replay.records(tenant):
-            if observation.event_id in event_ids:
-                if observation.candidate not in mapped:
-                    raise ValueError("missing observed workflow candidate")
-                snapshot = process.capture(tenant, observation.event_id, mapped[observation.candidate], consent=True)
-                fingerprints.append(snapshot.fingerprint)
-        if len(fingerprints) != len(event_ids):
-            raise ValueError("incomplete workflow snapshot pool")
-        return {"status": "captured", "snapshots": fingerprints}
-
-    try:
-        return await asyncio.to_thread(capture)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        logger.warning("process_supervision_unavailable error_type=%s", type(exc).__name__)
-        return {"status": "unavailable"}
-
-
-async def _capture_execution_replay(plan, receipt, config: RunnableConfig) -> list[str]:
-    configurable = config.get("configurable") or {}
-    tenant = str(configurable.get("user_id") or "").strip()
-    request_id = str(configurable.get("execution_replay_request_id") or config.get("run_id") or "")
-    consent = configurable.get("execution_replay_consent") is True
-    if not EXECUTION_REPLAY_ENABLED or not consent or not tenant or not request_id:
-        return []
-
-    def capture():
-        store = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
-        return store.capture(
-            plan, receipt, tenant=tenant, request_id=request_id, consent=consent,
-            compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY,
-            task_family=configurable.get("execution_replay_task_family"),
-            task_family_fingerprint=configurable.get("execution_replay_task_family_fingerprint"),
-        )
-
-    try:
-        return await asyncio.to_thread(capture)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        # Persistence failure cannot relax answer verification or interrupt output.
-        logger.warning("execution_replay_unavailable error_type=%s", type(exc).__name__)
-        return []
-
-
-async def _capture_preference_shadow(plan, baseline, shadow, policy, config: RunnableConfig) -> dict:
-    configurable = config.get("configurable") or {}
-    if (
-        not PREFERENCE_SHADOW_ENABLED
-        or PREFERENCE_RANKING_ENABLED
-        or not EXECUTION_REPLAY_ENABLED
-        or configurable.get("execution_replay_consent") is not True
-    ):
-        return {}
-
-    def capture():
-        replay = ExecutionReplayStore(EXECUTION_REPLAY_PATH, EXECUTION_REPLAY_KEY)
-        row = PreferenceShadowStore(replay).capture(
-            PREFERENCE_SHADOW_STUDY_ID, str(configurable.get("user_id") or ""),
-            str(configurable.get("execution_replay_request_id") or config.get("run_id") or ""),
-            plan, baseline, shadow, policy, consent=True, compute_key=ADAPTIVE_COMPUTE_INTEGRITY_KEY,
-        )
-        if row is None:
-            return {}
-        return {
-            "status": "captured",
-            "study_id": row.study_id,
-            "comparison_fingerprint": row.fingerprint,
-        }
-
-    try:
-        return await asyncio.to_thread(capture)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        logger.warning("preference_shadow_unavailable error_type=%s", type(exc).__name__)
-        return {"status": "unavailable"}
-
-
 async def grounding_repair_agent(state: AgentState, config: RunnableConfig):
     evidence = evidence_from_state(state)
-    uncertainty = state.get("uncertainty_receipt") or {}
     try:
         report = GroundingReport.model_validate(state.get("grounding_report") or {})
-        if uncertainty and uncertainty.get("decision") != "release":
-            repaired = (
-                "I’m not confident enough in the available evidence to release this answer. "
-                "Please provide another authoritative source or broaden the retrieval scope."
-            )
-            action = "uncertainty_abstain"
-        else:
-            repaired = repair_answer(report, evidence)
-            action = report.action
+        repaired = repair_answer(report, evidence)
+        action = report.action
     except Exception:
         repaired = (
             "I don’t have enough verified evidence to answer this reliably. "
@@ -2813,8 +1838,6 @@ def _evaluate_response_quality(state: AgentState) -> tuple[int, str]:
     math_result = (state.get("math_result") or "").strip()
     safety = _safety_from_state(state)
     grounding = state.get("grounding_report") or {}
-    uncertainty = state.get("uncertainty_receipt") or {}
-    adaptive_compute = state.get("adaptive_compute_receipt") or {}
     evidence_quality = state.get("evidence_quality_report") or {}
 
     score = 50
@@ -2840,16 +1863,6 @@ def _evaluate_response_quality(state: AgentState) -> tuple[int, str]:
         else:
             score -= 15
             checks.append("claim_grounding_repaired_or_abstained:-15")
-    if uncertainty.get("decision") == "release":
-        score += 5
-        checks.append("conformal_release:+5")
-    elif uncertainty.get("decision") == "abstain":
-        checks.append("conformal_abstention:+0")
-    if adaptive_compute.get("status") == "released":
-        score += 5
-        checks.append("adaptive_consensus_release:+5")
-    elif adaptive_compute.get("status") in {"abstained", "budget_exhausted"}:
-        checks.append("adaptive_compute_abstention:+0")
     if evidence_quality.get("action") in {"pass", "degraded"}:
         score += 5
         checks.append("evidence_quality_usable:+5")
@@ -2983,10 +1996,6 @@ def build_research_assistant(checkpointer=None):
         "grounding_repair_agent",
         _with_agent_trace("grounding_repair_agent", grounding_repair_agent),
     )
-    graph.add_node(
-        "adaptive_deliberation_agent",
-        _with_agent_trace("adaptive_deliberation_agent", adaptive_deliberation_agent),
-    )
     graph.add_node("evaluation_agent", _with_agent_trace("evaluation_agent", evaluation_agent))
     graph.add_node("memory_write_agent", _with_agent_trace("memory_write_agent", memory_write_agent))
 
@@ -3067,11 +2076,9 @@ def build_research_assistant(checkpointer=None):
         _next_node_after_grounding,
         {
             "grounding_repair_agent": "grounding_repair_agent",
-            "adaptive_deliberation_agent": "adaptive_deliberation_agent",
             "evaluation_agent": "evaluation_agent",
         },
     )
-    graph.add_edge("adaptive_deliberation_agent", "evaluation_agent")
     graph.add_edge("grounding_repair_agent", "evaluation_agent")
     graph.add_edge("evaluation_agent", "memory_write_agent")
     graph.add_edge("memory_write_agent", END)

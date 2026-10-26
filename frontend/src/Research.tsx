@@ -5,15 +5,7 @@ import type { Capabilities, ChatMessage, Thread } from './types';
 import { Badge, Empty, Icon, Notice, PageHeading, errorText, isAbort } from './components';
 
 type Activity = { label: string; detail: string };
-export function Research({
-  api,
-  capabilities,
-  allowCalls,
-}: {
-  api: ApiClient;
-  capabilities: Capabilities;
-  allowCalls: boolean;
-}) {
+export function Research({ api, capabilities }: { api: ApiClient; capabilities: Capabilities }) {
   const [model, setModel] = useState(capabilities.models[0]?.id ?? '');
   const [thread, setThread] = useState(() => crypto.randomUUID() as string);
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -88,14 +80,7 @@ export function Research({
     setError('');
   }
   async function send(text: string) {
-    if (
-      !allowCalls ||
-      busy ||
-      loading ||
-      !capabilities.models.some((m) => m.id === model) ||
-      !text.trim()
-    )
-      return;
+    if (busy || loading || !capabilities.models.some((m) => m.id === model) || !text.trim()) return;
     const controller = new AbortController();
     active.current = controller;
     setBusy(true);
@@ -155,11 +140,11 @@ export function Research({
   return (
     <>
       <PageHeading
-        eyebrow="RESEARCH WORKSPACE"
-        title="Ask. Inspect. Verify."
+        eyebrow="CITERIGHT"
+        title="Ask. Check the sources."
         actions={<Badge tone="blue">Connected API</Badge>}
       >
-        Follow the answer back to its evidence. Tool activity comes from actual server events.
+        Answers come from your documents and the web, with a citation for each claim.
       </PageHeading>
       <div className="workspace-grid">
         <section className="panel chat-panel" aria-label="Research conversation">
@@ -186,8 +171,8 @@ export function Research({
           <div className="chat-scroll">
             {!messages.length && (
               <Empty title="A clear question is a good start.">
-                Ask about your configured knowledge sources, request a calculation, or explore a
-                research question. No request runs until you send it.
+                Ask about your documents, request a calculation, or research a topic on the web. Web
+                searches wait for your approval.
               </Empty>
             )}
             {messages
@@ -198,7 +183,7 @@ export function Research({
                   key={`${index}-${message.run_id ?? ''}`}
                 >
                   <div className="message-label">
-                    {message.type === 'human' ? 'YOU' : 'AGENTFORGE'}
+                    {message.type === 'human' ? 'YOU' : 'CITERIGHT'}
                     {message.run_id && (
                       <span title={message.run_id}> · {message.run_id.slice(0, 8)}</span>
                     )}
@@ -208,7 +193,7 @@ export function Research({
               ))}
             {partial && (
               <article className="message ai">
-                <div className="message-label">AGENTFORGE · STREAMING</div>
+                <div className="message-label">CITERIGHT · STREAMING</div>
                 <div className="message-text">{partial}</div>
               </article>
             )}
@@ -225,16 +210,12 @@ export function Research({
               <strong>Web access is awaiting your decision</strong>
               <p>Approval resumes this conversation and may make provider requests.</p>
               <div className="button-row">
-                <button
-                  className="button"
-                  disabled={!allowCalls || busy}
-                  onClick={() => void send('approve')}
-                >
+                <button className="button" disabled={busy} onClick={() => void send('approve')}>
                   Approve web access
                 </button>
                 <button
                   className="button secondary"
-                  disabled={!allowCalls || busy}
+                  disabled={busy}
                   onClick={() => void send('reject')}
                 >
                   Reject
@@ -256,11 +237,7 @@ export function Research({
               disabled={busy || loading}
             />
             <div className="composer-footer">
-              <span>
-                {allowCalls
-                  ? 'Configured models are not provider-validated.'
-                  : 'Enable model requests above to send.'}
-              </span>
+              <span>Answers are checked against their sources before release.</span>
               {busy ? (
                 <button
                   type="button"
@@ -270,10 +247,7 @@ export function Research({
                   Stop viewing
                 </button>
               ) : (
-                <button
-                  className="button"
-                  disabled={!allowCalls || !model || !draft.trim() || loading}
-                >
+                <button className="button" disabled={!model || !draft.trim() || loading}>
                   Send question <Icon name="arrow" size={16} />
                 </button>
               )}

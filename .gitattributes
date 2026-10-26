@@ -1,3 +1,0 @@
-# Exact-hunk verification controls and fingerprinted fixture corpora must survive
-# Windows/Linux checkout differences.
-tests/fixtures/** text eol=lf

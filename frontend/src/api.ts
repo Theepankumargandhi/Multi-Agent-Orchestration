@@ -14,9 +14,8 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   signal?: AbortSignal;
-  idempotencyKey?: string;
 };
-async function readJSONText(response: Response, maximum = MAX_JSON): Promise<string> {
+async function readJSONText(response: Response): Promise<string> {
   if (!response.body) throw new Error('The service returned an empty response.');
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -27,12 +26,7 @@ async function readJSONText(response: Response, maximum = MAX_JSON): Promise<str
       const part = await reader.read();
       if (part.done) break;
       total += part.value.byteLength;
-      if (total > maximum)
-        throw new Error(
-          maximum === MAX_JSON
-            ? 'Response exceeds the Workbench display budget.'
-            : 'The replay bundle exceeds its 3 MB budget.',
-        );
+      if (total > MAX_JSON) throw new Error('Response exceeds the display budget.');
       parts.push(decoder.decode(part.value, { stream: true }));
     }
     parts.push(decoder.decode());
@@ -58,7 +52,7 @@ async function checked(response: Response): Promise<Response> {
       response.status === 401
         ? 'Your session is unavailable or expired. Sign in again.'
         : response.status === 403
-          ? 'This operation is not permitted for your account or repository.'
+          ? 'This operation is not permitted for your account.'
           : response.status === 409
             ? 'The state changed. Refresh before trying again.'
             : response.status === 422
@@ -94,7 +88,6 @@ export class ApiClient {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-    if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
     const response = await this.check(
       await fetch(apiPath(path), {
         method: options.method ?? 'GET',
@@ -115,109 +108,8 @@ export class ApiClient {
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     return readJSON<T>(await this.response(path, options));
   }
-  async requestJSONText(path: string, options: RequestOptions): Promise<string> {
-    // Preserve numeric spellings such as -0.0 in fingerprinted extraction manifests.
-    return readJSONText(await this.response(path, options), 3_000_000);
-  }
-  async replayOriginal<T>(
-    setId: string,
-    auditId: string,
-    sourceId: string,
-    checkpoint: string,
-    allowOCR: boolean,
-    signal: AbortSignal,
-  ): Promise<T> {
-    return readJSON<T>(
-      await this.response(
-        `/workbench/documents/reconciliations/${setId}/audits/${auditId}/sources/${sourceId}/replay-original`,
-        {
-          method: 'POST',
-          signal,
-          body: {
-            checkpoint_fingerprint: checkpoint,
-            confirm_reextract: true,
-            allow_original_ocr: allowOCR,
-          },
-        },
-        180_000,
-      ),
-    );
-  }
   authenticate(mode: 'login' | 'register', user_id: string, password: string) {
     return this.request<Session>(`/auth/${mode}`, { method: 'POST', body: { user_id, password } });
-  }
-  async crosscheckCells<T>(
-    setId: string,
-    auditId: string,
-    sourceId: string,
-    checkpoint: string,
-    signal: AbortSignal,
-  ): Promise<T> {
-    return readJSON<T>(
-      await this.response(
-        `/workbench/documents/reconciliations/${setId}/audits/${auditId}/sources/${sourceId}/crosscheck-cells`,
-        {
-          method: 'POST',
-          signal,
-          body: { checkpoint_fingerprint: checkpoint, confirm_crosscheck: true },
-        },
-        180_000,
-      ),
-    );
-  }
-  async crosscheckPixels<T>(
-    setId: string,
-    auditId: string,
-    sourceId: string,
-    checkpoint: string,
-    signal: AbortSignal,
-  ): Promise<T> {
-    return readJSON<T>(
-      await this.response(
-        `/workbench/documents/reconciliations/${setId}/audits/${auditId}/sources/${sourceId}/crosscheck-pixels`,
-        {
-          method: 'POST',
-          signal,
-          body: { checkpoint_fingerprint: checkpoint, confirm_local_ocr: true },
-        },
-        180_000,
-      ),
-    );
-  }
-  async uploadDocument(file: File, ocr: boolean, parentId?: string): Promise<{ id: string }> {
-    if (parentId && !/^[a-f0-9]{32}$/.test(parentId)) throw new Error('Invalid parent version.');
-    if (!/^[A-Za-z0-9][A-Za-z0-9 _().-]{0,119}$/.test(file.name) || file.name.includes('..'))
-      throw new Error(
-        'Rename the document using a short name with letters, numbers, spaces or parentheses.',
-      );
-    if (!file.size || file.size > 3_000_000) throw new Error('Choose a document up to 3 MB.');
-    const suffix = file.name.split('.').pop()?.toLowerCase();
-    const type =
-      suffix === 'pdf'
-        ? 'application/pdf'
-        : suffix === 'png'
-          ? 'image/png'
-          : suffix === 'jpg' || suffix === 'jpeg'
-            ? 'image/jpeg'
-            : '';
-    if (!type) throw new Error('Choose a PDF, PNG or JPEG.');
-    const response = await this.check(
-      await fetch(
-        apiPath(
-          `/workbench/documents?name=${encodeURIComponent(file.name).replace(/[()]/g, (c) => '%' + c.charCodeAt(0).toString(16))}&ocr=${ocr}${parentId ? '&parent_id=' + parentId : ''}`,
-        ),
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': type },
-          body: file,
-          signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(180_000)]),
-          credentials: 'omit',
-          cache: 'no-store',
-          redirect: 'error',
-        },
-      ),
-    );
-    return readJSON<{ id: string }>(response);
   }
   async stream(
     body: { message: string; model: string; thread_id: string },
@@ -272,7 +164,7 @@ export class SSEParser {
   push(chunk: string) {
     if (this.done) return;
     this.total += chunk.length;
-    if (this.total > MAX_JSON) throw new Error('Stream exceeds the Workbench display budget.');
+    if (this.total > MAX_JSON) throw new Error('Stream exceeds the display budget.');
     this.buffer += chunk;
     let boundary: number;
     while ((boundary = this.buffer.indexOf('\n')) >= 0) {

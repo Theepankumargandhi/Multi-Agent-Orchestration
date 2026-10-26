@@ -1,6 +1,0 @@
-{
-  "task_id": "discount-regression", "source_paths": ["app.py"], "test_paths": ["owner_checks.py"],
-  "preservation_authorized": true,
-  "contracts": [{"case_id": "ordinary", "entrypoint": "app:discount", "args": [20]}],
-  "integer_domains": [{"domain_id": "quantities", "entrypoint": "app:discount", "minimum": 0, "maximum": 30}]
-}

@@ -63,7 +63,7 @@ class EvidenceQualityOutcome(BaseModel):
 
 class EvidenceQualityEvalReport(BaseModel):
     schema_version: str = "1.0"
-    generated_by: str = "agentforge-evidence-quality-eval"
+    generated_by: str = "citeright-evidence-quality-eval"
     dataset_path: str
     dataset_fingerprint: str
     scenario_count: int

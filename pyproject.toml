@@ -3,9 +3,9 @@ requires = ["setuptools>=83"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "evidence-agent-platform"
-version = "0.4.0"
-description = "An evaluation-driven LangGraph agent platform with hybrid retrieval, durable HITL, and experiment tracking."
+name = "citeright"
+version = "0.5.0"
+description = "A research assistant that answers from your documents and the web, cites its sources, and refuses to make things up."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
@@ -21,18 +21,12 @@ dependencies = [
   "langgraph>=1.0,<2",
   "langgraph-checkpoint-sqlite>=3.0,<4",
   "langgraph-checkpoint-postgres>=3.0,<4",
-  "opentelemetry-api>=1.45.1,<1.46",
-  "opentelemetry-sdk>=1.45.1,<1.46",
-  "opentelemetry-exporter-otlp-proto-http>=1.45.1,<1.46",
   "pydantic>=2.11,<3",
   "regex>=2024.11.6,<2027",
-  "tree-sitter>=0.26,<0.27",
-  "tree-sitter-language-pack>=1.17,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "fonttools>=4.60,<5",
   "coverage[toml]>=7.10,<8",
   "httpx>=0.28,<1",
   "pytest>=9.0.3,<10",
@@ -40,67 +34,18 @@ dev = [
   "pytest-cov>=6,<8",
   "ruff>=0.12,<1",
 ]
-code-intelligence-ml = [
-  "sentence-transformers>=6,<7",
-]
-document-multimodal = [
-  "pdfplumber>=0.11.9,<0.12",
-  "pypdfium2>=5,<6",
-  "Pillow>=13,<14",
-]
 
 [project.scripts]
-agentforge-document-demo = "agentforge_sdk.demo:main"
-agentforge-eval = "evals.run_experiments:main"
-agentforge-judge-calibration = "evals.run_judge_calibration:main"
-agentforge-retrieval-eval = "evals.run_retrieval_evals:main"
-agentforge-review = "evals.review_dataset:main"
-agentforge-train-router = "evals.train_cost_router:main"
-agentforge-train-bandit-router = "evals.contextual_bandit:main"
-agentforge-code-eval = "code_agent.evaluation:main"
-agentforge-swebench-import = "code_agent.swebench:main"
-agentforge-flywheel = "evals.flywheel:main"
-agentforge-post-train = "post_training.cli:main"
-agentforge-code-worker = "code_agent.worker:main"
-agentforge-code-context-eval = "code_agent.context_evaluation:main"
-agentforge-upgrade = "code_agent.upgrade_cli:main"
-agentforge-verify = "code_agent.patch_verify:main"
-agentforge-regression-benchmark = "code_agent.regression_benchmark:main"
-agentforge-maintainer-pilot = "code_agent.maintainer_pilot:main"
-agentforge-migration-study = "code_agent.upgrade_study:main"
-agentforge-retrieval-train = "code_agent.retrieval_learning:main"
-agentforge-security-eval = "code_agent.security_evaluation:main"
-agentforge-benchmark-release = "code_agent.benchmark_release:main"
-agentforge-telemetry-eval = "code_agent.observability:main"
-agentforge-reliability-eval = "evals.reliability:main"
-agentforge-arena = "evals.arena:main"
-agentforge-gateway-eval = "evals.model_gateway_evaluation:main"
-agentforge-online-eval = "evals.online_monitor_evaluation:main"
-agentforge-memory-eval = "evals.memory_evaluation:main"
-agentforge-grounding-eval = "evals.grounding_evaluation:main"
-agentforge-uncertainty-eval = "evals.uncertainty_evaluation:main"
-agentforge-adaptive-compute-eval = "evals.adaptive_compute_evaluation:main"
-agentforge-evidence-quality-eval = "evals.evidence_quality_evaluation:main"
-agentforge-process-reward-eval = "evals.process_reward_evaluation:main"
-agentforge-search-planning-eval = "evals.search_planning_evaluation:main"
-agentforge-verifier-uncertainty-eval = "evals.verifier_uncertainty_evaluation:main"
-agentforge-verifier-review = "agent.verifier_active_learning:main"
-agentforge-world-model-eval = "evals.world_model_evaluation:main"
-agentforge-offline-rl-eval = "evals.offline_rl_evaluation:main"
-agentforge-distillation-eval = "evals.distillation_evaluation:main"
-agentforge-execution-replay = "agent.execution_replay:main"
-agentforge-replay-calibration = "evals.replay_calibration:main"
-agentforge-prospective-eval = "evals.prospective_evaluation:main"
-agentforge-preference-eval = "evals.preference_evaluation:main"
-agentforge-preference-shadow = "evals.preference_shadow_evaluation:main"
-agentforge-preference-deployment = "evals.preference_deployment_evaluation:main"
-agentforge-process-supervision = "evals.process_supervision_evaluation:main"
-agentforge-verifier-shadow = "evals.verifier_shadow_evaluation:main"
-agentforge-reviewed-verifier-uncertainty = "evals.reviewed_verifier_uncertainty_evaluation:main"
-agentforge-ensemble-outcomes = "evals.ensemble_outcome_evaluation:main"
+citeright-eval = "evals.run_experiments:main"
+citeright-grounding-eval = "evals.grounding_evaluation:main"
+citeright-evidence-quality-eval = "evals.evidence_quality_evaluation:main"
+citeright-memory-eval = "evals.memory_evaluation:main"
+citeright-judge-calibration = "evals.run_judge_calibration:main"
+citeright-retrieval-eval = "evals.run_retrieval_evals:main"
+citeright-review = "evals.review_dataset:main"
 
 [tool.setuptools.packages.find]
-include = ["agent*", "client*", "code_agent*", "evals*", "post_training*", "schema*", "service*"]
+include = ["agent*", "client*", "evals*", "schema*", "service*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "service", "schema"]
@@ -113,7 +58,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["agent", "agentforge_sdk", "client", "code_agent", "schema", "service"]
+source = ["agent", "client", "schema", "service"]
 
 [tool.coverage.report]
 show_missing = true

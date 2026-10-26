@@ -21,7 +21,6 @@ __pycache__
 *.egg-info
 build
 dist
-sdk/build
 *.db
 *.db-*
 data
@@ -31,8 +30,6 @@ rag_docs
 graph_rag_docs
 media
 docs
-repositories
 **/node_modules
-data/workbench-documents
 frontend/dist
 frontend/coverage
