@@ -182,35 +182,10 @@ def test_monitoring_endpoints_are_public():
 
         capabilities = c.get("/capabilities")
         assert capabilities.status_code == 200
-        assert capabilities.json()["features"]["graph_code_context"] is True
-        assert capabilities.json()["features"]["hybrid_code_context"] is True
-        assert capabilities.json()["features"]["stateful_agent_arena"] is True
-        assert capabilities.json()["features"]["llm_inference_control_plane"] is True
-        assert capabilities.json()["features"]["online_ai_governance"] is True
-        assert capabilities.json()["features"]["trustworthy_long_term_memory"] is True
-        assert capabilities.json()["features"]["claim_level_grounding_verification"] is True
-        assert capabilities.json()["features"]["conformal_uncertainty_control"] is True
-        assert capabilities.json()["features"]["adaptive_test_time_compute"] is True
-        assert capabilities.json()["features"]["learned_world_model_planning"] is False
-        assert capabilities.json()["features"]["conservative_offline_rl_planning"] is False
-        assert capabilities.json()["features"]["evidence_intelligence"] is True
-        assert "poisoning_quarantine" in capabilities.json()["agent_memory"]["controls"]
-        assert "fail_closed_abstention" in capabilities.json()["grounding_verification"]["controls"]
-        assert "selective_answering" in capabilities.json()["uncertainty_control"]["controls"]
-        assert (
-            "bounded_candidate_generation"
-            in capabilities.json()["adaptive_compute"]["controls"]
-        )
-        assert (
-            "numeric_and_negation_conflict_graph"
-            in capabilities.json()["evidence_quality"]["controls"]
-        )
-        assert "circuit_breaker" in capabilities.json()["inference_gateway"]["controls"]
-        assert (
-            "statistical_canary_promotion_rollback"
-            in capabilities.json()["online_evaluation"]["controls"]
-        )
-        assert len(capabilities.json()["code_context"]["languages"]) == 6
+        features = capabilities.json()["features"]
+        assert features["streaming"] is True and features["native_hitl"] is True
+        assert {"local_rag", "graph_rag", "grounding_verification", "evidence_quality"} <= set(features)
+        assert capabilities.json()["grounding_verification"]["version"] == "grounding-policy-v2"
 
         metrics = c.get("/metrics")
         assert metrics.status_code == 200

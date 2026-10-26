@@ -105,9 +105,7 @@ def test_grounding_report_tampering_is_detected():
 
 
 @pytest.mark.asyncio
-async def test_graph_nodes_hold_draft_until_verification_then_release_or_abstain(
-    tmp_path, monkeypatch
-):
+async def test_graph_nodes_hold_draft_until_verification_then_release_or_abstain(monkeypatch):
     research = importlib.import_module("agent.research_assistant")
     monkeypatch.setattr(research, "GROUNDING_VERIFICATION_ENABLED", True)
     supported_state = {
@@ -127,15 +125,6 @@ async def test_graph_nodes_hold_draft_until_verification_then_release_or_abstain
     assert verified["grounding_action"] == "pass"
     assert verified["messages"][0].content == supported_state["final_response"]
 
-    monkeypatch.setattr(research, "UNCERTAINTY_CALIBRATION_ENABLED", True)
-    monkeypatch.setattr(research, "UNCERTAINTY_CALIBRATOR_PATH", tmp_path / "missing.json")
-    monkeypatch.setattr(research, "_uncertainty_calibrator", None)
-    gated = await research.grounding_verifier_agent(supported_state, {"configurable": {}})
-    assert gated["grounding_action"] == "abstain"
-    assert gated["uncertainty_receipt"]["status"] == "calibrator_unavailable"
-    assert "messages" not in gated
-    monkeypatch.setattr(research, "UNCERTAINTY_CALIBRATION_ENABLED", False)
-
     unsupported = {
         "route": "web",
         "final_response": "Revenue is guaranteed to grow by 99% in 2026.",
@@ -148,44 +137,3 @@ async def test_graph_nodes_hold_draft_until_verification_then_release_or_abstain
     assert verdict["grounding_action"] == "abstain"
     assert "enough verified evidence" in repaired["final_response"]
     assert repaired["messages"][0].content == repaired["final_response"]
-
-
-@pytest.mark.asyncio
-async def test_adaptive_deliberation_releases_only_consensus_candidate(monkeypatch):
-    research = importlib.import_module("agent.research_assistant")
-    monkeypatch.setattr(research, "UNCERTAINTY_CALIBRATION_ENABLED", False)
-    monkeypatch.setattr(research, "ADAPTIVE_COMPUTE_INTEGRITY_KEY", None)
-
-    async def candidate_llm(*args, **kwargs):
-        return (
-            "AgentForge uses LangGraph for agent orchestration "
-            "[source](https://example.com/architecture)."
-        )
-
-    monkeypatch.setattr(research, "_call_llm", candidate_llm)
-    plan = research.plan_compute(
-        research.ComputeSignals(
-            route="web",
-            grounding_action="repair",
-            grounding_confidence=0.5,
-            uncertainty_decision="not_evaluated",
-            evidence_count=1,
-        ),
-        research._adaptive_compute_policy(),
-    )
-    state = {
-        "route": "web",
-        "query": "How is AgentForge orchestrated?",
-        "final_response": "The architecture is unclear.",
-        "web_notes": (
-            "Link: https://example.com/architecture\n"
-            "Snippet: AgentForge uses LangGraph for agent orchestration."
-        ),
-        "adaptive_compute_plan": plan.model_dump(mode="json"),
-        "answer_source_meta": "web",
-    }
-    result = await research.adaptive_deliberation_agent(state, {"configurable": {}})
-    assert result["grounding_action"] == "pass"
-    assert result["adaptive_compute_receipt"]["status"] == "released"
-    assert result["adaptive_compute_receipt"]["selected_consensus"] == 1
-    assert result["messages"][0].content == result["final_response"]

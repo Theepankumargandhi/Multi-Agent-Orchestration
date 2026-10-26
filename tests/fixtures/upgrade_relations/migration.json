@@ -1,8 +1,0 @@
-{
-  "task_id": "metamorphic-wallet",
-  "family": "pydantic-workflow-laws",
-  "image": "agentforge-upgradepilot-sessions:local",
-  "source_paths": ["app"],
-  "test_command": ["-m", "pytest", "-q", "owner_checks.py"],
-  "contracts": [{"case_id": "empty", "entrypoint": "app.models:empty_wallet"}]
-}

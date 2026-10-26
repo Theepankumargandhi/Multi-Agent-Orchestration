@@ -53,7 +53,7 @@ class EvalCase(BaseModel):
 
 class VariantConfig(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    adapter: Literal["keyword-baseline", "research-router", "live-graph", "openai-compatible"]
+    adapter: Literal["keyword-baseline", "research-router", "live-graph"]
     model: str = "offline-eval"
     parameters: dict[str, Any] = Field(default_factory=dict)
 
@@ -305,70 +305,10 @@ class LiveGraphAdapter:
         )
 
 
-class OpenAICompatibleAdapter:
-    """Evaluate a PEFT adapter served by vLLM, llama.cpp, or another compatible runtime."""
-
-    async def run(self, case: EvalCase, variant: VariantConfig) -> AgentRun:
-        from post_training.inference import generate
-
-        started = time.perf_counter()
-        parameters = variant.parameters
-        try:
-            result = await generate(
-                base_url=str(parameters.get("base_url", "http://127.0.0.1:8001/v1")),
-                model=variant.model,
-                prompt=case.input,
-                api_key_env=str(parameters.get("api_key_env", "LOCAL_MODEL_API_KEY")),
-                timeout_seconds=float(parameters.get("timeout_seconds", 120)),
-                max_tokens=int(parameters.get("max_tokens", 512)),
-                temperature=float(parameters.get("temperature", 0.0)),
-                allow_remote=bool(parameters.get("allow_remote", False)),
-            )
-        except Exception as exc:
-            return AgentRun(
-                latency_ms=(time.perf_counter() - started) * 1000,
-                error=type(exc).__name__,
-            )
-        latency = (time.perf_counter() - started) * 1000
-        input_price = float(parameters.get("input_cost_per_million", 0.0))
-        output_price = float(parameters.get("output_cost_per_million", 0.0))
-        estimated_cost = (
-            result.prompt_tokens * input_price + result.completion_tokens * output_price
-        ) / 1_000_000
-        reported_route = str(parameters.get("reported_route", "unknown"))
-        if reported_route == "unknown":
-            try:
-                structured_answer = json.loads(result.answer)
-                candidate_route = str(structured_answer.get("route") or "unknown")
-                if candidate_route in ROUTES:
-                    reported_route = candidate_route
-            except (json.JSONDecodeError, AttributeError):
-                pass
-        return AgentRun(
-            answer=result.answer,
-            route=reported_route,
-            tool_calls=list(result.tool_calls),
-            citations=CITATION_RE.findall(result.answer),
-            latency_ms=latency,
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            estimated_cost_usd=estimated_cost,
-            trace=[
-                {
-                    "step": 1,
-                    "agent": "openai_compatible_local_model",
-                    "latency_ms": latency,
-                    "model": result.model,
-                }
-            ],
-        )
-
-
 ADAPTERS: dict[str, AgentAdapter] = {
     "keyword-baseline": KeywordBaselineAdapter(),
     "research-router": ResearchRouterAdapter(),
     "live-graph": LiveGraphAdapter(),
-    "openai-compatible": OpenAICompatibleAdapter(),
 }
 
 

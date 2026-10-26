@@ -13,16 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _source_modules() -> dict[str, Path]:
     result = {}
-    for package in (
-        "agent",
-        "agentforge_sdk",
-        "client",
-        "code_agent",
-        "evals",
-        "post_training",
-        "schema",
-        "service",
-    ):
+    for package in ("agent", "client", "evals", "schema", "service"):
         for path in (ROOT / package).rglob("*.py"):
             parts = path.relative_to(ROOT).with_suffix("").parts
             module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
@@ -30,18 +21,7 @@ def _source_modules() -> dict[str, Path]:
     return result
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "service",
-        "app",
-        "eval-dashboard",
-        "context-dashboard",
-        "security-dashboard",
-        "post-training-dashboard",
-        "reliability-dashboard",
-    ],
-)
+@pytest.mark.parametrize("name", ["service"])
 def test_runtime_image_copies_its_internal_python_dependencies(name):
     """Static COPY/import closure; complements, but does not replace, image builds."""
     dockerfile = (ROOT / "docker" / f"Dockerfile.{name}").read_text(encoding="utf-8")
@@ -77,7 +57,6 @@ def test_docker_context_excludes_private_inputs_and_generated_outputs():
         "*.key",
         "*.pem",
         "data",
-        "repositories",
         ".runtime_logs",
         "*.egg-info",
     } <= patterns
@@ -92,20 +71,9 @@ def test_development_compose_publishes_only_loopback_ports():
     assert all(isinstance(port, str) and port.startswith("127.0.0.1:") for port in published)
 
 
-def test_compose_requires_operator_passwords_without_public_defaults():
+def test_compose_keeps_data_in_a_named_volume():
     import yaml
 
-    services = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))["services"]
-    assert services["grafana"]["environment"]["GF_SECURITY_ADMIN_PASSWORD"].startswith("${GRAFANA_ADMIN_PASSWORD:?")
-    assert services["postgres"]["environment"]["POSTGRES_PASSWORD"].startswith("${POSTGRES_PASSWORD:?")
-    for name in ("POSTGRES_CHECKPOINT_URI", "POSTGRES_STORE_URI"):
-        assert "${POSTGRES_PASSWORD:?" in services["agent_service"]["environment"][name]
-
-
-def test_kubernetes_services_do_not_publish_unauthenticated_node_ports():
-    import yaml
-
-    for path in (ROOT / "k8s").glob("*-service.yaml"):
-        service = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert service["spec"].get("type", "ClusterIP") == "ClusterIP", path.name
-        assert not any("nodePort" in port for port in service["spec"]["ports"]), path.name
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+    assert compose["services"]["agent_service"]["volumes"] == ["citeright_data:/app/data"]
+    assert "citeright_data" in compose["volumes"]

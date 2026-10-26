@@ -1,7 +1,7 @@
 """Ingest this repository's Markdown documentation into ChromaDB for RAG.
 
-Embedding calls use OPENAI_API_KEY; the full README and docs/ cost a few cents.
-Re-running replaces changed sections and removes deleted ones.
+With RAG_EMBEDDING_BACKEND=local the embeddings run on this machine for free; with
+"openai" they use OPENAI_API_KEY. Re-running replaces changed sections and removes deleted ones.
 """
 
 import argparse

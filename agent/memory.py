@@ -1,4 +1,4 @@
-"""Tenant-isolated, provenance-aware long-term memory for AgentForge."""
+"""Tenant-isolated, provenance-aware long-term memory for CiteRight."""
 
 from __future__ import annotations
 
@@ -19,7 +19,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.model_gateway import estimate_tokens
+
+def estimate_tokens(text: str) -> int:
+    """Stable credential-free approximation used only for the memory token budget."""
+    return max(1, math.ceil(len(text) / 4))
+
 
 MemoryType = Literal["episodic", "semantic", "preference", "procedural"]
 MemoryStatus = Literal["active", "quarantined", "superseded", "tombstoned"]

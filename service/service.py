@@ -28,7 +28,6 @@ from langsmith import Client as LangsmithClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from agent import build_research_assistant
-from agent.execution_replay import digest
 from agent.mcp_client import close_mcp_client
 from agent.memory import (
     MemoryCandidate,
@@ -37,18 +36,6 @@ from agent.memory import (
     get_memory_store,
 )
 from agent.tools import perform_web_search
-from code_agent.api import (
-    CODE_AGENT_ENABLED,
-    CODE_AGENT_MANAGER,
-)
-from code_agent.api import (
-    router as code_agent_router,
-)
-from code_agent.observability import capture_research_agent_trace
-from code_agent.workbench import create_workbench_router
-from evals.adaptive_router import CostAwareRouter
-from evals.contextual_bandit import BanditArtifact, ContextualBanditPolicy
-from evals.platform import ExperimentStore
 from schema import (
     AuthLoginInput,
     AuthRegisterInput,
@@ -59,8 +46,6 @@ from schema import (
     UserInput,
     model_dump_compat,
 )
-from service.document_api import MAX_UPLOAD, create_document_router, documents_enabled
-from service.incident_api import router as incident_router
 from service.persistence_store import open_conversation_store
 from service.request_limits import RequestBodyLimitMiddleware
 
@@ -101,46 +86,11 @@ HITL_PENDING_TTL_SECONDS = max(60, int(os.getenv("HITL_PENDING_TTL_SECONDS", "36
 MAX_REQUEST_BYTES = max(1024, int(os.getenv("MAX_REQUEST_BYTES", "65536")))
 RATE_LIMIT_REQUESTS = max(1, int(os.getenv("RATE_LIMIT_REQUESTS", "60")))
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
-EVAL_RESULTS_DIR = Path(os.getenv("EVAL_RESULTS_DIR", "data/evaluations"))
-ENABLE_EVAL_API = os.getenv("ENABLE_EVAL_API", "false").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-ADAPTIVE_MODEL_ROUTER_ENABLED = os.getenv("ADAPTIVE_MODEL_ROUTER_ENABLED", "false").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-ADAPTIVE_MODEL_ROUTER_PATH = Path(
-    os.getenv("ADAPTIVE_MODEL_ROUTER_PATH", "data/evaluations/cost_router.json")
-)
-ADAPTIVE_SMALL_MODEL = os.getenv("ADAPTIVE_SMALL_MODEL", "gpt-4o-mini").strip()
-ADAPTIVE_STRONG_MODEL = os.getenv("ADAPTIVE_STRONG_MODEL", "").strip()
-CONTEXTUAL_BANDIT_ROUTER_ENABLED = os.getenv(
-    "CONTEXTUAL_BANDIT_ROUTER_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-CONTEXTUAL_BANDIT_POLICY_PATH = Path(
-    os.getenv("CONTEXTUAL_BANDIT_POLICY_PATH", "data/evaluations/bandit/policy.json")
-)
-CONTEXTUAL_BANDIT_EPSILON = min(
-    0.25, max(0.0, float(os.getenv("CONTEXTUAL_BANDIT_EPSILON", "0")))
-)
-MODEL_GATEWAY_ENABLED = os.getenv("MODEL_GATEWAY_ENABLED", "false").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 AGENT_MEMORY_ENABLED = os.getenv("AGENT_MEMORY_ENABLED", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
 _USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{3,64}$")
 _password_hasher = None
-_adaptive_router_cache: tuple[float, CostAwareRouter] | None = None
-_contextual_bandit_cache: tuple[float, ContextualBanditPolicy] | None = None
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(message)s")
 logger = logging.getLogger("agent_service")
@@ -777,75 +727,6 @@ def _checkpoint_config(user_id: str | None, thread_id: str, model: str) -> Runna
     )
 
 
-def _select_runtime_model(
-    requested_model: str, query: str, request_id: str = ""
-) -> tuple[str, Dict[str, Any]]:
-    """Resolve the opt-in adaptive pseudo-model through the active learned policy."""
-    global _adaptive_router_cache, _contextual_bandit_cache
-    if requested_model != "adaptive":
-        return requested_model, {"policy": "explicit", "selected_model": requested_model}
-    if not ADAPTIVE_MODEL_ROUTER_ENABLED:
-        raise HTTPException(status_code=400, detail="Adaptive model routing is disabled")
-    if CONTEXTUAL_BANDIT_ROUTER_ENABLED:
-        try:
-            modified = CONTEXTUAL_BANDIT_POLICY_PATH.stat().st_mtime
-            if _contextual_bandit_cache is None or _contextual_bandit_cache[0] != modified:
-                artifact = BanditArtifact.load(CONTEXTUAL_BANDIT_POLICY_PATH)
-                _contextual_bandit_cache = (modified, ContextualBanditPolicy(artifact))
-            policy = _contextual_bandit_cache[1]
-            high_risk = bool(policy.features(query)[7])
-            decision = policy.decide(
-                query,
-                request_id=request_id or hashlib.sha256(query.encode()).hexdigest(),
-                high_risk=high_risk,
-                epsilon=CONTEXTUAL_BANDIT_EPSILON,
-            )
-        except (OSError, ValueError, KeyError) as exc:
-            logger.error(
-                json.dumps({"event": "contextual_bandit_load_failed", "error": type(exc).__name__})
-            )
-            raise HTTPException(
-                status_code=503, detail="Contextual-bandit routing policy is unavailable"
-            ) from exc
-        selected_estimate = next(
-            item for item in decision.estimates if item.action == decision.action
-        )
-        return decision.model, {
-            "policy": "safety_constrained_contextual_bandit",
-            "selected_tier": decision.action,
-            "selected_model": decision.model,
-            "propensity": round(decision.propensity, 6),
-            "exploration": decision.exploration,
-            "expected_utility": round(selected_estimate.expected_utility, 6),
-            "uncertainty": round(selected_estimate.uncertainty, 6),
-            "feasible_actions": decision.feasible_actions,
-            "high_risk_override": high_risk,
-            "policy_fingerprint": decision.policy_fingerprint,
-        }
-    if not ADAPTIVE_SMALL_MODEL or not ADAPTIVE_STRONG_MODEL:
-        raise HTTPException(status_code=503, detail="Adaptive model routing is not configured")
-    try:
-        modified = ADAPTIVE_MODEL_ROUTER_PATH.stat().st_mtime
-        if _adaptive_router_cache is None or _adaptive_router_cache[0] != modified:
-            _adaptive_router_cache = (modified, CostAwareRouter.load(ADAPTIVE_MODEL_ROUTER_PATH))
-        router = _adaptive_router_cache[1]
-    except (OSError, ValueError, KeyError) as exc:
-        logger.error(json.dumps({"event": "adaptive_router_load_failed", "error": type(exc).__name__}))
-        raise HTTPException(status_code=503, detail="Adaptive model router artifact is unavailable") from exc
-    high_risk = bool(router.features(query)[7])
-    tier = router.select(query, high_risk=high_risk)
-    selected = ADAPTIVE_STRONG_MODEL if tier == "strong" else ADAPTIVE_SMALL_MODEL
-    return selected, {
-        "policy": "learned_cost_aware",
-        "selected_tier": tier,
-        "selected_model": selected,
-        "strong_probability": round(router.probability_strong(query, high_risk), 6),
-        "threshold": router.threshold,
-        "high_risk_override": high_risk,
-        "training_fingerprint": router.training_fingerprint,
-    }
-
-
 async def _resolve_native_resume(
     app: FastAPI,
     user_id: str | None,
@@ -964,14 +845,11 @@ async def lifespan(app: FastAPI):
         app.state.web_hitl_pending_cache = {}
         app.state.rate_limit_buckets = defaultdict(deque)
         app.state.rate_limit_lock = asyncio.Lock()
-        if CODE_AGENT_ENABLED:
-            await CODE_AGENT_MANAGER.start()
         logger.info(json.dumps({"event": "service_started", "checkpoint_backend": backend,
                                 "store_backend": store_result.backend_label}))
         try:
             yield
         finally:
-            await CODE_AGENT_MANAGER.cancel_all()
             await close_mcp_client()
             close_store = getattr(store_result.store, "close", None)
             if callable(close_store):
@@ -979,21 +857,15 @@ async def lifespan(app: FastAPI):
     # context managers are cleaned up by AsyncExitStack on exit
 
 app = FastAPI(
-    title="AgentForge API",
-    version="0.3.0",
+    title="CiteRight API",
+    version="0.5.0",
     description=(
-        "Evaluation-driven, safety-gated agent research with hybrid retrieval, "
-        "durable approvals, and optional experiment reporting."
+        "A research assistant that answers from your documents and the web, cites its sources, "
+        "and refuses to make things up."
     ),
     lifespan=lifespan,
 )
-app.include_router(code_agent_router)
-app.include_router(incident_router)
-app.include_router(create_workbench_router(CODE_AGENT_MANAGER, code_enabled=CODE_AGENT_ENABLED))
-app.include_router(create_document_router())
-app.add_middleware(RequestBodyLimitMiddleware, limit_for_scope=lambda scope:
-                   MAX_UPLOAD if scope["method"] == "POST" and scope["path"] == "/workbench/documents"
-                   and documents_enabled() else MAX_REQUEST_BYTES)
+app.add_middleware(RequestBodyLimitMiddleware, limit_for_scope=lambda scope: MAX_REQUEST_BYTES)
 
 
 @app.middleware("http")
@@ -1026,8 +898,7 @@ async def request_guard_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", "").strip()[:128] or str(uuid4())
     request.state.request_id = request_id
     if request.method in {"POST", "PUT", "PATCH"}:
-        body_limit = MAX_UPLOAD if (request.method == 'POST' and request.url.path == '/workbench/documents'
-                                   and documents_enabled()) else MAX_REQUEST_BYTES
+        body_limit = MAX_REQUEST_BYTES
         try:
             content_length = int(request.headers.get("content-length", "0") or 0)
         except ValueError:
@@ -1118,6 +989,10 @@ def _default_chat_model() -> str:
     return os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 
 
+def _env_flag(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @app.get("/capabilities")
 async def capabilities():
     """Public, non-secret runtime capabilities used by thin clients."""
@@ -1131,219 +1006,22 @@ async def capabilities():
     # Clients preselect the first model, so list the server default first.
     default_model = _default_chat_model()
     models.sort(key=lambda item: item["id"] != default_model)
-    if (
-        ADAPTIVE_MODEL_ROUTER_ENABLED
-        and (
-            (CONTEXTUAL_BANDIT_ROUTER_ENABLED and CONTEXTUAL_BANDIT_POLICY_PATH.exists())
-            or (
-                ADAPTIVE_SMALL_MODEL
-                and ADAPTIVE_STRONG_MODEL
-                and ADAPTIVE_MODEL_ROUTER_PATH.exists()
-            )
-        )
-    ):
-        label = (
-            "Adaptive - contextual bandit"
-            if CONTEXTUAL_BANDIT_ROUTER_ENABLED
-            else "Adaptive - quality/cost router"
-        )
-        models.append({"id": "adaptive", "label": label})
     return {
         "models": models,
         "features": {
-            "workbench": True,
             "user_authentication": ENABLE_USER_AUTH,
             "streaming": True,
             "native_hitl": True,
-            "local_rag": bool(os.getenv("USE_CHROMA_RAG", "true").lower() not in {"0", "false", "off"}),
-            "graph_rag": bool(os.getenv("GRAPH_RAG_ENABLED", "true").lower() not in {"0", "false", "off"}),
-            "mcp": bool(os.getenv("MCP_TOOLS_ENABLED", "false").lower() not in {"0", "false", "off"}),
-            "evaluation_api": ENABLE_EVAL_API,
-            "contextual_bandit_router": CONTEXTUAL_BANDIT_ROUTER_ENABLED,
-            "process_reward_model": bool(
-                os.getenv("PROCESS_REWARD_MODEL_ENABLED", "false").strip().lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "verifier_guided_mcts": bool(
-                os.getenv("VERIFIER_MCTS_ENABLED", "false").strip().lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "learned_world_model_planning": bool(
-                os.getenv("WORLD_MODEL_ENABLED", "false").strip().lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "conservative_offline_rl_planning": bool(
-                os.getenv("OFFLINE_RL_POLICY_ENABLED", "false").strip().lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "search_policy_distillation": os.getenv(
-                "SEARCH_DISTILLATION_ENABLED", "false"
-            ).strip().lower() in {"1", "true", "yes", "on"},
-            "execution_feedback_calibration": os.getenv(
-                "EXECUTION_REPLAY_ENABLED", "false"
-            ).strip().lower() in {"1", "true", "yes", "on"},
-            "uncertainty_aware_verifier_ensemble": bool(
-                os.getenv("VERIFIER_ENSEMBLE_ENABLED", "false").strip().lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "verifier_active_learning": bool(
-                os.getenv("VERIFIER_ACTIVE_LEARNING_ENABLED", "false").strip().lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "sandboxed_code_agent": CODE_AGENT_ENABLED,
-            "incident_investigation": os.getenv("INCIDENT_INVESTIGATION_ENABLED", "false").lower() == "true",
-            "incident_live_replay": os.getenv("INCIDENT_LIVE_REPLAY_ENABLED", "false").lower() == "true",
-            "durable_code_jobs": True,
-            "verified_pr_workflow": True,
-            "graph_code_context": True,
-            "hybrid_code_context": True,
-            "genai_otel_tracing": bool(
-                os.getenv("GENAI_OTEL_ENABLED", "false").lower()
-                not in {"0", "false", "off"}
-            ),
-            "privacy_safe_local_traces": bool(os.getenv("GENAI_TRACE_JSONL_PATH", "").strip()),
-            "reliability_fault_injection_lab": True,
-            "stateful_agent_arena": True,
-            "llm_inference_control_plane": True,
-            "llm_gateway_runtime_enabled": MODEL_GATEWAY_ENABLED,
-            "online_ai_governance": True,
-            "trustworthy_long_term_memory": True,
-            "long_term_memory_runtime_enabled": AGENT_MEMORY_ENABLED,
-            "claim_level_grounding_verification": True,
-            "grounding_runtime_enabled": os.getenv(
-                "GROUNDING_VERIFICATION_ENABLED", "false"
-            ).lower() in {"1", "true", "yes", "on"},
-            "conformal_uncertainty_control": True,
-            "uncertainty_runtime_enabled": os.getenv(
-                "UNCERTAINTY_CALIBRATION_ENABLED", "false"
-            ).lower() in {"1", "true", "yes", "on"},
-            "adaptive_test_time_compute": True,
-            "adaptive_compute_runtime_enabled": (
-                os.getenv("ADAPTIVE_COMPUTE_ENABLED", "false").lower()
-                in {"1", "true", "yes", "on"}
-                and os.getenv("GROUNDING_VERIFICATION_ENABLED", "false").lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "evidence_intelligence": True,
-            "evidence_quality_runtime_enabled": os.getenv(
-                "EVIDENCE_QUALITY_ENABLED", "false"
-            ).lower() in {"1", "true", "yes", "on"},
-        },
-        "code_context": {
-            "version": "2.0",
-            "languages": ["python", "typescript", "javascript", "java", "go", "rust"],
-            "strategies": ["lexical", "lexical_graph", "hybrid", "hybrid_rerank"],
-        },
-        "inference_gateway": {
-            "version": os.getenv("MODEL_GATEWAY_POLICY_VERSION", "inference-policy-v1"),
-            "enabled": MODEL_GATEWAY_ENABLED,
-            "controls": [
-                "tenant_budget",
-                "prompt_admission",
-                "provider_timeout",
-                "circuit_breaker",
-                "fallback",
-                "tenant_scoped_similarity_cache",
-                "stable_canary",
-                "shadow_evaluation",
-                "privacy_safe_receipt",
-            ],
-        },
-        "online_evaluation": {
-            "version": "online-slo-v1",
-            "runtime_event_export_enabled": bool(
-                os.getenv("MODEL_GATEWAY_ONLINE_EVENT_PATH", "").strip()
-            ),
-            "controls": [
-                "exactly_once_ingestion",
-                "delayed_feedback_join",
-                "rolling_quality_safety_cost_latency_slos",
-                "multi_window_error_budget_burn",
-                "provider_mix_drift",
-                "statistical_canary_promotion_rollback",
-                "integrity_bound_content_free_events",
-            ],
-        },
-        "agent_memory": {
-            "version": "memory-policy-v1",
-            "enabled": AGENT_MEMORY_ENABLED,
-            "types": ["episodic", "semantic", "preference", "procedural"],
-            "controls": [
-                "tenant_isolation",
-                "hybrid_temporal_retrieval",
-                "token_budget",
-                "provenance_and_integrity",
-                "signed_audit_trail",
-                "conflict_versioning",
-                "poisoning_quarantine",
-                "pii_redaction",
-                "ttl_and_tombstones",
-                "outcome_usefulness",
-                "episodic_consolidation",
-                "export_and_forget",
-            ],
+            "local_rag": _env_flag("USE_CHROMA_RAG", "true"),
+            "graph_rag": _env_flag("GRAPH_RAG_ENABLED", "true"),
+            "mcp": _env_flag("MCP_TOOLS_ENABLED", "false"),
+            "long_term_memory": AGENT_MEMORY_ENABLED,
+            "grounding_verification": _env_flag("GROUNDING_VERIFICATION_ENABLED", "false"),
+            "evidence_quality": _env_flag("EVIDENCE_QUALITY_ENABLED", "false"),
         },
         "grounding_verification": {
             "version": "grounding-policy-v2",
-            "enabled": os.getenv("GROUNDING_VERIFICATION_ENABLED", "false").lower()
-            in {"1", "true", "yes", "on"},
-            "controls": [
-                "claim_evidence_alignment",
-                "citation_allowlisting",
-                "high_risk_claim_thresholds",
-                "explainable_confidence_scoring",
-                "bounded_repair",
-                "fail_closed_abstention",
-                "integrity_bound_receipts",
-            ],
-        },
-        "uncertainty_control": {
-            "version": "mondrian-split-conformal-v1",
-            "enabled": os.getenv("UNCERTAINTY_CALIBRATION_ENABLED", "false").lower()
-            in {"1", "true", "yes", "on"},
-            "controls": [
-                "held_out_calibration_split",
-                "route_aware_mondrian_thresholds",
-                "correctness_prediction_sets",
-                "selective_answering",
-                "fail_closed_artifact_loading",
-                "confidence_distribution_drift",
-                "integrity_bound_decisions",
-            ],
-        },
-        "adaptive_compute": {
-            "version": "adaptive-compute-v1",
-            "enabled": (
-                os.getenv("ADAPTIVE_COMPUTE_ENABLED", "false").lower()
-                in {"1", "true", "yes", "on"}
-                and os.getenv("GROUNDING_VERIFICATION_ENABLED", "false").lower()
-                in {"1", "true", "yes", "on"}
-            ),
-            "controls": [
-                "confidence_and_risk_early_exit",
-                "bounded_candidate_generation",
-                "token_latency_and_call_budgets",
-                "grounded_candidate_verification",
-                "conformal_candidate_filtering",
-                "independent_evidence_consensus",
-                "fail_closed_abstention",
-                "privacy_safe_integrity_receipts",
-            ],
-        },
-        "evidence_quality": {
-            "version": "evidence-quality-v1",
-            "enabled": os.getenv("EVIDENCE_QUALITY_ENABLED", "false").lower()
-            in {"1", "true", "yes", "on"},
-            "controls": [
-                "retrieval_prompt_injection_quarantine",
-                "cross_domain_near_duplicate_collapse",
-                "independent_source_requirements",
-                "temporal_freshness_validation",
-                "numeric_and_negation_conflict_graph",
-                "authority_signals",
-                "filtered_pre_synthesis_context",
-                "integrity_bound_quality_receipts",
-            ],
+            "enabled": _env_flag("GROUNDING_VERIFICATION_ENABLED", "false"),
         },
     }
 
@@ -1351,34 +1029,6 @@ async def capabilities():
 @app.get("/metrics")
 async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-def _require_evaluation_admin(request: Request) -> None:
-    if not ENABLE_EVAL_API:
-        raise HTTPException(status_code=404, detail="Evaluation API is disabled")
-    admins = {item.strip() for item in os.getenv("EVAL_ADMIN_USER_IDS", "").split(",") if item.strip()}
-    if _get_request_user_id(request) not in admins:
-        raise HTTPException(status_code=403, detail="Evaluation administrator access required")
-
-
-@app.get("/evals/experiments")
-async def list_evaluation_experiments(request: Request, limit: int = 50):
-    """List registered experiments for explicitly authorized administrators."""
-    _require_evaluation_admin(request)
-    rows = await asyncio.to_thread(ExperimentStore(EVAL_RESULTS_DIR).list, limit)
-    return {"experiments": [{key: value for key, value in row.items() if key != "report_path"} for row in rows]}
-
-
-@app.get("/evals/experiments/{experiment_id}")
-async def get_evaluation_experiment(experiment_id: str, request: Request):
-    """Return one portable evaluation report without accepting filesystem paths."""
-    _require_evaluation_admin(request)
-    if not re.fullmatch(r"[0-9a-fA-F-]{36}", experiment_id):
-        raise HTTPException(status_code=400, detail="Invalid experiment ID")
-    report = await asyncio.to_thread(ExperimentStore(EVAL_RESULTS_DIR).get, experiment_id)
-    if report is None:
-        raise HTTPException(status_code=404, detail="Experiment not found")
-    return report.model_dump()
 
 
 @app.middleware("http")
@@ -1461,38 +1111,13 @@ def _parse_input(
     run_id = uuid4()
     thread_id = thread_id or user_input.thread_id or str(uuid4())
     input_message = ChatMessage(type="human", content=user_input.message)
-    selected_model, model_selection = _select_runtime_model(
-        user_input.model, user_input.message, thread_id
-    )
-    config = _checkpoint_config(user_id, thread_id, selected_model)
-    config["configurable"]["requested_model"] = user_input.model
-    config["configurable"]["model_selection"] = model_selection
-    config["configurable"]["execution_replay_consent"] = user_input.execution_replay_consent
-    config["configurable"]["execution_replay_request_id"] = str(run_id)
-    replay_key = os.getenv("EXECUTION_REPLAY_KEY", "").encode()
-    family = user_input.execution_replay_task_family
-    # Do not put a raw family ID into graph/checkpoint/tracing configuration.
-    config["configurable"]["execution_replay_task_family_fingerprint"] = (
-        digest(replay_key, "task-family", [config["configurable"]["user_id"], family])
-        if family and user_input.execution_replay_consent and len(replay_key) >= 32
-        else None
-    )
+    config = _checkpoint_config(user_id, thread_id, user_input.model)
     config["run_id"] = run_id
     kwargs = dict(
         input=(Command(resume=resume_value) if resume_value is not None else {"messages": [input_message.to_langchain()]}),
         config=config,
     )
     return kwargs, run_id
-
-
-def _request_incident_capture(user_input, user_id, run_id):
-    from agent.incident_runtime import make_capture
-    from service.incident_api import _configured_store
-    try:
-        return make_capture(user_input, user_id, run_id, lambda: _configured_store(
-            os.getenv("INCIDENT_DB_PATH", "data/incidents/private.db"), os.getenv("INCIDENT_ENCRYPTION_KEY", "")))
-    except ValueError:
-        raise HTTPException(400, "Incident capture requires enabled private storage, authenticated mode, consent and a task family") from None
 
 
 async def _store_message_safely(
@@ -1557,8 +1182,7 @@ def _record_agent_result(state: Dict[str, Any], outcome: str) -> None:
         "safety_agent", "memory_retrieval_agent", "intent_router_agent", "clarification_agent", "query_rewriter_agent",
         "recency_guard_agent", "web_hitl_gate_agent", "web_search_agent", "knowledge_graph_agent",
         "rag_agent", "math_agent", "response_agent", "grounding_verifier_agent",
-        "evidence_adjudication_agent", "adaptive_deliberation_agent",
-        "grounding_repair_agent", "evaluation_agent", "memory_write_agent",
+        "evidence_adjudication_agent", "grounding_repair_agent", "evaluation_agent", "memory_write_agent",
     }
     for node, duration_ms in (state.get("agent_latency_ms") or {}).items():
         if node not in allowed_nodes:
@@ -1567,36 +1191,6 @@ def _record_agent_result(state: Dict[str, Any], outcome: str) -> None:
             AGENT_NODE_DURATION_SECONDS.labels(node=node).observe(float(duration_ms) / 1000.0)
         except (TypeError, ValueError):
             continue
-
-
-def _capture_genai_trace_safely(
-    *,
-    run_id: str,
-    model: str,
-    state: Dict[str, Any],
-    outcome: str,
-    started: float,
-    stream: bool = False,
-) -> None:
-    try:
-        capture_research_agent_trace(
-            run_id=run_id,
-            model=model,
-            state=state,
-            outcome=outcome,
-            duration_ms=(time.perf_counter() - started) * 1000,
-            stream=stream,
-        )
-    except Exception as exc:
-        logger.warning(
-            json.dumps(
-                {
-                    "event": "genai_trace_export_failed",
-                    "run_id": run_id,
-                    "error": type(exc).__name__,
-                }
-            )
-        )
 
 
 def _extract_hitl_audit_event(state: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -1655,7 +1249,6 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
         thread_id=effective_thread_id,
     )
     thread_id = kwargs["config"]["configurable"]["thread_id"]
-    selected_model = kwargs["config"]["configurable"]["model"]
     await _store_message_safely(
         app,
         user_id=user_id,
@@ -1663,27 +1256,12 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
         run_id=str(run_id),
         role="human",
         content=user_input.message,
-        metadata={
-            "requested_model": user_input.model,
-            "selected_model": kwargs["config"]["configurable"]["model"],
-            "model_selection": kwargs["config"]["configurable"]["model_selection"],
-        },
+        metadata={"model": user_input.model},
     )
-    capture = _request_incident_capture(user_input, user_id, run_id)
-    agent_started = time.perf_counter()
     try:
-        from contextlib import nullcontext
-        with capture.scope() if capture else nullcontext():
-            response = await agent.ainvoke(**kwargs)
+        response = await agent.ainvoke(**kwargs)
     except Exception as e:
         AGENT_RUNS_TOTAL.labels(route="unknown", outcome="error").inc()
-        _capture_genai_trace_safely(
-            run_id=str(run_id),
-            model=selected_model,
-            state={},
-            outcome="error",
-            started=agent_started,
-        )
         logger.exception(json.dumps({"event": "agent_invoke_failed", "run_id": str(run_id)}))
         raise HTTPException(status_code=503, detail="Agent execution failed. Please retry.") from e
 
@@ -1691,13 +1269,6 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
         interrupt_payload = _extract_interrupt_payload(response)
         if interrupt_payload:
             _record_agent_result(response, "interrupted")
-            _capture_genai_trace_safely(
-                run_id=str(run_id),
-                model=selected_model,
-                state=response,
-                outcome="interrupted",
-                started=agent_started,
-            )
             _cache_native_interrupt(app, user_id, thread_id, interrupt_payload)
             output = ChatMessage(
                 type="ai",
@@ -1715,16 +1286,7 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
             )
             return output
         output = ChatMessage.from_langchain(response["messages"][-1])
-        if capture:
-            output.incident_capture = await asyncio.to_thread(capture.finish, response, output.content)
         _record_agent_result(response, "completed")
-        _capture_genai_trace_safely(
-            run_id=str(run_id),
-            model=selected_model,
-            state=response,
-            outcome="completed",
-            started=agent_started,
-        )
         output.run_id = str(run_id)
         await _store_message_safely(
             app,
@@ -1742,19 +1304,6 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
                 "grounding_report_fingerprint": (
                     response.get("grounding_report") or {}
                 ).get("report_fingerprint"),
-                "uncertainty_decision": (
-                    response.get("uncertainty_receipt") or {}
-                ).get("decision"),
-                "uncertainty_receipt_fingerprint": (
-                    response.get("uncertainty_receipt") or {}
-                ).get("receipt_fingerprint"),
-                "adaptive_compute_status": (
-                    response.get("adaptive_compute_receipt") or {}
-                ).get("status"),
-                "adaptive_compute_receipt_fingerprint": (
-                    response.get("adaptive_compute_receipt") or {}
-                ).get("receipt_fingerprint"),
-                "execution_replay_event_ids": response.get("execution_replay_event_ids") or [],
                 "evidence_quality_action": (
                     response.get("evidence_quality_report") or {}
                 ).get("action"),
@@ -1783,7 +1332,6 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
 async def message_generator(
     user_input: StreamInput,
     user_id: str | None = None,
-    incident_capture=None,
 ) -> AsyncGenerator[str, None]:
     """
     Generate a stream of messages from the agent.
@@ -1803,7 +1351,6 @@ async def message_generator(
         thread_id=effective_thread_id,
     )
     thread_id = kwargs["config"]["configurable"]["thread_id"]
-    selected_model = kwargs["config"]["configurable"]["model"]
     await _store_message_safely(
         app,
         user_id=user_id,
@@ -1811,12 +1358,7 @@ async def message_generator(
         run_id=str(run_id),
         role="human",
         content=user_input.message,
-        metadata={
-            "requested_model": user_input.model,
-            "selected_model": kwargs["config"]["configurable"]["model"],
-            "model_selection": kwargs["config"]["configurable"]["model_selection"],
-            "stream": True,
-        },
+        metadata={"model": user_input.model, "stream": True},
     )
 
     # Use an asyncio queue to process both messages and tokens in
@@ -1829,18 +1371,12 @@ async def message_generator(
     # we can yield the messages to the client in the main thread.
     async def run_agent_stream():
         try:
-            from contextlib import nullcontext
-            with capture.scope() if capture else nullcontext():
-                async for s in agent.astream(**kwargs, stream_mode="updates"):
-                    await output_queue.put(s)
+            async for s in agent.astream(**kwargs, stream_mode="updates"):
+                await output_queue.put(s)
         except Exception:
             await output_queue.put({"__error__": "Agent execution failed. Please retry."})
         finally:
             await output_queue.put(None)
-    capture = incident_capture or _request_incident_capture(user_input, user_id, run_id)
-    if capture:
-        capture.call_id = str(run_id)
-    agent_started = time.perf_counter()
     stream_task = asyncio.create_task(run_agent_stream())
     stored_message_fingerprints = set()
     hitl_event: Dict[str, Any] | None = None
@@ -1920,20 +1456,7 @@ async def message_generator(
             yield f"data: {json.dumps({'type': 'message', 'content': model_dump_compat(chat_message)})}\n\n"
     
     await stream_task
-    if capture and stream_outcome == "completed":
-        messages = latest_agent_state.get("messages") or []
-        answer = getattr(messages[-1], "content", "") if messages else ""
-        receipt = await asyncio.to_thread(capture.finish, latest_agent_state, answer)
-        yield f"data: {json.dumps({'type': 'incident_capture', 'content': receipt})}\n\n"
     _record_agent_result(latest_agent_state, stream_outcome)
-    _capture_genai_trace_safely(
-        run_id=str(run_id),
-        model=selected_model,
-        state=latest_agent_state,
-        outcome=stream_outcome,
-        started=agent_started,
-        stream=True,
-    )
     if hitl_event:
         await _store_hitl_event_safely(
             app,
@@ -1955,9 +1478,8 @@ async def stream_agent(user_input: StreamInput, request: Request):
     is also attached to all messages for recording feedback.
     """
     user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
-    capture = _request_incident_capture(user_input, user_id, uuid4())
     return StreamingResponse(
-        message_generator(user_input, user_id=user_id, incident_capture=capture),
+        message_generator(user_input, user_id=user_id),
         media_type="text/event-stream",
     )
 

@@ -1,7 +1,0 @@
-{
-  "fee-correct": {
-    "instance_id": "fee-correct",
-    "model_name_or_path": "authored-fixture-not-a-model",
-    "model_patch": "--- a/app.py\n+++ b/app.py\n@@ -4,2 +4,2 @@\n def fee(quantity):\n-    return max(0, quantity) * 10\n+    return 10 * max(quantity, 0)\n"
-  }
-}

@@ -1,4 +1,4 @@
-"""Keep document adapters usable without the full agent-service dependency stack."""
+"""Importing the service package must not start the application."""
 
 from __future__ import annotations
 
@@ -54,23 +54,6 @@ def test_package_import_does_not_start_the_application():
 import service
 assert service.__all__ == ["app"]
 assert "app" not in vars(service)
-assert "service.service" not in sys.modules
-"""
-    )
-
-
-def test_document_imports_need_only_the_declared_controller_dependencies():
-    run_isolated(
-        _BOUNDARY
-        + """
-from service import document_runtime
-from service.document_api import create_document_router
-from service.document_cell_worker import probe_pdf
-from service.document_pixel_worker import probe_pixels
-from service.document_store import DocumentLibrary
-assert callable(create_document_router)
-assert callable(probe_pdf) and callable(probe_pixels)
-assert document_runtime.DocumentRuntime and DocumentLibrary
 assert "service.service" not in sys.modules
 """
     )

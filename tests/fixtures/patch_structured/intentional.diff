@@ -1,6 +1,0 @@
---- a/app.py
-+++ b/app.py
-@@ -7,2 +7,2 @@
- def customer_label(name):
--    return name.lower()
-+    return name.upper()

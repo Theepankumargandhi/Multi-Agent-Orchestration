@@ -8,14 +8,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from agent.rag_embeddings import build_embeddings, collection_name, embedding_model_name
-from agentforge_sdk._retrieval import (
+from agent.rag_embeddings import build_embeddings, collection_name
+from agent.retrieval import (
     _bm25_rank_documents,
     _chunk_text,
     _heuristic_rerank,
     _tokenize,
 )
-from agentforge_sdk._retrieval import (
+from agent.retrieval import (
     _rrf_fuse_rankings as _shared_rrf,
 )
 
@@ -153,23 +153,6 @@ def _search_sqlite_knowledge(query: str, limit: int = 3, db_path: str = DEFAULT_
 
     candidates = [dict(row, score=score) for score, row in top]
     result = format_sqlite_context(candidates)
-    from agent.incident_runtime import active_capture, document_payload, hold_capture, record_retrieval
-    if active_capture():
-        try:
-            if len(rows) > 20:
-                raise ValueError("bounded corpus required")
-            documents = [document_payload(row["content"], title=row["title"], source=row["source"],
-                file_name=row["title"], identifier=str(row["id"])) for row in rows]
-            by_id = {row["id"]: doc["document_id"] for row, doc in zip(rows, documents, strict=True)}
-            ranks = [{"document_id": by_id[row["id"]], "score": float(score)} for score, row in scored]
-            from agent.incident_models import fingerprint
-            record_retrieval({"query": query, "limit": max(1, limit), "documents": documents,
-                "retrieved_ids": [by_id[row["id"]] for _, row in top], "ranked_ids": [by_id[row["id"]] for _, row in top],
-                "snapshot": {"backend": "sqlite_overlap", "corpus_fingerprint": fingerprint(documents),
-                    "lexical_ranking": ranks, "fused_ranking": ranks, "reranker": "none_sqlite_score_order",
-                    "rrf_k": RAG_RRF_K, "bm25_top_k": RAG_BM25_TOP_K, "candidate_top_k": max(1, limit), "packed_context": result}})
-        except Exception:
-            hold_capture("snapshot_bounds_or_integrity_hold")
     return result
 
 
@@ -572,7 +555,7 @@ def _search_chroma_knowledge(query: str, limit: int = 3) -> str | None:
 
 
 def _rrf_fuse_rankings(vector_ranked, bm25_ranked, rrf_k=RAG_RRF_K):
-    """Preserve the service-configured default while sharing the SDK primitive."""
+    """Preserve the service-configured default using the shared retrieval primitive."""
     return _shared_rrf(vector_ranked, bm25_ranked, rrf_k=rrf_k)
 
 
@@ -581,10 +564,7 @@ def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: 
     Optional LLM reranker over fused candidates.
     Falls back to heuristic reranking on any error or missing key/dependencies.
     """
-    from agent.incident_runtime import active_capture
     def fallback():
-        if active_capture():
-            active_capture().reranker = "production_heuristic"
         return _heuristic_rerank(query, candidates, top_k)
     # Groq serves namespaced IDs such as openai/gpt-oss-20b; OpenAI IDs never contain "/".
     groq = "/" in RAG_RERANK_MODEL or RAG_RERANK_MODEL.startswith(("llama-", "mixtral-", "gemma-"))
@@ -633,11 +613,6 @@ def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: 
         # append any missing candidates in original fused order
         used_ids = {id(c) for c in ordered}
         ordered.extend([c for c in candidates if id(c) not in used_ids])
-        if active_capture():
-            active_capture().reranker = "llm:" + RAG_RERANK_MODEL
-            usage = getattr(response, "usage_metadata", None) or {}
-            active_capture().reranker_usage = {key: usage.get(key) if type(usage.get(key)) is int and usage[key] >= 0 else None
-                                               for key in ("input_tokens", "output_tokens")}
         return ordered[: max(1, top_k)]
     except Exception:
         return fallback()
@@ -755,30 +730,6 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
     reranked = _llm_rerank_candidates(clean_query, candidates, top_k=max(1, limit))
 
     result = format_hybrid_context(reranked[:max(1, limit)])
-    from agent.incident_runtime import active_capture, document_payload, hold_capture, record_retrieval
-    if active_capture():
-        try:
-            if len(ids) != len(docs) or len(docs) > 20 or len(metas) < len(docs):
-                raise ValueError("incomplete corpus")
-            documents = [document_payload(text, source=str((metas[number] or {}).get("source", "unknown")),
-                file_name=str((metas[number] or {}).get("file_name", (metas[number] or {}).get("source", "unknown"))),
-                page=str((metas[number] or {}).get("page", "n/a")), identifier=str(ids[number])) for number, text in enumerate(docs)]
-            def ranking(items):
-                return [{"document_id": documents[number]["document_id"], "score": float(score)} for number, score in items]
-            from agent.incident_models import fingerprint
-            record_retrieval({"query": clean_query, "limit": max(1, limit), "documents": documents,
-                "retrieved_ids": [documents[c["doc_idx"]]["document_id"] for c in candidates],
-                "ranked_ids": [documents[c["doc_idx"]]["document_id"] for c in reranked[:max(1, limit)]],
-                "snapshot": {"backend": "chroma_hybrid", "corpus_fingerprint": fingerprint(documents),
-                    "vector_ranking": ranking(vector_ranked), "lexical_ranking": ranking(bm25_ranked),
-                    "fused_ranking": ranking([(number, scores["fused"]) for number, scores in fused_sorted]),
-                    "reranker": active_capture().reranker, "rrf_k": RAG_RRF_K, "bm25_top_k": max(limit, RAG_BM25_TOP_K),
-                    "embedding_model": embedding_model_name(OPENAI_EMBEDDING_MODEL), "collection": collection_name(CHROMA_COLLECTION_NAME), "vector_score_mode": vector_mode,
-                    "rerank_input_tokens": active_capture().reranker_usage.get("input_tokens"),
-                    "rerank_output_tokens": active_capture().reranker_usage.get("output_tokens"),
-                    "candidate_top_k": max(limit, RAG_RERANK_TOP_K), "packed_context": result}})
-        except Exception:
-            hold_capture("snapshot_bounds_or_integrity_hold")
     return result
 
 
@@ -804,8 +755,6 @@ def search_local_knowledge(
     )
     cached_value, cache_backend = _cache_get_rag(cache_key)
     if cached_value is not None:
-        from agent.incident_runtime import hold_capture
-        hold_capture("cached_context_has_no_complete_reproduction_snapshot")
         meta = {"cache_hit": True, "cache_backend": cache_backend or "unknown", "source": "rag_cache"}
         return (cached_value, meta) if return_meta else cached_value
 
