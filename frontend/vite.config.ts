@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 // Only the server-side proxy reads this variable. Never prefix credentials with VITE_.
-const backend = process.env.WORKBENCH_API_URL ?? 'http://127.0.0.1:8000';
+const backend = process.env.CITERIGHT_API_URL ?? 'http://127.0.0.1:8000';
 const target = new URL(backend);
 if (
   !['http:', 'https:'].includes(target.protocol) ||
@@ -12,7 +12,7 @@ if (
   target.hash ||
   target.pathname !== '/'
 ) {
-  throw new Error('WORKBENCH_API_URL must be an HTTP(S) origin without credentials or a path');
+  throw new Error('CITERIGHT_API_URL must be an HTTP(S) origin without credentials or a path');
 }
 
 export default defineConfig({
