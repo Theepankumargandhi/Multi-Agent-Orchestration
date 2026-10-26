@@ -1,4 +1,3 @@
 # Local development environment. Runtime images use their smaller, role-specific files.
 -r requirements-service.txt
--r requirements-app.txt
 -r test-requirements.txt
