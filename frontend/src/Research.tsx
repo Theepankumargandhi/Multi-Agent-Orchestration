@@ -130,6 +130,7 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
       active.current = null;
     }
   }
+  const checked = Boolean(capabilities.features.grounding_verification);
   const pendingApproval =
     messages.at(-1)?.type === 'ai' &&
     messages.at(-1)?.content.includes('Human approval required before web-answer generation.');
@@ -193,13 +194,15 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
               ))}
             {partial && (
               <article className="message ai">
-                <div className="message-label">CITERIGHT · STREAMING</div>
+                <div className="message-label">
+                  {checked ? 'CITERIGHT · CHECKING EACH SENTENCE' : 'CITERIGHT · STREAMING'}
+                </div>
                 <div className="message-text">{partial}</div>
               </article>
             )}
             {busy && !partial && (
               <p className="working" role="status">
-                <span className="pulse" /> Waiting for server events…
+                <span className="pulse" /> {checked ? 'Finding and checking sources…' : 'Working…'}
               </p>
             )}
             <div ref={bottom} />
@@ -237,7 +240,11 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
               disabled={busy || loading}
             />
             <div className="composer-footer">
-              <span>Answers are checked against their sources before release.</span>
+              <span>
+                {checked
+                  ? 'Each sentence appears once its sources support it.'
+                  : 'Source checking is off on this server.'}
+              </span>
               {busy ? (
                 <button
                   type="button"

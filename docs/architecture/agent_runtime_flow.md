@@ -44,9 +44,10 @@ flowchart TD
 - Evidence quality and grounding verification are switched on with `EVIDENCE_QUALITY_ENABLED` and
   `GROUNDING_VERIFICATION_ENABLED`. When they are off, the graph skips those nodes and the response
   streams token by token.
-- With grounding on, the draft is held back until every claim and citation URL has been checked
-  against the evidence for this route; the graph then releases it, removes unsupported or
-  contradicted claims, or abstains. See [grounding-verification.md](../grounding-verification.md).
+- With grounding on, `response_agent` streams each sentence only after its claims and citation URLs
+  are checked against the evidence for this route. `grounding_verifier_agent` then verifies the
+  whole draft and releases it, removes unsupported or contradicted claims, or abstains. See
+  [grounding-verification.md](../grounding-verification.md).
 - Memory is opt-in (`AGENT_MEMORY_ENABLED`). Recalled memory is tenant-scoped, token-bounded and
   passed to the model as untrusted data.
 - `rag_agent` reads the local document index (`chroma_db`); `knowledge_graph_agent` reads the graph

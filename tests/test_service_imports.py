@@ -88,3 +88,22 @@ else:
 assert "service.service" not in sys.modules
 """
     )
+
+
+def test_run_service_loads_env_before_importing_the_app():
+    # Agent modules read settings at import; loading .env afterwards silently ignored
+    # RAG_EMBEDDING_BACKEND, GROUNDING_VERIFICATION_ENABLED and the model names.
+    import ast
+
+    tree = ast.parse((ROOT / "run_service.py").read_text(encoding="utf-8"))
+    load_line = next(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "load_dotenv"
+    )
+    app_import_line = next(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "service"
+    )
+    assert load_line < app_import_line

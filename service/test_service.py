@@ -185,7 +185,7 @@ def test_monitoring_endpoints_are_public():
         features = capabilities.json()["features"]
         assert features["streaming"] is True and features["native_hitl"] is True
         assert {"local_rag", "graph_rag", "grounding_verification", "evidence_quality"} <= set(features)
-        assert capabilities.json()["grounding_verification"]["version"] == "grounding-policy-v2"
+        assert capabilities.json()["grounding_verification"]["version"] == "grounding-policy-v3"
 
         metrics = c.get("/metrics")
         assert metrics.status_code == 200

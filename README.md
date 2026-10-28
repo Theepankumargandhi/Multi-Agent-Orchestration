@@ -90,7 +90,7 @@ Data (accounts, conversations, document index) persists in the `citeright_data` 
 | Variable | Default | Effect |
 |---|---|---|
 | `GROQ_API_KEY` / `OPENAI_API_KEY` | – | At least one is required. |
-| `GROUNDING_VERIFICATION_ENABLED` | `true` in `.env.example` | Check claims before release. While on, the answer arrives in one piece instead of token by token. |
+| `GROUNDING_VERIFICATION_ENABLED` | `true` in `.env.example` | Check claims before release. While on, answers from evidence stream sentence by sentence, each shown once its sources support it. |
 | `EVIDENCE_QUALITY_ENABLED` | `false` | Drop duplicate, stale, injected or conflicting web evidence; web answers then need 2+ independent sources. |
 | `GRAPH_WEB_HITL_ENABLED` | `true` | Ask before each web search. |
 | `RAG_EMBEDDING_BACKEND` | `local` | `local` (free) or `openai`. |

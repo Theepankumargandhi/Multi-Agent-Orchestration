@@ -28,6 +28,7 @@ from langsmith import Client as LangsmithClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from agent import build_research_assistant
+from agent.grounding import GroundingPolicy
 from agent.mcp_client import close_mcp_client
 from agent.memory import (
     MemoryCandidate,
@@ -35,6 +36,7 @@ from agent.memory import (
     MemoryOutcome,
     get_memory_store,
 )
+from agent.research_assistant import VERIFIED_TEXT_EVENT
 from agent.tools import perform_web_search
 from schema import (
     AuthLoginInput,
@@ -366,6 +368,11 @@ class TokenQueueStreamingHandler(AsyncCallbackHandler):
     async def on_llm_new_token(self, token: str, **kwargs) -> None:
         if token:
             await self.queue.put(token)
+
+    async def on_custom_event(self, name: str, data: Any, **kwargs) -> None:
+        # With grounding on, the answer arrives as sentences that passed verification.
+        if name == VERIFIED_TEXT_EVENT and isinstance(data, str) and data:
+            await self.queue.put(data)
 
 
 def _is_serializer_compat_error(exc: Exception) -> bool:
@@ -1020,7 +1027,7 @@ async def capabilities():
             "evidence_quality": _env_flag("EVIDENCE_QUALITY_ENABLED", "false"),
         },
         "grounding_verification": {
-            "version": "grounding-policy-v2",
+            "version": GroundingPolicy().version,
             "enabled": _env_flag("GROUNDING_VERIFICATION_ENABLED", "false"),
         },
     }
