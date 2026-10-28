@@ -5,7 +5,9 @@ import pytest
 from agent.grounding import (
     GroundingPolicy,
     evidence_from_state,
+    fragment_is_supported,
     repair_answer,
+    take_complete_sentences,
     verify_grounding,
     verify_report,
 )
@@ -137,3 +139,135 @@ async def test_graph_nodes_hold_draft_until_verification_then_release_or_abstain
     assert verdict["grounding_action"] == "abstain"
     assert "enough verified evidence" in repaired["final_response"]
     assert repaired["messages"][0].content == repaired["final_response"]
+
+
+def test_streaming_buffer_splits_only_finished_sentences():
+    sentences, rest = take_complete_sentences("First fact here. Second fact")
+    assert sentences == ["First fact here. "]
+    assert rest == "Second fact"
+    # The separator at the end may still grow, so it is not split yet.
+    assert take_complete_sentences("One. ") == ([], "One. ")
+    fenced, rest = take_complete_sentences("Run this:\n```\nx = 1.\ny = 2\n")
+    assert fenced == ["Run this:\n"]
+    assert rest.startswith("```")
+
+
+def test_streamed_fragment_needs_every_claim_supported():
+    evidence = _web_evidence()
+    assert fragment_is_supported("AgentForge uses LangGraph for agent orchestration.", evidence)
+    assert not fragment_is_supported("Revenue is guaranteed to grow by 99% in 2026.", evidence)
+    assert not fragment_is_supported(
+        "AgentForge does not use LangGraph for agent orchestration.", evidence
+    )
+    assert not fragment_is_supported(
+        "AgentForge uses LangGraph [source](https://invented.example/page).", evidence
+    )
+    assert fragment_is_supported("Would you like more detail on this?", evidence)
+
+
+@pytest.mark.asyncio
+async def test_response_streams_verified_sentences_and_holds_unsupported_ones(monkeypatch):
+    from langchain_core.callbacks import AsyncCallbackHandler
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.messages import HumanMessage
+    from langchain_core.runnables import RunnableLambda
+
+    research = importlib.import_module("agent.research_assistant")
+    monkeypatch.setattr(research, "GROUNDING_VERIFICATION_ENABLED", True)
+    draft = (
+        "AgentForge uses LangGraph for agent orchestration. "
+        "Revenue is guaranteed to grow by 99% in 2026. "
+        "LangGraph handles the agent orchestration in AgentForge."
+    )
+    monkeypatch.setattr(research, "_get_model", lambda _config: FakeListChatModel(responses=[draft]))
+
+    class Client(AsyncCallbackHandler):
+        def __init__(self):
+            self.tokens: list[str] = []
+            self.released: list[str] = []
+
+        async def on_llm_new_token(self, token, **_kwargs):
+            self.tokens.append(token)
+
+        async def on_custom_event(self, name, data, **_kwargs):
+            if name == research.VERIFIED_TEXT_EVENT:
+                self.released.append(data)
+
+    client = Client()
+    state = {
+        "messages": [HumanMessage(content="What does AgentForge use?")],
+        "query": "What does AgentForge use?",
+        "route": "web",
+        "web_notes": (
+            "- Architecture report\n"
+            "  Link: https://example.com/architecture\n"
+            "  Snippet: AgentForge uses LangGraph for agent orchestration."
+        ),
+    }
+    node = RunnableLambda(research.response_agent)
+    update = await node.ainvoke(state, {"configurable": {}, "callbacks": [client]})
+
+    assert client.tokens == []  # raw draft tokens never reach the client
+    assert client.released == [
+        "AgentForge uses LangGraph for agent orchestration. ",
+        "LangGraph handles the agent orchestration in AgentForge. ",
+    ]
+    assert "messages" not in update  # the verifier still decides the released message
+    assert "99%" in update["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_general_chat_streams_tokens_with_grounding_on(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from langchain_core.messages import HumanMessage
+
+    research = importlib.import_module("agent.research_assistant")
+    monkeypatch.setattr(research, "GROUNDING_VERIFICATION_ENABLED", True)
+    llm = AsyncMock(return_value="Hello there.")
+    monkeypatch.setattr(research, "_call_llm", llm)
+    await research.response_agent(
+        {"messages": [HumanMessage(content="hi")], "query": "hi", "route": "general"},
+        {"configurable": {}},
+    )
+    assert llm.await_args.kwargs["stream_to_client"] is True
+
+
+@pytest.mark.asyncio
+async def test_service_forwards_verified_text_as_tokens():
+    import asyncio
+
+    from service.service import VERIFIED_TEXT_EVENT, TokenQueueStreamingHandler
+
+    queue: asyncio.Queue = asyncio.Queue()
+    handler = TokenQueueStreamingHandler(queue)
+    await handler.on_custom_event(VERIFIED_TEXT_EVENT, "Checked sentence. ", run_id=None)
+    await handler.on_custom_event("other_event", "ignored", run_id=None)
+    assert queue.get_nowait() == "Checked sentence. "
+    assert queue.empty()
+
+
+def test_unsupported_high_risk_claim_is_removed_not_the_whole_answer():
+    evidence = evidence_from_state(
+        {
+            "rag_notes": (
+                "Web approval uses LangGraph interrupt and resumes with Command. "
+                "The service stores the checkpoint for each user thread."
+            )
+        }
+    )
+    answer = (
+        "Web approval uses a LangGraph interrupt and resumes with Command.\n"
+        "- The service stores the checkpoint for each user thread.\n"
+        "- Approved searches always finish within 2 seconds."
+    )
+    report = verify_grounding(route="rag", answer=answer, evidence=evidence)
+    assert report.action == "repair"
+    assert report.reason == "remove_unsupported_high_risk_claims"
+    repaired = repair_answer(report, evidence, answer)
+    assert "2 seconds" not in repaired
+    # The supported part keeps its layout, matching what the stream released.
+    assert repaired.startswith(
+        "Web approval uses a LangGraph interrupt and resumes with Command.\n"
+        "- The service stores the checkpoint for each user thread."
+    )

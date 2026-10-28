@@ -130,6 +130,8 @@ async def test_safety_state_is_plain_json_and_still_explains_the_block():
         ("explain this repository architecture", "rag"),
         ("latest news compared with this codebase", "hybrid"),
         ("how does FastAPI connect to LangGraph in this project", "kg"),
+        ("explain the web search approval in this project", "rag"),
+        ("search the web for news about this repo", "hybrid"),
         ("latest AI news in 2025", "web"),
         ("compare python 3.12 and 3.13 in this repo", "kg"),
         ("what is 2^10?", "math"),

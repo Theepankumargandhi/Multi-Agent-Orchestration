@@ -9,7 +9,7 @@ from typing import Literal
 from urllib.parse import parse_qs
 
 import numexpr
-from langchain_core.callbacks import UsageMetadataCallbackHandler
+from langchain_core.callbacks import UsageMetadataCallbackHandler, adispatch_custom_event
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
@@ -22,7 +22,9 @@ from agent.grounding import (
     GroundingPolicy,
     GroundingReport,
     evidence_from_state,
+    fragment_is_supported,
     repair_answer,
+    take_complete_sentences,
     verify_grounding,
 )
 from agent.knowledge_graph import query_knowledge_graph
@@ -238,7 +240,7 @@ def _build_model(model_name: str) -> BaseChatModel:
                 "Install/update langchain-groq to a version compatible with your langchain-core package."
             ) from exc
         resolved = GROQ_CHAT_MODEL if model_name == "llama-3.1-70b" else model_name
-        return ChatGroq(model=resolved, temperature=0.2)
+        return ChatGroq(model=resolved, temperature=0.2, streaming=True)
     try:
         from langchain_openai import ChatOpenAI
     except Exception as exc:
@@ -252,7 +254,8 @@ def _build_model(model_name: str) -> BaseChatModel:
 def _base_instructions() -> str:
     current_date = datetime.now().strftime("%B %d, %Y")
     return f"""
-You are the final response assistant in a multi-agent orchestration system.
+You are CiteRight, a research assistant that answers from the user's documents and the web
+and cites its sources. If asked who you are, say you are CiteRight.
 Today's date is {current_date}.
 
 Rules:
@@ -302,6 +305,24 @@ def _get_model(config: RunnableConfig) -> BaseChatModel:
     return _get_model_by_name(config["configurable"].get("model", OPENAI_CHAT_MODEL))
 
 
+def _internal_call_config(config: RunnableConfig) -> RunnableConfig:
+    # The service callback is reserved for final-answer tokens. Without this,
+    # router and rewrite output is accidentally exposed to the user.
+    callbacks = config.get("callbacks") or []
+    # Inside a graph node LangGraph passes a callback manager, not a list.
+    handlers = getattr(callbacks, "handlers", callbacks)
+    return {
+        **config,
+        "callbacks": [
+            callback for callback in handlers if isinstance(callback, UsageMetadataCallbackHandler)
+        ],
+    }
+
+
+def _prompt_runnable(system: str, user: str, model: BaseChatModel):
+    return RunnableLambda(lambda _: [SystemMessage(content=system), ("human", user)]) | model
+
+
 async def _call_llm(
     system: str,
     user: str,
@@ -310,22 +331,59 @@ async def _call_llm(
     stream_to_client: bool = False,
     max_completion_tokens: int | None = None,
 ) -> str:
-    call_config = dict(config)
-    if not stream_to_client:
-        # The service callback is reserved for final-answer tokens. Without this,
-        # router and rewrite output is accidentally exposed to the user.
-        callbacks = config.get("callbacks") or []
-        # Inside a graph node LangGraph passes a callback manager, not a list.
-        handlers = getattr(callbacks, "handlers", callbacks)
-        call_config["callbacks"] = [
-            callback for callback in handlers if isinstance(callback, UsageMetadataCallbackHandler)
-        ]
+    call_config = dict(config) if stream_to_client else _internal_call_config(config)
     model = _get_model(config)
     if max_completion_tokens is not None:
         model = model.bind(max_tokens=max_completion_tokens)
-    runnable = RunnableLambda(lambda _: [SystemMessage(content=system), ("human", user)]) | model
-    response = await runnable.ainvoke({}, call_config)
+    response = await _prompt_runnable(system, user, model).ainvoke({}, call_config)
     return (response.content or "").strip()
+
+
+# Custom callback event carrying answer text that passed the per-sentence grounding check.
+VERIFIED_TEXT_EVENT = "citeright_verified_text"
+
+
+async def _release_verified_text(text: str, config: RunnableConfig) -> None:
+    clean = _sanitize_user_facing_answer(text)
+    if not clean:
+        return
+    # Keep the model's line breaks (list items, paragraphs) between released sentences.
+    trailing = text[len(text.rstrip()):]
+    separator = "\n" * min(trailing.count("\n"), 2) or " "
+    try:
+        await adispatch_custom_event(VERIFIED_TEXT_EVENT, clean + separator, config=config)
+    except RuntimeError:
+        # No parent run (a direct call outside the graph): there is no client to stream to.
+        pass
+
+
+async def _stream_verified_answer(
+    system: str,
+    user: str,
+    state: AgentState,
+    config: RunnableConfig,
+) -> str:
+    """Generate the answer and stream each finished sentence once its claims are verified.
+
+    A sentence with an unsupported or contradicted claim is held back. The whole draft is still
+    verified by grounding_verifier_agent, whose decision sets the released message.
+    """
+    evidence = evidence_from_state(state)
+    policy = _grounding_policy()
+    runnable = _prompt_runnable(system, user, _get_model(config))
+    draft = ""
+    pending = ""
+    async for chunk in runnable.astream({}, _internal_call_config(config)):
+        text = chunk.content if isinstance(chunk.content, str) else ""
+        draft += text
+        pending += text
+        sentences, pending = take_complete_sentences(pending)
+        for sentence in sentences:
+            if fragment_is_supported(sentence, evidence, policy):
+                await _release_verified_text(sentence, config)
+    if pending.strip() and fragment_is_supported(pending, evidence, policy):
+        await _release_verified_text(pending, config)
+    return draft.strip()
 
 
 def _latest_user_query(state: AgentState) -> str:
@@ -1072,10 +1130,10 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
             "route_reason": "Pending web HITL decision in progress.",
         }
 
-    web_hints = [
-        "latest", "news", "today", "current", "recent", "update", "updates",
-        "web", "online", "search", "headlines",
+    fresh_hints = [
+        "latest", "news", "today", "current", "recent", "update", "updates", "headlines",
     ]
+    web_hints = fresh_hints + ["web", "online", "search"]
     rag_hints = [
         "this project", "this repo", "repository", "codebase", "source code",
         "service endpoint", "streamlit", "fastapi", "langgraph",
@@ -1126,7 +1184,9 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
         route = "math"
         route_confidence = 0.98
         route_reason = "Math symbols/keywords detected."
-    elif _has_any_phrase(q, web_hints) and _has_any_phrase(q, rag_hints):
+    # "web" and "search" also name this project's own features ("how does web search
+    # approval work here?"), so with local context only a freshness word means live results.
+    elif _has_any_phrase(q, fresh_hints) and _has_any_phrase(q, rag_hints):
         route = "hybrid"
         route_confidence = 0.9
         route_reason = "Both web and local/RAG hints detected."
@@ -1138,7 +1198,7 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
         route = "kg"
         route_confidence = 0.88
         route_reason = "Relationship intent with local context hints detected."
-    elif _has_any_phrase(q, web_hints):
+    elif _has_any_phrase(q, web_hints) and not _has_any_phrase(q, rag_hints):
         route = "web"
         route_confidence = 0.88
         route_reason = "Web/news/current intent keywords detected."
@@ -1729,12 +1789,11 @@ async def response_agent(state: AgentState, config: RunnableConfig):
     suffix = _evaluation_instruction_suffix(config, "response_instruction_suffix")
     if suffix:
         system_instructions += f"\n\nEvaluation candidate policy:\n{suffix}"
-    final = await _call_llm(
-        system_instructions,
-        response_context,
-        config,
-        stream_to_client=not GROUNDING_VERIFICATION_ENABLED,
-    )
+    if GROUNDING_VERIFICATION_ENABLED and route in _grounding_policy().required_routes:
+        final = await _stream_verified_answer(system_instructions, response_context, state, config)
+    else:
+        # General chat needs no evidence, so it streams token by token even with grounding on.
+        final = await _call_llm(system_instructions, response_context, config, stream_to_client=True)
     if route in {"web", "hybrid"}:
         citation_evidence = web_notes
         if evidence_quality:
@@ -1811,7 +1870,7 @@ async def grounding_repair_agent(state: AgentState, config: RunnableConfig):
     evidence = evidence_from_state(state)
     try:
         report = GroundingReport.model_validate(state.get("grounding_report") or {})
-        repaired = repair_answer(report, evidence)
+        repaired = repair_answer(report, evidence, state.get("final_response") or "")
         action = report.action
     except Exception:
         repaired = (

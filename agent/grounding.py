@@ -202,7 +202,7 @@ def _contradiction(claim: str, evidence_text: str) -> str:
 
 
 class GroundingPolicy(BaseModel):
-    version: str = "grounding-policy-v2"
+    version: str = "grounding-policy-v3"
     required_routes: set[str] = Field(
         default_factory=lambda: {"web", "hybrid", "rag", "kg", "math"}
     )
@@ -319,6 +319,83 @@ def _support_score(claim: str, evidence: EvidenceItem) -> float:
     return min(1.0, 0.7 * lexical + 0.3 * semantic)
 
 
+def _assess_claim(
+    index: int,
+    claim: str,
+    evidence: list[EvidenceItem],
+    allowed_urls: set[str],
+    policy: GroundingPolicy,
+    integrity_key: bytes | None = None,
+) -> ClaimAssessment:
+    scored = sorted(
+        ((item, _support_score(claim, item)) for item in evidence),
+        key=lambda pair: (-pair[1], pair[0].evidence_id),
+    )
+    best_item, best_score = scored[0] if scored else (None, 0.0)
+    claim_urls = _MARKDOWN_LINK_RE.findall(claim)
+    claim_invalid = sorted(set(claim_urls) - allowed_urls)
+    high_risk = bool(_HIGH_RISK_RE.search(_MARKDOWN_LINK_RE.sub("", claim)))
+    threshold = policy.min_high_risk_claim_score if high_risk else policy.min_claim_score
+    # Any qualifying evidence that states the opposite blocks the claim, even
+    # if another item appears to support it.
+    contradiction = next(
+        (found for item, score in scored if score >= threshold
+         for found in [_contradiction(claim, item.text)] if found),
+        "",
+    )
+    supported = best_score >= threshold and not claim_invalid and not contradiction
+    return ClaimAssessment(
+        claim_index=index,
+        claim=claim,
+        claim_fingerprint=_fingerprint(claim, integrity_key),
+        best_evidence_id=best_item.evidence_id if best_item else "",
+        support_score=round(best_score, 6),
+        supported=supported,
+        high_risk=high_risk,
+        contradiction=contradiction,
+        citation_urls=claim_urls,
+        invalid_citation_urls=claim_invalid,
+    )
+
+
+def take_complete_sentences(buffer: str) -> tuple[list[str], str]:
+    """Split finished sentences off the front of a streaming buffer.
+
+    Sentences end where extract_claims splits, so a fragment checked while streaming holds the
+    same claims the full-answer verifier sees. Each piece keeps its trailing whitespace, and a
+    fenced code block stays whole until it closes.
+    """
+    pieces: list[str] = []
+    start = 0
+    for match in _SENTENCE_RE.finditer(buffer):
+        # Separator at the very end may still grow, or the next token may be a new list item.
+        if match.end() == len(buffer):
+            break
+        if buffer[start:match.end()].count("```") % 2:
+            continue
+        pieces.append(buffer[start:match.end()])
+        start = match.end()
+    return pieces, buffer[start:]
+
+
+def fragment_is_supported(
+    fragment: str,
+    evidence: list[EvidenceItem],
+    policy: GroundingPolicy | None = None,
+) -> bool:
+    """Whether part of a draft may be shown before the full answer is verified.
+
+    Stricter than the release policy: every claim in the fragment must be supported, free of
+    contradiction and cite only retrieved URLs. Text with no factual claim passes.
+    """
+    policy = policy or GroundingPolicy()
+    allowed_urls = {url for item in evidence for url in item.urls}
+    return all(
+        _assess_claim(index, claim, evidence, allowed_urls, policy).supported
+        for index, claim in enumerate(extract_claims(fragment))
+    )
+
+
 def verify_grounding(
     *,
     route: str,
@@ -360,39 +437,10 @@ def verify_grounding(
     citation_precision = (
         sum(url in allowed_urls for url in cited_urls) / len(cited_urls) if cited_urls else 1.0
     )
-    assessments: list[ClaimAssessment] = []
-    for index, claim in enumerate(claims):
-        scored = sorted(
-            ((item, _support_score(claim, item)) for item in evidence),
-            key=lambda pair: (-pair[1], pair[0].evidence_id),
-        )
-        best_item, best_score = scored[0] if scored else (None, 0.0)
-        claim_urls = _MARKDOWN_LINK_RE.findall(claim)
-        claim_invalid = sorted(set(claim_urls) - allowed_urls)
-        high_risk = bool(_HIGH_RISK_RE.search(_MARKDOWN_LINK_RE.sub("", claim)))
-        threshold = policy.min_high_risk_claim_score if high_risk else policy.min_claim_score
-        # Any qualifying evidence that states the opposite blocks the claim, even
-        # if another item appears to support it.
-        contradiction = next(
-            (found for item, score in scored if score >= threshold
-             for found in [_contradiction(claim, item.text)] if found),
-            "",
-        )
-        supported = best_score >= threshold and not claim_invalid and not contradiction
-        assessments.append(
-            ClaimAssessment(
-                claim_index=index,
-                claim=claim,
-                claim_fingerprint=_fingerprint(claim, integrity_key),
-                best_evidence_id=best_item.evidence_id if best_item else "",
-                support_score=round(best_score, 6),
-                supported=supported,
-                high_risk=high_risk,
-                contradiction=contradiction,
-                citation_urls=claim_urls,
-                invalid_citation_urls=claim_invalid,
-            )
-        )
+    assessments = [
+        _assess_claim(index, claim, evidence, allowed_urls, policy, integrity_key)
+        for index, claim in enumerate(claims)
+    ]
 
     total_weight = sum(2 if item.high_risk else 1 for item in assessments)
     supported_weight = sum(
@@ -407,14 +455,16 @@ def verify_grounding(
     if passed:
         action: GroundingAction = "pass"
         reason = "claim_coverage_and_citations_passed"
-    elif policy.fail_closed and (not evidence or unsupported_high_risk or coverage < 0.5):
+    elif policy.fail_closed and (not evidence or coverage < 0.5):
         action = "abstain"
-        reason = "insufficient_support_for_high_risk_or_majority_claims"
+        reason = "insufficient_support_for_majority_claims"
     else:
-        # Repair keeps only supported claims, so a contradicted claim is never released.
+        # Repair keeps only supported claims, so an unsupported high-risk or contradicted
+        # claim is never released; the verified rest of the answer still is.
         action = "repair"
         reason = (
             "remove_contradicted_claims" if contradicted
+            else "remove_unsupported_high_risk_claims" if unsupported_high_risk
             else "remove_unsupported_claims_or_invalid_citations"
         )
     confidence = max(0.0, min(1.0, coverage * citation_precision))
@@ -449,7 +499,19 @@ def verify_report(report: GroundingReport, integrity_key: bytes | None = None) -
     return hmac.compare_digest(report.report_fingerprint, expected)
 
 
-def repair_answer(report: GroundingReport, evidence: list[EvidenceItem]) -> str:
+def _keep_supported_fragments(answer: str, supported: set[str]) -> str:
+    # Same fragments the stream released, so the repaired answer keeps the draft's layout.
+    pieces, rest = take_complete_sentences(answer)
+    kept = [
+        piece for piece in [*pieces, rest]
+        if all(claim in supported for claim in extract_claims(piece))
+    ]
+    return "".join(kept).strip()
+
+
+def repair_answer(
+    report: GroundingReport, evidence: list[EvidenceItem], answer: str = ""
+) -> str:
     if report.action == "abstain":
         return (
             "I don’t have enough verified evidence to answer this reliably. "
@@ -461,7 +523,8 @@ def repair_answer(report: GroundingReport, evidence: list[EvidenceItem]) -> str:
             "I don’t have enough verified evidence to answer this reliably. "
             "Please provide another source or broaden the retrieval scope."
         )
-    repaired = " ".join(supported)
+    repaired = _keep_supported_fragments(answer, set(supported)) if answer else ""
+    repaired = repaired or " ".join(supported)
     allowed_urls = sorted({url for item in evidence for url in item.urls})
     cited = [url for url in _MARKDOWN_LINK_RE.findall(repaired) if url in allowed_urls]
     if report.route in {"web", "hybrid"} and allowed_urls and not cited:

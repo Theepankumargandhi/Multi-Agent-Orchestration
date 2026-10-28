@@ -1,9 +1,9 @@
 # Claim-level grounding and hallucination control
 
 CiteRight includes an opt-in release gate between answer generation and evaluation. When enabled,
-the response node creates a private draft without streaming it to the client. A grounding verifier
-maps factual claims to retrieved web, local-RAG, knowledge-graph, or calculator evidence. Only a
-verified, repaired, or explicit abstention message is released.
+each sentence of the draft is streamed only after its claims are checked against the retrieved web,
+local-RAG, knowledge-graph or calculator evidence. The whole draft is then verified, and only a
+verified, repaired, or explicit abstention message is released as the final answer.
 
 ## Decision pipeline
 
@@ -17,6 +17,8 @@ verified, repaired, or explicit abstention message is released.
 6. Markdown citation URLs must appear in the retrieved-source allowlist.
 7. Weighted claim coverage and citation precision produce an explainable policy confidence score.
 8. The policy releases the draft, retains only supported claims, or fails closed with an abstention.
+   An unsupported high-risk claim (numbers, guarantees, security, legal, medical) is removed by
+   repair; the answer abstains only when less than half of it is supported or there is no evidence.
 
 Each report includes claim/evidence fingerprints, component scores, unsupported high-risk and
 contradicted counts, the policy decision, and an optional HMAC-bound receipt. Ordinary `general`
@@ -53,11 +55,27 @@ Limits: before/after is deliberately not checked, because "A before B" also read
 Paraphrased opposites outside the word lists, unit conversions and implicit negation are not
 detected. This is a deterministic heuristic, not entailment.
 
-## Safe streaming behavior
+## Streaming checked sentences
 
-With verification disabled, token streaming behaves as before. When enabled, the model call does not
-stream draft tokens. This is intentional: a hallucinated sentence cannot be recalled after an SSE
-client has received it. The graph emits one final AI message after verification or repair.
+A sentence cannot be recalled after an SSE client has received it, so raw draft tokens are never
+sent while verification is on. Instead, as the model writes:
+
+1. The draft is cut into sentences at the same boundaries the verifier uses
+   (`take_complete_sentences`); a fenced code block stays whole until it closes.
+2. Each finished sentence is checked on its own (`fragment_is_supported`): every claim in it must be
+   supported, uncontradicted and cite only retrieved URLs. This check is deterministic and takes
+   milliseconds, so it adds no noticeable delay.
+3. A sentence that passes is sent as a `token` event; one that fails is held back.
+4. The full draft is then verified as before. On `pass` the draft is released; on `repair` the
+   held-back sentences are dropped and the rest keeps its layout, so the final message matches what
+   was streamed; on `abstain` an abstention replaces it.
+
+The per-sentence check is stricter than the release policy, which tolerates a minority of
+unsupported low-risk claims (the lexical scorer misses some paraphrases). A sentence held back while
+streaming can therefore still appear in a released `pass` answer.
+
+General conversation is not evidence-bound and streams token by token. With verification disabled,
+every answer streams token by token.
 
 ## Configuration
 
