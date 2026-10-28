@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from math import log
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 
 def _tokenize(text: str) -> List[str]:
@@ -119,23 +119,3 @@ def _rrf_fuse_rankings(
 
     return fused
 
-
-def _heuristic_rerank(query: str, candidates: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
-    """
-    Cheap fallback reranker: boosts title/file-name and lexical overlap against snippet.
-    """
-    q_tokens = set(_tokenize(query))
-    if not q_tokens:
-        return candidates[: max(1, top_k)]
-
-    scored: List[Tuple[float, Dict[str, Any]]] = []
-    for c in candidates:
-        snippet = (c.get("snippet") or "").lower()
-        file_name = (c.get("file_name") or "").lower()
-        overlap = sum(1 for t in q_tokens if t in snippet)
-        file_boost = sum(1 for t in q_tokens if t in file_name) * 0.3
-        base = float(c.get("fused_score") or 0.0)
-        score = base + overlap * 0.05 + file_boost
-        scored.append((score, c))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, c in scored[: max(1, top_k)]]

@@ -36,13 +36,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    targets = [Path(item) for item in args.paths or ["README.md", "docs"]]
     files = []
-    for target in [Path(item) for item in args.paths or ["README.md", "docs"]]:
+    for target in targets:
         files.extend(sorted(target.rglob("*.md")) if target.is_dir() else [target])
-    summary = ingest_markdown_to_chroma([path.as_posix() for path in files], reset=args.reset)
+    summary = ingest_markdown_to_chroma(
+        [path.as_posix() for path in files],
+        reset=args.reset,
+        prune_roots=[target.as_posix() for target in targets],
+    )
     status = "OK" if summary.get("ok") else "FAILED"
     print(f"[{status}] {summary.get('message', '')}")
-    for key in ("file_count", "section_count", "chunk_count", "stale_chunks_removed", "persist_dir", "collection"):
+    for key in (
+        "file_count", "section_count", "chunk_count", "stale_chunks_removed",
+        "deleted_files_removed", "persist_dir", "collection",
+    ):
         if key in summary:
             print(f"{key}: {summary[key]}")
     if not summary.get("ok"):

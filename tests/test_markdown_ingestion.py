@@ -9,8 +9,8 @@ class FakeStore:
         self.rows = {}
 
     def get(self, where=None, **_kwargs):
-        ids = [key for key, (_, meta) in self.rows.items() if not where or meta["source"] == where["source"]]
-        return {"ids": ids}
+        rows = [(key, meta) for key, (_, meta) in self.rows.items() if not where or meta["source"] == where["source"]]
+        return {"ids": [key for key, _ in rows], "metadatas": [meta for _, meta in rows]}
 
     def add_texts(self, texts, metadatas, ids):
         self.rows.update({key: (text, meta) for key, text, meta in zip(ids, texts, metadatas)})
@@ -60,3 +60,41 @@ def test_reingesting_removes_deleted_sections(store, tmp_path):
 def test_no_markdown_files_is_reported_without_touching_the_store(store):
     summary = local_rag.ingest_markdown_to_chroma(["missing.md"])
     assert not summary["ok"] and store.rows == {}
+
+
+def test_reingesting_a_folder_removes_deleted_files(store, tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "kept.md").write_text("# Kept\nstill here\n", encoding="utf-8")
+    (tmp_path / "docs" / "gone.md").write_text("# Gone\nremoved later\n", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("# Notes\noutside the folder\n", encoding="utf-8")
+    local_rag.ingest_markdown_to_chroma(["docs/kept.md", "docs/gone.md", "notes.md"])
+    (tmp_path / "docs" / "gone.md").unlink()
+
+    summary = local_rag.ingest_markdown_to_chroma(["docs/kept.md"], prune_roots=["docs"])
+
+    assert summary["deleted_files_removed"] == 1
+    # Files outside the scanned folder are left alone.
+    assert {meta["source"] for _, meta in store.rows.values()} == {"docs/kept.md", "notes.md"}
+
+
+def test_warm_up_loads_the_index_and_never_raises(monkeypatch, tmp_path):
+    searched = []
+    monkeypatch.setattr(local_rag, "CHROMA_PERSIST_DIR", str(tmp_path / "missing"))
+    assert local_rag.warm_up() is False  # never creates an index
+    monkeypatch.setattr(local_rag, "CHROMA_PERSIST_DIR", str(tmp_path))
+
+    class WarmStore:
+        def similarity_search(self, query, k):
+            searched.append((query, k))
+
+    monkeypatch.setattr(local_rag, "USE_CHROMA_RAG", True)
+    monkeypatch.setattr(local_rag, "_get_chroma_store", WarmStore)
+    assert local_rag.warm_up() and searched == [("warm up", 1)]
+
+    def broken():
+        raise RuntimeError("index unavailable")
+
+    monkeypatch.setattr(local_rag, "_get_chroma_store", broken)
+    assert local_rag.warm_up() is False
+    monkeypatch.setattr(local_rag, "USE_CHROMA_RAG", False)
+    assert local_rag.warm_up() is False

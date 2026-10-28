@@ -48,6 +48,20 @@ def _get_chroma_store():
     return _graph_chroma_store_cache
 
 
+def warm_up() -> bool:
+    """Load the embedding model, open the index and connect the cache, so the first question
+    does not pay for them (an unreachable Redis took ~4 s to fail on Windows)."""
+    _get_redis_client()
+    # No index on disk means nothing to warm, and opening the store would create one.
+    if not GRAPH_RAG_ENABLED or not os.path.isdir(GRAPH_CHROMA_PERSIST_DIR):
+        return False
+    try:
+        _get_chroma_store().similarity_search("warm up", k=1)
+    except Exception:
+        return False
+    return True
+
+
 def _reset_chroma_store_cache() -> None:
     global _graph_chroma_store_cache
     _graph_chroma_store_cache = None
@@ -57,7 +71,7 @@ def _get_redis_client():
     global _redis_client, _redis_disabled
     if _redis_disabled:
         return None
-    cache_use_redis = os.getenv("CACHE_USE_REDIS", "true").strip().lower() in {"1", "true", "yes", "on"}
+    cache_use_redis = os.getenv("CACHE_USE_REDIS", "false").strip().lower() in {"1", "true", "yes", "on"}
     redis_url = os.getenv("REDIS_URL", "").strip()
     if not cache_use_redis or not redis_url:
         return None
