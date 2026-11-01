@@ -13,7 +13,7 @@ survives, it says it doesn't have enough evidence instead of guessing.
 ## What it does
 
 - **Answers from your documents.** Ingest PDFs or Markdown; questions about them use hybrid
-  retrieval (vector + BM25, fused and reranked) with source and section citations.
+  retrieval (vector + BM25, fused with reciprocal-rank fusion) with source and section citations.
 - **Searches the web, with your permission.** Questions about recent events trigger a web search
   that pauses for your approval first. Answers include links to the pages used.
 - **Checks every answer.** A grounding verifier maps each claim to evidence, rejects citations to
@@ -115,6 +115,10 @@ CI also runs offline quality gates that must pass on every pull request:
 | `evals.grounding_evaluation` | 14 cases: supported, unsupported, fabricated citations, contradictions, repair. |
 | `evals.evidence_quality_evaluation` | Prompt injection, duplicates, stale and conflicting evidence. |
 | `evals.memory_evaluation` | Tenant isolation, memory poisoning, deletion. |
+
+Retrieval quality is measured on 28 labelled questions about this repository's docs
+(`evals/datasets/retrieval_repo_docs.jsonl`): the right document is in the top 3 for 27 of them.
+`python -m evals.rerank_ablation` reruns it against your index and compares optional reranking.
 
 A live smoke test against Groq is opt-in:
 `CITERIGHT_LIVE_SMOKE=1 python -m pytest tests/test_live_smoke.py -m integration`.

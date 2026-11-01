@@ -27,7 +27,7 @@ _QUERY_STOPWORDS = {
 }
 WEB_CACHE_TTL_SECONDS = int(os.getenv("WEB_CACHE_TTL_SECONDS", "300"))
 WEB_CACHE_MAX_ENTRIES = max(10, int(os.getenv("WEB_CACHE_MAX_ENTRIES", "1000")))
-CACHE_USE_REDIS = os.getenv("CACHE_USE_REDIS", "true").strip().lower() in {"1", "true", "yes", "on"}
+CACHE_USE_REDIS = os.getenv("CACHE_USE_REDIS", "false").strip().lower() in {"1", "true", "yes", "on"}
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
 _WEB_SEARCH_CACHE: dict[tuple[Any, ...], tuple[float, str]] = {}
 _redis_client = None
@@ -59,7 +59,9 @@ def _get_redis_client():
     try:
         import redis  # type: ignore
 
-        _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        _redis_client = redis.Redis.from_url(
+            REDIS_URL, decode_responses=True, socket_connect_timeout=2.0, socket_timeout=2.0
+        )
         # lightweight health check on first use
         _redis_client.ping()
         return _redis_client

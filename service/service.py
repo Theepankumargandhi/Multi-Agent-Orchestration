@@ -27,7 +27,7 @@ from langgraph.types import Command
 from langsmith import Client as LangsmithClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-from agent import build_research_assistant
+from agent import build_research_assistant, graph_rag, local_rag, tools
 from agent.grounding import GroundingPolicy
 from agent.mcp_client import close_mcp_client
 from agent.memory import (
@@ -826,6 +826,18 @@ def _update_hitl_pending_cache(
         cache[cache_key] = pending
 
 
+async def _warm_up_retrieval() -> None:
+    start = time.perf_counter()
+    loaded = [
+        name
+        for name, warm_up in (("documents", local_rag.warm_up), ("graph", graph_rag.warm_up))
+        if await asyncio.to_thread(warm_up)
+    ]
+    await asyncio.to_thread(tools._get_redis_client)  # web-search cache
+    logger.info(json.dumps({"event": "retrieval_warmed_up", "indexes": loaded,
+                            "seconds": round(time.perf_counter() - start, 2)}))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configured_secret = (_CONFIGURED_USER_AUTH_SECRET if ENABLE_USER_AUTH else os.getenv("AUTH_SECRET")) or ""
@@ -854,9 +866,12 @@ async def lifespan(app: FastAPI):
         app.state.rate_limit_lock = asyncio.Lock()
         logger.info(json.dumps({"event": "service_started", "checkpoint_backend": backend,
                                 "store_backend": store_result.backend_label}))
+        # Loading the embedding model took ~4 s on the first question; do it in the background.
+        warm_up = asyncio.create_task(_warm_up_retrieval())
         try:
             yield
         finally:
+            warm_up.cancel()
             await close_mcp_client()
             close_store = getattr(store_result.store, "close", None)
             if callable(close_store):

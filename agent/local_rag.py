@@ -12,7 +12,6 @@ from agent.rag_embeddings import build_embeddings, collection_name
 from agent.retrieval import (
     _bm25_rank_documents,
     _chunk_text,
-    _heuristic_rerank,
     _tokenize,
 )
 from agent.retrieval import (
@@ -31,7 +30,7 @@ RAG_VECTOR_TOP_K = int(os.getenv("RAG_VECTOR_TOP_K", "8"))
 RAG_BM25_TOP_K = int(os.getenv("RAG_BM25_TOP_K", "8"))
 RAG_RERANK_TOP_K = int(os.getenv("RAG_RERANK_TOP_K", "6"))
 RAG_RRF_K = int(os.getenv("RAG_RRF_K", "60"))
-RAG_ENABLE_LLM_RERANKER = os.getenv("RAG_ENABLE_LLM_RERANKER", "true").strip().lower() in {"1", "true", "yes", "on"}
+RAG_ENABLE_LLM_RERANKER = os.getenv("RAG_ENABLE_LLM_RERANKER", "false").strip().lower() in {"1", "true", "yes", "on"}
 RAG_CACHE_TTL_SECONDS = int(os.getenv("RAG_CACHE_TTL_SECONDS", "600"))
 RAG_CACHE_MAX_ENTRIES = max(10, int(os.getenv("RAG_CACHE_MAX_ENTRIES", "1000")))
 RAG_BM25_MAX_CORPUS = max(100, int(os.getenv("RAG_BM25_MAX_CORPUS", "5000")))
@@ -195,6 +194,20 @@ def _get_chroma_store():
     return _chroma_store_cache
 
 
+def warm_up() -> bool:
+    """Load the embedding model, open the index and connect the cache, so the first question
+    does not pay for them (an unreachable Redis took ~4 s to fail on Windows)."""
+    _get_redis_client()
+    # No index on disk means nothing to warm, and opening the store would create one.
+    if not USE_CHROMA_RAG or not os.path.isdir(CHROMA_PERSIST_DIR):
+        return False
+    try:
+        _get_chroma_store().similarity_search("warm up", k=1)
+    except Exception:
+        return False
+    return True
+
+
 def _reset_chroma_store_cache() -> None:
     global _chroma_store_cache
     _chroma_store_cache = None
@@ -216,7 +229,7 @@ def _get_redis_client():
     global _redis_client, _redis_disabled
     if _redis_disabled:
         return None
-    cache_use_redis = os.getenv("CACHE_USE_REDIS", "true").strip().lower() in {"1", "true", "yes", "on"}
+    cache_use_redis = os.getenv("CACHE_USE_REDIS", "false").strip().lower() in {"1", "true", "yes", "on"}
     redis_url = os.getenv("REDIS_URL", "").strip()
     if not cache_use_redis or not redis_url:
         return None
@@ -433,6 +446,28 @@ def _store_chunks(texts: List[str], metadatas: List[Dict[str, Any]], ids: List[s
     return len(stale_ids)
 
 
+def _prune_deleted_markdown(roots: List[str], current: set[str]) -> set[str]:
+    """Delete chunks of Markdown files under roots that no longer exist; return their sources."""
+    store = _get_chroma_store()
+    data = store.get(include=["metadatas"])
+    prefixes = [root.rstrip("/") for root in roots]
+    stale_ids: List[str] = []
+    sources: set[str] = set()
+    for chunk_id, meta in zip(data.get("ids") or [], data.get("metadatas") or []):
+        source = str((meta or {}).get("source") or "")
+        if (
+            source.endswith(".md")
+            and source not in current
+            and any(source == prefix or source.startswith(prefix + "/") for prefix in prefixes)
+        ):
+            stale_ids.append(chunk_id)
+            sources.add(source)
+    if stale_ids:
+        store.delete(ids=stale_ids)
+        _reset_local_rag_cache()
+    return sources
+
+
 _MARKDOWN_SECTION_RE = re.compile(r"(?m)^(?=#{1,3}\s)")
 
 
@@ -441,11 +476,13 @@ def ingest_markdown_to_chroma(
     reset: bool = False,
     chunk_size: int = CHUNK_SIZE,
     chunk_overlap: int = CHUNK_OVERLAP,
+    prune_roots: List[str] | None = None,
 ) -> Dict[str, Any]:
     """Ingest Markdown files into persistent ChromaDB.
 
     Each heading section is stored as one "page", so citations point at the
-    section that supports an answer.
+    section that supports an answer. Files under prune_roots that were indexed
+    before but are no longer in paths (deleted docs) are removed from the index.
     """
     if not USE_CHROMA_RAG:
         return {
@@ -489,8 +526,10 @@ def ingest_markdown_to_chroma(
                 )
                 ids.append(_chunk_id(source, file_hash, section_no, chunk_index, chunk))
 
+    current = {path.as_posix() for path in md_files}
     try:
-        stale_count = _store_chunks(texts, metadatas, ids, {path.as_posix() for path in md_files})
+        stale_count = _store_chunks(texts, metadatas, ids, current)
+        removed_files = _prune_deleted_markdown(prune_roots, current) if prune_roots else set()
     except Exception as e:
         return {"ok": False, "message": f"ChromaDB ingestion failed: {e}"}
 
@@ -501,6 +540,7 @@ def ingest_markdown_to_chroma(
         "section_count": section_count,
         "chunk_count": len(texts),
         "stale_chunks_removed": stale_count,
+        "deleted_files_removed": len(removed_files),
         "persist_dir": CHROMA_PERSIST_DIR,
         "collection": collection_name(CHROMA_COLLECTION_NAME),
     }
@@ -562,10 +602,14 @@ def _rrf_fuse_rankings(vector_ranked, bm25_ranked, rrf_k=RAG_RRF_K):
 def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
     """
     Optional LLM reranker over fused candidates.
-    Falls back to heuristic reranking on any error or missing key/dependencies.
+    Falls back to the fused order on any error or missing key/dependencies.
+
+    On the repository-doc retrieval set the fused order already had the same top-3 hit
+    rate as the LLM (0.964) at 0.04 s instead of ~3 s, so the reranker is opt-in.
     """
     def fallback():
-        return _heuristic_rerank(query, candidates, top_k)
+        # A word-overlap reorder used to sit here; it lowered the top-3 hit rate to 0.857.
+        return candidates[: max(1, top_k)]
     # Groq serves namespaced IDs such as openai/gpt-oss-20b; OpenAI IDs never contain "/".
     groq = "/" in RAG_RERANK_MODEL or RAG_RERANK_MODEL.startswith(("llama-", "mixtral-", "gemma-"))
     if not RAG_ENABLE_LLM_RERANKER or not os.getenv("GROQ_API_KEY" if groq else "OPENAI_API_KEY"):
@@ -624,7 +668,7 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
     1) Chroma vector search candidates
     2) BM25 lexical ranking over Chroma corpus documents
     3) Reciprocal Rank Fusion (RRF)
-    4) Optional LLM reranker (fallback heuristic reranker)
+    4) Optional LLM reranker (RAG_ENABLE_LLM_RERANKER; otherwise the fused order)
     """
     if not USE_CHROMA_RAG:
         return None

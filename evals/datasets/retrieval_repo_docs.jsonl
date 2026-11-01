@@ -1,0 +1,28 @@
+{"id":"docs-01","query":"How do I run the app with Docker?","relevant_ids":["README.md"],"tags":["setup"]}
+{"id":"docs-02","query":"Which setting makes embeddings run on my machine for free?","relevant_ids":["README.md"],"tags":["setup"]}
+{"id":"docs-03","query":"What are the known weaknesses of the claim checker?","relevant_ids":["README.md","docs/grounding-verification.md"],"tags":["grounding"]}
+{"id":"docs-04","query":"How do I add my own PDFs to the knowledge base?","relevant_ids":["README.md"],"tags":["setup"]}
+{"id":"docs-05","query":"Which folder contains the FastAPI application code?","relevant_ids":["README.md"],"tags":["layout"]}
+{"id":"docs-06","query":"How is remembered information kept separate between different users?","relevant_ids":["docs/agent-memory.md"],"tags":["memory"]}
+{"id":"docs-07","query":"Can a user delete what the assistant remembers about them?","relevant_ids":["docs/agent-memory.md"],"tags":["memory"]}
+{"id":"docs-08","query":"How is long-term memory protected from poisoning?","relevant_ids":["docs/agent-memory.md"],"tags":["memory","security"]}
+{"id":"docs-09","query":"How much recalled memory is passed to the model?","relevant_ids":["docs/agent-memory.md"],"tags":["memory"]}
+{"id":"docs-10","query":"What happens when the moderation call itself errors?","relevant_ids":["docs/architecture/agent_runtime_flow.md","docs/architecture/decisions.md","docs/security/threat-model.md","README.md"],"tags":["safety"]}
+{"id":"docs-11","query":"Why use separate graph nodes instead of one tool-calling agent?","relevant_ids":["docs/architecture/decisions.md"],"tags":["architecture"]}
+{"id":"docs-12","query":"Why prefer PostgreSQL and fall back to SQLite?","relevant_ids":["docs/architecture/decisions.md"],"tags":["architecture"]}
+{"id":"docs-13","query":"Does a web search approval survive an API restart?","relevant_ids":["docs/architecture/agent_runtime_flow.md","docs/architecture/decisions.md","README.md"],"tags":["hitl"]}
+{"id":"docs-14","query":"What does starting a question with local: do?","relevant_ids":["docs/architecture/agent_runtime_flow.md"],"tags":["routing"]}
+{"id":"docs-15","query":"How are keyword search and vector search combined?","relevant_ids":["docs/architecture/decisions.md","README.md"],"tags":["retrieval"]}
+{"id":"docs-16","query":"How are duplicate or outdated web results handled before answering?","relevant_ids":["docs/evidence-intelligence.md"],"tags":["evidence"]}
+{"id":"docs-17","query":"How many independent web sources does an answer need when evidence checks are on?","relevant_ids":["docs/evidence-intelligence.md","README.md"],"tags":["evidence"]}
+{"id":"docs-18","query":"What happens when two sources disagree with each other?","relevant_ids":["docs/evidence-intelligence.md"],"tags":["evidence"]}
+{"id":"docs-19","query":"How are instructions hidden inside retrieved web pages handled?","relevant_ids":["docs/evidence-intelligence.md","docs/security/threat-model.md"],"tags":["evidence","security"]}
+{"id":"docs-20","query":"How does the verifier notice that a claim says the opposite of its source?","relevant_ids":["docs/grounding-verification.md"],"tags":["grounding"]}
+{"id":"docs-21","query":"Why is the raw draft never sent to the browser while checking is on?","relevant_ids":["docs/grounding-verification.md"],"tags":["grounding","streaming"]}
+{"id":"docs-22","query":"When does the assistant refuse to answer instead of removing unsupported sentences?","relevant_ids":["docs/grounding-verification.md"],"tags":["grounding"]}
+{"id":"docs-23","query":"Which links is an answer allowed to cite?","relevant_ids":["docs/grounding-verification.md"],"tags":["grounding"]}
+{"id":"docs-24","query":"How many false contradictions did the checker produce on real answers?","relevant_ids":["docs/grounding-verification.md"],"tags":["grounding"]}
+{"id":"docs-25","query":"Which known dependency vulnerabilities are accepted, and why?","relevant_ids":["docs/security/audit-exceptions.md"],"tags":["security"]}
+{"id":"docs-26","query":"What user data is stored and how long is it kept?","relevant_ids":["docs/security/threat-model.md"],"tags":["security"]}
+{"id":"docs-27","query":"What are the main attacks considered and their mitigations?","relevant_ids":["docs/security/threat-model.md"],"tags":["security"]}
+{"id":"docs-28","query":"How should the service behave during a security incident?","relevant_ids":["docs/security/threat-model.md"],"tags":["security"]}
