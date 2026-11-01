@@ -5,6 +5,7 @@ import re
 import shutil
 import sqlite3
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -35,9 +36,16 @@ RAG_CACHE_TTL_SECONDS = int(os.getenv("RAG_CACHE_TTL_SECONDS", "600"))
 RAG_CACHE_MAX_ENTRIES = max(10, int(os.getenv("RAG_CACHE_MAX_ENTRIES", "1000")))
 RAG_BM25_MAX_CORPUS = max(100, int(os.getenv("RAG_BM25_MAX_CORPUS", "5000")))
 RAG_RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "gpt-4o-mini")
+# Files people upload from the app live in their own collection, each chunk tagged with its owner.
+CHROMA_UPLOADS_COLLECTION_NAME = os.getenv("CHROMA_UPLOADS_COLLECTION_NAME", "user_uploads")
+UPLOAD_EXTENSIONS = {".pdf", ".md", ".markdown", ".txt"}
+RAG_UPLOAD_MAX_CHUNKS = max(1, int(os.getenv("RAG_UPLOAD_MAX_CHUNKS", "1500")))
+# Owner of uploads when the service runs without sign-in (ENABLE_USER_AUTH=false).
+LOCAL_UPLOAD_OWNER = "local-user"
 
 _chroma_store_cache = None
-_local_rag_cache: Dict[Tuple[str, int, str, str], Tuple[float, str]] = {}
+_uploads_store_cache = None
+_local_rag_cache: Dict[Tuple[str, ...], Tuple[float, str]] = {}
 _redis_client = None
 _redis_disabled = False
 
@@ -175,23 +183,32 @@ def _build_embeddings():
     return build_embeddings(OPENAI_EMBEDDING_MODEL)
 
 
-def _get_chroma_store():
-    global _chroma_store_cache
-    if _chroma_store_cache is not None:
-        return _chroma_store_cache
-
+def _open_chroma(name: str):
     try:
         from langchain_chroma import Chroma
     except ImportError:
         from langchain_community.vectorstores import Chroma
 
     os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
-    _chroma_store_cache = Chroma(
-        collection_name=collection_name(CHROMA_COLLECTION_NAME),
+    return Chroma(
+        collection_name=collection_name(name),
         persist_directory=CHROMA_PERSIST_DIR,
         embedding_function=_build_embeddings(),
     )
+
+
+def _get_chroma_store():
+    global _chroma_store_cache
+    if _chroma_store_cache is None:
+        _chroma_store_cache = _open_chroma(CHROMA_COLLECTION_NAME)
     return _chroma_store_cache
+
+
+def _get_uploads_store():
+    global _uploads_store_cache
+    if _uploads_store_cache is None:
+        _uploads_store_cache = _open_chroma(CHROMA_UPLOADS_COLLECTION_NAME)
+    return _uploads_store_cache
 
 
 def warm_up() -> bool:
@@ -209,8 +226,9 @@ def warm_up() -> bool:
 
 
 def _reset_chroma_store_cache() -> None:
-    global _chroma_store_cache
+    global _chroma_store_cache, _uploads_store_cache
     _chroma_store_cache = None
+    _uploads_store_cache = None
 
 
 def _reset_local_rag_cache() -> None:
@@ -249,13 +267,13 @@ def _get_redis_client():
         return None
 
 
-def _redis_key(prefix: str, cache_key: Tuple[str, int, str, str]) -> str:
+def _redis_key(prefix: str, cache_key: Tuple[str, ...]) -> str:
     payload = json.dumps(cache_key, sort_keys=True, default=str)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return f"{prefix}:{digest}"
 
 
-def _cache_get_rag(cache_key: Tuple[str, int, str, str]) -> tuple[str | None, str | None]:
+def _cache_get_rag(cache_key: Tuple[str, ...]) -> tuple[str | None, str | None]:
     ttl = max(0, RAG_CACHE_TTL_SECONDS)
     if ttl <= 0:
         return None, None
@@ -275,7 +293,7 @@ def _cache_get_rag(cache_key: Tuple[str, int, str, str]) -> tuple[str | None, st
     return None, None
 
 
-def _cache_set_rag(cache_key: Tuple[str, int, str, str], value: str) -> None:
+def _cache_set_rag(cache_key: Tuple[str, ...], value: str) -> None:
     ttl = max(0, RAG_CACHE_TTL_SECONDS)
     if ttl <= 0:
         return
@@ -546,6 +564,134 @@ def ingest_markdown_to_chroma(
     }
 
 
+class UploadError(ValueError):
+    """The uploaded file cannot be indexed; the message is safe to show the uploader."""
+
+
+def _safe_upload_name(file_name: str) -> str:
+    # Evidence is written "source=<name>, page=<n>", so a name holds no spaces, commas or colons.
+    stem, suffix = os.path.splitext(os.path.basename(file_name.replace("\\", "/")))
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_-")[:100] or "document"
+    return stem + suffix.lower()
+
+
+def _upload_sections(file_name: str, data: bytes) -> List[Tuple[int, str, str]]:
+    """Split an uploaded file into (page, heading, text): PDF pages, Markdown sections, or one text page."""
+    suffix = Path(file_name).suffix
+    if suffix == ".pdf":
+        from io import BytesIO
+
+        from pypdf import PdfReader
+
+        pages = PdfReader(BytesIO(data)).pages
+        return [(number, f"Page {number}", (page.extract_text() or "").strip()) for number, page in enumerate(pages, 1)]
+    text = data.decode("utf-8", errors="replace")
+    if suffix == ".txt":
+        return [(1, file_name, text.strip())]
+    sections = [item.strip() for item in _MARKDOWN_SECTION_RE.split(text) if item.strip()]
+    return [(number, section.splitlines()[0].lstrip("#").strip()[:200], section) for number, section in enumerate(sections, 1)]
+
+
+def ingest_upload(
+    owner: str,
+    file_name: str,
+    data: bytes,
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
+) -> Dict[str, Any]:
+    """Index one uploaded file for one user; uploading a file with the same name replaces it.
+
+    Only the extracted text is kept, as chunks in the uploads collection tagged with the owner.
+    """
+    if not USE_CHROMA_RAG:
+        raise UploadError("Document search is turned off on this server.")
+    name = _safe_upload_name(file_name)
+    if Path(name).suffix not in UPLOAD_EXTENSIONS:
+        raise UploadError("Upload a PDF, Markdown or text file.")
+    try:
+        sections = _upload_sections(name, data)
+    except Exception as e:
+        raise UploadError("This file could not be read. Check that it is not encrypted or damaged.") from e
+
+    document_id = hashlib.sha256(name.encode("utf-8") + b"\0" + data).hexdigest()
+    uploaded_at = int(time.time())
+    texts: List[str] = []
+    metadatas: List[Dict[str, Any]] = []
+    ids: List[str] = []
+    for page, heading, text in sections:
+        for chunk_index, chunk in enumerate(_chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)):
+            texts.append(chunk)
+            metadatas.append(
+                {
+                    "owner": owner,
+                    "source": name,
+                    "file_name": name,
+                    "page": page,
+                    "section": heading,
+                    "chunk_index": chunk_index,
+                    "document_id": document_id,
+                    "uploaded_at": uploaded_at,
+                }
+            )
+            ids.append(_chunk_id(f"{owner}/{name}", document_id, page, chunk_index, chunk))
+    if not texts:
+        raise UploadError("No text was found in this file. Scanned PDFs need text recognition (OCR) first.")
+    if len(texts) > RAG_UPLOAD_MAX_CHUNKS:
+        raise UploadError(f"This file is too long to index: {len(texts)} pieces, the limit is {RAG_UPLOAD_MAX_CHUNKS}.")
+
+    store = _get_uploads_store()
+    previous = store.get(where={"$and": [{"owner": owner}, {"source": name}]}).get("ids") or []
+    store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+    stale = list(set(previous).difference(ids))
+    if stale:
+        store.delete(ids=stale)
+    _reset_local_rag_cache()
+    return {
+        "document_id": document_id,
+        "file_name": name,
+        "pages": len({meta["page"] for meta in metadatas}),
+        "chunk_count": len(texts),
+        "replaced": bool(previous),
+        "uploaded_at": uploaded_at,
+    }
+
+
+def list_uploads(owner: str) -> List[Dict[str, Any]]:
+    """The owner's uploaded files, newest first."""
+    if not USE_CHROMA_RAG:
+        return []
+    data = _get_uploads_store().get(where={"owner": owner}, include=["metadatas"])
+    documents: Dict[str, Dict[str, Any]] = {}
+    for meta in data.get("metadatas") or []:
+        document = documents.setdefault(
+            meta["document_id"],
+            {
+                "document_id": meta["document_id"],
+                "file_name": meta["file_name"],
+                "pages": set(),
+                "chunk_count": 0,
+                "uploaded_at": meta.get("uploaded_at", 0),
+            },
+        )
+        document["pages"].add(meta.get("page"))
+        document["chunk_count"] += 1
+    listed = [{**document, "pages": len(document["pages"])} for document in documents.values()]
+    return sorted(listed, key=lambda document: -document["uploaded_at"])
+
+
+def delete_upload(owner: str, document_id: str) -> int:
+    """Remove one of the owner's files from the index; returns the number of chunks removed."""
+    if not USE_CHROMA_RAG:
+        return 0
+    store = _get_uploads_store()
+    where = {"$and": [{"owner": owner}, {"document_id": document_id}]}
+    ids = store.get(where=where, include=["metadatas"]).get("ids") or []
+    if ids:
+        store.delete(ids=ids)
+        _reset_local_rag_cache()
+    return len(ids)
+
+
 def _search_chroma_knowledge(query: str, limit: int = 3) -> str | None:
     if not USE_CHROMA_RAG:
         return None
@@ -662,9 +808,36 @@ def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: 
         return fallback()
 
 
-def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
+def _scoped_stores(owner: str | None) -> List[Tuple[Any, Dict[str, Any] | None]]:
+    """The stores a search may read, with the filter for each: the owner's uploads, then the shared docs.
+
+    Uploads come first so the BM25 corpus cap never drops them.
     """
-    Hybrid local retrieval:
+    stores: List[Tuple[Any, Dict[str, Any] | None]] = []
+    if owner:
+        stores.append((_get_uploads_store(), {"owner": owner}))
+    stores.append((_get_chroma_store(), None))
+    return stores
+
+
+def _vector_candidates(store, where, query: str, k: int) -> List[Tuple[Any, float]]:
+    """Vector hits as (doc, higher-is-better score)."""
+    scope = {"filter": where} if where else {}
+    try:
+        # LangChain warns when local-embedding scores fall outside 0..1 (harmless for ranking),
+        # and the warning prints the matching chunks, uploaded text included, into the server log.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Relevance scores must be between 0 and 1")
+            return store.similarity_search_with_relevance_scores(query, k=k, **scope)
+    except Exception:
+        # Distance mode: lower is better, so convert roughly to higher-is-better.
+        pairs = store.similarity_search_with_score(query, k=k, **scope)
+        return [(doc, 1.0 / (1.0 + max(0.0, float(score)))) for doc, score in pairs]
+
+
+def _search_chroma_hybrid_knowledge(query: str, limit: int = 3, owner: str | None = None) -> str | None:
+    """
+    Hybrid local retrieval over the shared docs and, with an owner, that user's uploads:
     1) Chroma vector search candidates
     2) BM25 lexical ranking over Chroma corpus documents
     3) Reciprocal Rank Fusion (RRF)
@@ -678,42 +851,38 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
         return "No local knowledge hits."
 
     try:
-        store = _get_chroma_store()
+        stores = _scoped_stores(owner)
     except Exception:
         return None
 
-    if not _chroma_has_documents(store):
+    # Fetch the corpus to run lexical BM25 over the same chunks the vector search sees
+    ids: List[str] = []
+    docs: List[str] = []
+    metas: List[Dict[str, Any]] = []
+    for store, where in stores:
+        try:
+            payload = store.get(where=where) if where else store.get()
+        except Exception as e:
+            return f"ChromaDB corpus fetch failed: {e}"
+        ids.extend(payload.get("ids") or [])
+        docs.extend(payload.get("documents") or [])
+        metas.extend(payload.get("metadatas") or [])
+    ids, docs, metas = ids[:RAG_BM25_MAX_CORPUS], docs[:RAG_BM25_MAX_CORPUS], metas[:RAG_BM25_MAX_CORPUS]
+    if not ids or not docs:
         return (
-            "No ChromaDB knowledge found yet. Ingest the repository docs with "
+            "No documents found yet. Upload a file in the app, or ingest the repository docs with "
             "`python scripts/ingestion/ingest_repo_docs.py` or PDFs with "
             "`python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir rag_docs`."
         )
 
-    # Vector candidates
     vector_pairs: List[Tuple[Any, float]] = []
-    vector_mode = "relevance"
-    try:
-        vector_pairs = store.similarity_search_with_relevance_scores(clean_query, k=max(limit, RAG_VECTOR_TOP_K))
-    except Exception:
+    for store, where in stores:
         try:
-            vector_pairs = store.similarity_search_with_score(clean_query, k=max(limit, RAG_VECTOR_TOP_K))
-            vector_mode = "distance"
+            vector_pairs.extend(_vector_candidates(store, where, clean_query, max(limit, RAG_VECTOR_TOP_K)))
         except Exception as e:
             return f"ChromaDB retrieval failed: {e}"
-
+    vector_pairs.sort(key=lambda pair: -float(pair[1]))
     if not vector_pairs:
-        return "No local knowledge hits in ChromaDB."
-
-    # Fetch corpus to run lexical BM25 over the same Chroma collection
-    try:
-        payload = store.get()
-    except Exception as e:
-        return f"ChromaDB corpus fetch failed: {e}"
-
-    ids = list(payload.get("ids") or [])[:RAG_BM25_MAX_CORPUS]
-    docs = list(payload.get("documents") or [])[:RAG_BM25_MAX_CORPUS]
-    metas = list(payload.get("metadatas") or [])[:RAG_BM25_MAX_CORPUS]
-    if not ids or not docs:
         return "No local knowledge hits in ChromaDB."
 
     # Normalize vector ranking by mapping docs to corpus indices
@@ -738,11 +907,7 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3) -> str | None:
             continue
         # use first match and pop to reduce duplicate mapping collisions
         corpus_idx = idx_list.pop(0)
-        # For distance mode, lower is better. Convert roughly to higher-is-better.
-        norm_score = float(score)
-        if vector_mode == "distance":
-            norm_score = 1.0 / (1.0 + max(0.0, norm_score))
-        vector_ranked.append((corpus_idx, norm_score))
+        vector_ranked.append((corpus_idx, float(score)))
 
     bm25_ranked = _bm25_rank_documents(clean_query, docs, top_k=max(limit, RAG_BM25_TOP_K))
     fused_map = _rrf_fuse_rankings(vector_ranked, bm25_ranked, rrf_k=RAG_RRF_K)
@@ -782,27 +947,30 @@ def search_local_knowledge(
     limit: int = 3,
     db_path: str = DEFAULT_RAG_DB_PATH,
     return_meta: bool = False,
+    owner: str | None = None,
 ) -> str | tuple[str, Dict[str, Any]]:
     """
-    Retrieve local context.
+    Retrieve local context: the shared docs plus, with an owner, that user's uploads.
 
     Priority:
     1) ChromaDB semantic retrieval (if USE_CHROMA_RAG=true and available)
     2) SQLite token-overlap fallback
     """
     clean_query = (query or "").strip()
+    # The owner is part of the key, so one user's cached results never reach another.
     cache_key = (
         clean_query.lower(),
         int(limit),
         str(bool(USE_CHROMA_RAG)),
         str(Path(db_path).name),
+        owner or "",
     )
     cached_value, cache_backend = _cache_get_rag(cache_key)
     if cached_value is not None:
         meta = {"cache_hit": True, "cache_backend": cache_backend or "unknown", "source": "rag_cache"}
         return (cached_value, meta) if return_meta else cached_value
 
-    chroma_result = _search_chroma_hybrid_knowledge(query=clean_query, limit=limit)
+    chroma_result = _search_chroma_hybrid_knowledge(query=clean_query, limit=limit, owner=owner)
     if chroma_result is None:
         chroma_result = _search_chroma_knowledge(query=clean_query, limit=limit)
     if chroma_result is not None:

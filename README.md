@@ -68,6 +68,14 @@ Create an account in the UI and ask, for example:
 
 ### Your own documents
 
+In the app, use **Upload a document** (PDF, Markdown or text, up to 10 MB). The file is indexed
+in about a second, **Answer from my documents** switches on, and answers cite the file and page.
+Uploads are private: each chunk is tagged with its owner, and a search reads only the shared docs
+plus the asker's own files. Only the extracted text is kept, and **Remove** deletes it. Scanned
+PDFs without a text layer need OCR first.
+
+To index a folder for everyone on the server instead:
+
 ```bash
 python scripts/ingestion/ingest_local_rag_pdfs.py --pdf-dir path/to/pdfs   # PDFs
 python scripts/ingestion/ingest_repo_docs.py notes/ more-notes.md          # Markdown
@@ -95,6 +103,7 @@ Data (accounts, conversations, document index) persists in the `citeright_data` 
 | `GRAPH_WEB_HITL_ENABLED` | `true` | Ask before each web search. |
 | `RAG_EMBEDDING_BACKEND` | `local` | `local` (free) or `openai`. |
 | `AGENT_MEMORY_ENABLED` | `false` | Opt-in long-term memory per user. |
+| `MAX_UPLOAD_BYTES` | `10485760` | Largest file accepted by **Upload a document** (other requests keep `MAX_REQUEST_BYTES`). |
 
 Everything else is documented in [.env.example](.env.example).
 

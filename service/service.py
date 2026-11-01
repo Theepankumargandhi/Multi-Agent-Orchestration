@@ -86,6 +86,7 @@ USER_AUTH_TOKEN_TTL_SECONDS = int(os.getenv("USER_AUTH_TOKEN_TTL_SECONDS", "8640
 PASSWORD_HASH_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "210000"))
 HITL_PENDING_TTL_SECONDS = max(60, int(os.getenv("HITL_PENDING_TTL_SECONDS", "3600")))
 MAX_REQUEST_BYTES = max(1024, int(os.getenv("MAX_REQUEST_BYTES", "65536")))
+MAX_UPLOAD_BYTES = max(1024, int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))))
 RATE_LIMIT_REQUESTS = max(1, int(os.getenv("RATE_LIMIT_REQUESTS", "60")))
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
 AGENT_MEMORY_ENABLED = os.getenv("AGENT_MEMORY_ENABLED", "false").strip().lower() in {
@@ -547,6 +548,11 @@ def _resolve_metric_path(request: Request) -> str:
     return "unmatched"
 
 
+def _body_limit(path: str) -> int:
+    # Only document uploads carry files; every other request keeps the small JSON limit.
+    return MAX_UPLOAD_BYTES if path == "/documents" else MAX_REQUEST_BYTES
+
+
 def _rate_limit_path(path: str) -> str:
     # Caller-controlled path segments must not create unlimited buckets or
     # allow bypassing a limit by varying a nonexistent task/document ID.
@@ -887,7 +893,7 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
-app.add_middleware(RequestBodyLimitMiddleware, limit_for_scope=lambda scope: MAX_REQUEST_BYTES)
+app.add_middleware(RequestBodyLimitMiddleware, limit_for_scope=lambda scope: _body_limit(scope["path"]))
 
 
 @app.middleware("http")
@@ -920,7 +926,7 @@ async def request_guard_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", "").strip()[:128] or str(uuid4())
     request.state.request_id = request_id
     if request.method in {"POST", "PUT", "PATCH"}:
-        body_limit = MAX_REQUEST_BYTES
+        body_limit = _body_limit(request.url.path)
         try:
             content_length = int(request.headers.get("content-length", "0") or 0)
         except ValueError:
@@ -1040,6 +1046,11 @@ async def capabilities():
             "long_term_memory": AGENT_MEMORY_ENABLED,
             "grounding_verification": _env_flag("GROUNDING_VERIFICATION_ENABLED", "false"),
             "evidence_quality": _env_flag("EVIDENCE_QUALITY_ENABLED", "false"),
+            "document_upload": _env_flag("USE_CHROMA_RAG", "true"),
+        },
+        "document_upload": {
+            "max_bytes": MAX_UPLOAD_BYTES,
+            "file_types": sorted(local_rag.UPLOAD_EXTENSIONS),
         },
         "grounding_verification": {
             "version": GroundingPolicy().version,
@@ -1712,6 +1723,58 @@ async def get_thread_store(thread_id: str, request: Request, limit: int = 50):
         "count": len(messages),
         "messages": messages,
     }
+
+
+def _upload_owner(request: Request) -> str:
+    if not _env_flag("USE_CHROMA_RAG", "true"):
+        raise HTTPException(status_code=404, detail="Document search is disabled")
+    owner = _get_request_user_id(request) if ENABLE_USER_AUTH else local_rag.LOCAL_UPLOAD_OWNER
+    if not owner:
+        raise HTTPException(status_code=401, detail="Authentication required for documents")
+    return owner
+
+
+async def _run_document_store(function, *args):
+    try:
+        return await asyncio.to_thread(function, *args)
+    except local_rag.UploadError:
+        raise
+    except Exception as e:
+        logger.exception(json.dumps({"event": "document_store_failed", "operation": function.__name__}))
+        raise HTTPException(status_code=503, detail="Document search is unavailable.") from e
+
+
+@app.post("/documents")
+async def upload_document(request: Request, file_name: str):
+    """Index one file for the signed-in user. The raw file is the request body; file_name gives its type."""
+    owner = _upload_owner(request)
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=422, detail="The file is empty.")
+    try:
+        receipt = await _run_document_store(local_rag.ingest_upload, owner, file_name, data)
+    except local_rag.UploadError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    logger.info(json.dumps({"event": "document_uploaded", "chunks": receipt["chunk_count"], "bytes": len(data)}))
+    return receipt
+
+
+@app.get("/documents")
+async def list_documents(request: Request):
+    owner = _upload_owner(request)
+    documents = await _run_document_store(local_rag.list_uploads, owner)
+    return {"count": len(documents), "documents": documents}
+
+
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: str, request: Request):
+    owner = _upload_owner(request)
+    removed = 0
+    if re.fullmatch(r"[0-9a-f]{64}", document_id):
+        removed = await _run_document_store(local_rag.delete_upload, owner, document_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"document_id": document_id, "chunks_removed": removed}
 
 
 def _memory_store_for_request(request: Request):

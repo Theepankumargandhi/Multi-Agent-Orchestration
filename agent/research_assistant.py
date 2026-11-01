@@ -29,7 +29,7 @@ from agent.grounding import (
 )
 from agent.knowledge_graph import query_knowledge_graph
 from agent.llama_guard import LlamaGuardOutput, SafetyAssessment, llama_guard
-from agent.local_rag import init_local_knowledge_store, search_local_knowledge
+from agent.local_rag import LOCAL_UPLOAD_OWNER, init_local_knowledge_store, search_local_knowledge
 from agent.mcp_client import mcp_calculator, mcp_web_search
 from agent.memory import extract_memory_candidates, get_memory_store
 from agent.tools import perform_web_search
@@ -1138,6 +1138,8 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
         "this project", "this repo", "repository", "codebase", "source code",
         "service endpoint", "streamlit", "fastapi", "langgraph",
         "agent-service-toolkit", "local database", "uploaded", "document", "pdf", "rag",
+        # Files people upload in the app.
+        "my file", "my files", "the file", "this file", "my notes", "the paper", "this paper", "attached",
     ]
     relation_hints = [
         "relationship",
@@ -1625,6 +1627,7 @@ async def rag_agent(state: AgentState, config: RunnableConfig):
             query,
             limit=3,
             return_meta=True,
+            owner=str((config.get("configurable") or {}).get("user_id") or "").strip() or LOCAL_UPLOAD_OWNER,
         )
         rag_meta_label = ""
         if isinstance(rag_result, tuple):

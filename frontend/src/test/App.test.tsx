@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import App from '../App';
 
-function server(options: { webApproval?: boolean } = {}) {
+function server(options: { webApproval?: boolean; uploads?: boolean } = {}) {
   const calls: { path: string; init?: RequestInit }[] = [];
   let streams = 0;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -17,8 +17,18 @@ function server(options: { webApproval?: boolean } = {}) {
     if (path === '/api/capabilities')
       return json({
         models: [{ id: 'authored-model', label: 'Authored test model' }],
-        features: { user_authentication: true },
+        features: { user_authentication: true, document_upload: Boolean(options.uploads) },
       });
+    if (path === '/api/documents') return json({ count: 0, documents: [] });
+    if (path.startsWith('/api/documents?file_name='))
+      return json({
+        document_id: 'a'.repeat(64),
+        file_name: 'Q3_report.pdf',
+        pages: 4,
+        chunk_count: 9,
+        uploaded_at: 1,
+      });
+    if (path === `/api/documents/${'a'.repeat(64)}`) return json({ chunks_removed: 9 });
     if (path === '/api/auth/login' || path === '/api/auth/register')
       return json({ user_id: 'reviewer', access_token: 'authored-session', expires_in: 3600 });
     if (path.startsWith('/api/store/threads')) return json({ threads: [] });
@@ -92,5 +102,32 @@ describe('CiteRight UI (authored HTTP responses, no provider)', () => {
     expect(bodies).toHaveLength(2);
     expect(bodies[1].message).toBe('approve');
     expect(bodies[1].thread_id).toBe(bodies[0].thread_id);
+  });
+  it('uploads a document, answers from it, and removes it', async () => {
+    const calls = server({ uploads: true });
+    const user = await login();
+    expect(screen.queryByLabelText('Answer from my documents')).toBeNull();
+    await user.upload(
+      screen.getByLabelText('Document file'),
+      new File(['%PDF-1.4'], 'Q3 report.pdf', { type: 'application/pdf' }),
+    );
+    await screen.findByText('Q3_report.pdf');
+    const sent = calls.find((c) => c.path.startsWith('/api/documents?'));
+    expect(sent?.path).toBe('/api/documents?file_name=Q3_report.pdf');
+    expect(sent?.init?.body).toBeInstanceOf(File);
+    // Answering from documents switches on after an upload.
+    expect((screen.getByLabelText('Answer from my documents') as HTMLInputElement).checked).toBe(
+      true,
+    );
+    await user.type(screen.getByLabelText('Your question'), 'What grew in Q3?');
+    await user.click(screen.getByRole('button', { name: /Send question/ }));
+    await screen.findByText('<script>untrusted</script>');
+    const body = JSON.parse(String(calls.find((c) => c.path === '/api/stream')?.init?.body));
+    expect(body.message).toBe('local: What grew in Q3?');
+    expect(screen.getByText('What grew in Q3?')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Remove Q3_report.pdf' }));
+    await waitFor(() => expect(screen.queryByText('Q3_report.pdf')).toBeNull());
+    expect(calls.at(-1)?.init?.method).toBe('DELETE');
+    expect(screen.queryByLabelText('Answer from my documents')).toBeNull();
   });
 });

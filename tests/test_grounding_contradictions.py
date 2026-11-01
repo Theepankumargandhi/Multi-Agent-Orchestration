@@ -26,6 +26,8 @@ def _claim(claim: str, evidence: str):
         ("Memory is enabled by default.", "Memory is disabled by default.", "opposite"),
         ("The feature is enabled in production, but disabled in tests.", "The feature is disabled in production.",
          "opposite"),
+        ("The factory opens in 2026 and the company expects to hire 500 engineers.",
+         "The factory opens in 2026. The company expects to hire 350 engineers next year.", "numeric"),
     ],
 )
 def test_contradicting_evidence_is_not_support(claim, evidence, kind):
@@ -51,6 +53,11 @@ def test_contradicting_evidence_is_not_support(claim, evidence, kind):
         ("Evidence is missing or not independent enough.", "Evidence is absent or insufficiently independent."),
         ("Budget and cache isolation and rollback controls are in place.",
          "| Budget/cache isolation, routing artifacts and rollback controls | No provider load or failover |"),
+        # Found on an uploaded report: one claim joining two sentences, each with its own number.
+        ("Northwind plans to open a new factory in Porto, Portugal, in the second quarter of 2026 and expects "
+         "to hire about 350 engineers that year.",
+         "Outlook for 2026. Northwind plans to open a factory in Porto, Portugal, in the second quarter of 2026. "
+         "The company expects to hire 350 engineers next year."),
     ],
 )
 def test_faithful_paraphrases_stay_supported(claim, evidence):

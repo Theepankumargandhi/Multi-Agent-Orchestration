@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiClient } from './api';
-import type { Capabilities, ChatMessage, Thread } from './types';
+import type { Capabilities, ChatMessage, Thread, UploadedDocument } from './types';
 import { Badge, Empty, Icon, Notice, PageHeading, errorText, isAbort } from './components';
 
 type Activity = { label: string; detail: string };
+// "local:" makes the server answer from documents; it is a routing hint, not part of the question.
+const LOCAL_PREFIX = /^local:\s*/i;
 export function Research({ api, capabilities }: { api: ApiClient; capabilities: Capabilities }) {
   const [model, setModel] = useState(capabilities.models[0]?.id ?? '');
   const [thread, setThread] = useState(() => crypto.randomUUID() as string);
@@ -16,6 +18,11 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const uploadsEnabled = Boolean(capabilities.features.document_upload);
+  const [documents, setDocuments] = useState<UploadedDocument[]>([]);
+  const [uploading, setUploading] = useState('');
+  const [fromDocuments, setFromDocuments] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const active = useRef<AbortController | null>(null);
   const historyRequest = useRef<AbortController | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
@@ -28,12 +35,19 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
     void refreshHistory(controller.signal).catch((e) => {
       if (!isAbort(e)) setError(errorText(e));
     });
+    if (uploadsEnabled)
+      void api
+        .request<{ documents: UploadedDocument[] }>('/documents', { signal: controller.signal })
+        .then((data) => setDocuments(data.documents))
+        .catch((e) => {
+          if (!isAbort(e)) setError(errorText(e));
+        });
     return () => {
       controller.abort();
       active.current?.abort();
       historyRequest.current?.abort();
     };
-  }, [api]); // The client is session-scoped; no model request is made by this effect.
+  }, [api, uploadsEnabled]); // The client is session-scoped; no model request is made by this effect.
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [messages, partial]);
@@ -57,7 +71,7 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
           .filter((m) => ['human', 'ai', 'tool'].includes(m.role))
           .map((m) => ({
             type: m.role as ChatMessage['type'],
-            content: m.content,
+            content: m.role === 'human' ? m.content.replace(LOCAL_PREFIX, '') : m.content,
             run_id: m.run_id,
           })),
       );
@@ -79,7 +93,42 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
     setPartial('');
     setError('');
   }
-  async function send(text: string) {
+  async function upload(file: File) {
+    setUploading(file.name);
+    setError('');
+    try {
+      const receipt = await api.upload(file);
+      setDocuments((previous) => [
+        receipt,
+        ...previous.filter((d) => d.file_name !== receipt.file_name),
+      ]);
+      setFromDocuments(true);
+      setActivity((previous) => [
+        ...previous,
+        {
+          label: 'Document indexed',
+          detail: `${receipt.file_name}: ${receipt.pages} page(s), ${receipt.chunk_count} passages`,
+        },
+      ]);
+    } catch (e) {
+      if (!isAbort(e)) setError(errorText(e));
+    } finally {
+      setUploading('');
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  }
+  async function removeDocument(document: UploadedDocument) {
+    setError('');
+    try {
+      await api.request(`/documents/${document.document_id}`, { method: 'DELETE' });
+      const remaining = documents.filter((d) => d.document_id !== document.document_id);
+      setDocuments(remaining);
+      if (!remaining.length) setFromDocuments(false);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }
+  async function send(text: string, fromDocs = false) {
     if (busy || loading || !capabilities.models.some((m) => m.id === model) || !text.trim()) return;
     const controller = new AbortController();
     active.current = controller;
@@ -93,7 +142,8 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
       { label: 'Request submitted', detail: `Configured model: ${model}` },
     ]);
     try {
-      await api.stream({ message: text, model, thread_id: thread }, controller.signal, (event) => {
+      const message = fromDocs ? `local: ${text}` : text;
+      await api.stream({ message, model, thread_id: thread }, controller.signal, (event) => {
         if (event.type === 'token') setPartial((previous) => previous + event.content);
         else {
           const message = event.content;
@@ -136,7 +186,7 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
     messages.at(-1)?.content.includes('Human approval required before web-answer generation.');
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    void send(draft.trim());
+    void send(draft.trim(), fromDocuments && documents.length > 0);
   };
   return (
     <>
@@ -172,8 +222,10 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
           <div className="chat-scroll">
             {!messages.length && (
               <Empty title="A clear question is a good start.">
-                Ask about your documents, request a calculation, or research a topic on the web. Web
-                searches wait for your approval.
+                {uploadsEnabled
+                  ? 'Upload a document and ask about it, request a calculation, or research a topic on the web.'
+                  : 'Ask about your documents, request a calculation, or research a topic on the web.'}{' '}
+                Web searches wait for your approval.
               </Empty>
             )}
             {messages
@@ -240,11 +292,24 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
               disabled={busy || loading}
             />
             <div className="composer-footer">
-              <span>
-                {checked
-                  ? 'Each sentence appears once its sources support it.'
-                  : 'Source checking is off on this server.'}
-              </span>
+              <div className="composer-options">
+                {documents.length > 0 && (
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={fromDocuments}
+                      onChange={(e) => setFromDocuments(e.target.checked)}
+                      disabled={busy}
+                    />
+                    Answer from my documents
+                  </label>
+                )}
+                <span>
+                  {checked
+                    ? 'Each sentence appears once its sources support it.'
+                    : 'Source checking is off on this server.'}
+                </span>
+              </div>
               {busy ? (
                 <button
                   type="button"
@@ -262,6 +327,59 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
           </form>
         </section>
         <aside className="inspector">
+          {uploadsEnabled && (
+            <section className="panel">
+              <div className="section-title">
+                <h2>Your documents</h2>
+                <Badge>
+                  {documents.length} {documents.length === 1 ? 'file' : 'files'}
+                </Badge>
+              </div>
+              <p className="muted small-text">
+                PDF, Markdown or text. Only you can search the files you upload.
+              </p>
+              {documents.length > 0 && (
+                <ul className="document-list">
+                  {documents.map((document) => (
+                    <li key={document.document_id}>
+                      <span>
+                        <strong title={document.file_name}>{document.file_name}</strong>
+                        <small>
+                          {document.pages} {document.pages === 1 ? 'page' : 'pages'}
+                        </small>
+                      </span>
+                      <button
+                        className="link-button"
+                        aria-label={`Remove ${document.file_name}`}
+                        onClick={() => void removeDocument(document)}
+                        disabled={Boolean(uploading)}
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <input
+                ref={fileInput}
+                type="file"
+                accept=".pdf,.md,.markdown,.txt"
+                aria-label="Document file"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void upload(file);
+                }}
+              />
+              <button
+                className="button secondary small"
+                onClick={() => fileInput.current?.click()}
+                disabled={Boolean(uploading)}
+              >
+                {uploading ? `Indexing ${uploading}…` : '+ Upload a document'}
+              </button>
+            </section>
+          )}
           <section className="panel">
             <div className="section-title">
               <h2>Conversations</h2>
@@ -276,7 +394,10 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
                     key={item.thread_id}
                     onClick={() => void loadThread(item.thread_id)}
                   >
-                    <span>{item.last_message_preview || item.thread_id.slice(0, 12)}</span>
+                    <span>
+                      {item.last_message_preview?.replace(LOCAL_PREFIX, '') ||
+                        item.thread_id.slice(0, 12)}
+                    </span>
                     <small>{item.message_count ?? '—'} messages</small>
                   </button>
                 ))}

@@ -136,6 +136,9 @@ async def test_safety_state_is_plain_json_and_still_explains_the_block():
         ("compare python 3.12 and 3.13 in this repo", "kg"),
         ("what is 2^10?", "math"),
         ("(3+4)*2", "math"),
+        ("summarize the main findings of the paper", "rag"),
+        ("what deadlines are in my notes?", "rag"),
+        ("local: what is the launch date", "rag"),
     ],
 )
 async def test_deterministic_router_paths(query, expected):

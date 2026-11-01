@@ -53,6 +53,7 @@ _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
 _CITATION_MARKER_RE = re.compile(r"\u3010[^\u3011]*\u3011|\b(?:source|page|fused|bm25|vector|relevance|distance)=[^\s,:]+[,:]?")
 # Clause boundaries; "1,000" and "10:30" stay intact.
 _CLAUSE_RE = re.compile(r"[,;]\s+|:\s+|\s+(?:but|while|whereas|although|though|however)\s+", re.I)
+_AND_RE = re.compile(r"\s+and\s+", re.I)
 # A claim that uses one side while the matching evidence uses only the other
 # side states the opposite of that evidence.
 _OPPOSITE_FAMILIES = (
@@ -153,6 +154,15 @@ def _best_match(content: set[str], candidates: list[str]) -> tuple[str, float]:
     )
 
 
+def _side_numbers_match(side: str, evidence_sentences: list[str]) -> bool:
+    numbers = _numbers(side)
+    if not numbers:
+        return True
+    content = _content_tokens(side)
+    sentence, overlap = _best_match(content, evidence_sentences) if content else ("", 0.0)
+    return overlap >= 0.5 and numbers <= _numbers(sentence)
+
+
 def _part_contradiction(part: str, evidence_sentences: list[str]) -> str:
     content = _content_tokens(part)
     # Too short to judge, e.g. a markdown fragment such as "`code_agent/`".
@@ -165,7 +175,10 @@ def _part_contradiction(part: str, evidence_sentences: list[str]) -> str:
     # Numbers are read across the whole sentence ("In 2024, revenue rose by 5%").
     part_numbers, sentence_numbers = _numbers(part), _numbers(sentence)
     if part_numbers and sentence_numbers and not part_numbers <= sentence_numbers:
-        return "numeric"
+        # A claim can join two evidence sentences ("opens in 2026 and hires 350 engineers"),
+        # so each side of an "and" may take its numbers from the sentence that side matches.
+        if not all(_side_numbers_match(side, evidence_sentences) for side in _AND_RE.split(part)):
+            return "numeric"
     # A negation contradicts only when the other side is not negated and contains the
     # word it governs: "not available" against "available", but "runs tests, not
     # shell commands" still supports "runs tests".

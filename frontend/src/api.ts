@@ -1,4 +1,4 @@
-import type { ChatMessage, Session } from './types';
+import type { ChatMessage, Session, UploadedDocument } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -107,6 +107,44 @@ export class ApiClient {
   }
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     return readJSON<T>(await this.response(path, options));
+  }
+  async upload(file: File, signal?: AbortSignal): Promise<UploadedDocument> {
+    // The service cites files as "source=<name>", so send a name without spaces or punctuation.
+    const name = file.name.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/\.{2,}/g, '.');
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/octet-stream',
+    };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const response = await fetch(apiPath(`/documents?file_name=${encodeURIComponent(name)}`), {
+      method: 'POST',
+      headers,
+      body: file,
+      // Indexing runs the embedding model over every page, which can take a while.
+      signal: AbortSignal.any([
+        this.lifetime.signal,
+        AbortSignal.timeout(180_000),
+        ...(signal ? [signal] : []),
+      ]),
+      credentials: 'omit',
+      cache: 'no-store',
+      redirect: 'error',
+    });
+    if (response.status === 413)
+      throw new ApiError(413, 'This file is larger than the server accepts.');
+    if (response.status === 422) {
+      // The service explains why a file cannot be indexed; show only a short plain reason.
+      const detail = await readJSON<{ detail?: unknown }>(response)
+        .then((body) => body.detail)
+        .catch(() => undefined);
+      throw new ApiError(
+        422,
+        typeof detail === 'string' && detail.length <= 200
+          ? detail
+          : 'This file could not be indexed.',
+      );
+    }
+    return readJSON<UploadedDocument>(await this.check(response));
   }
   authenticate(mode: 'login' | 'register', user_id: string, password: string) {
     return this.request<Session>(`/auth/${mode}`, { method: 'POST', body: { user_id, password } });
