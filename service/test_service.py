@@ -247,6 +247,48 @@ def test_memory_lifecycle_is_authenticated_tenant_isolated_and_auditable(tmp_pat
             "records"
         ] == []
 
+
+def test_documents_are_uploaded_listed_and_deleted_per_user(monkeypatch):
+    from tests.test_document_uploads import FakeStore
+
+    local_rag = importlib.import_module("agent.local_rag")
+    service_module = importlib.import_module("service.service")
+    uploads = FakeStore()
+    monkeypatch.setenv("USE_CHROMA_RAG", "true")
+    monkeypatch.setattr(local_rag, "USE_CHROMA_RAG", True)
+    monkeypatch.setattr(local_rag, "_get_uploads_store", lambda: uploads)
+    monkeypatch.setattr(service_module, "MAX_UPLOAD_BYTES", 200_000)
+
+    with client as c:
+        alice = _auth_headers(c, user_id=f"docs-alice-{uuid4().hex[:6]}")
+        bob = _auth_headers(c, user_id=f"docs-bob-{uuid4().hex[:6]}")
+        assert c.post("/documents", params={"file_name": "a.md"}, content=b"# A\nx\n").status_code == 401
+
+        # Uploads may be far larger than the JSON request limit.
+        text = ("# Notes\n" + "The launch is planned for May. " * 2500).encode()
+        assert len(text) > service_module.MAX_REQUEST_BYTES
+        uploaded = c.post("/documents", params={"file_name": "notes.md"}, content=text, headers=alice)
+        assert uploaded.status_code == 200
+        receipt = uploaded.json()
+        assert receipt["file_name"] == "notes.md" and receipt["chunk_count"] > 1
+
+        listed = c.get("/documents", headers=alice).json()
+        assert [doc["document_id"] for doc in listed["documents"]] == [receipt["document_id"]]
+        assert c.get("/documents", headers=bob).json()["count"] == 0
+        assert c.delete(f"/documents/{receipt['document_id']}", headers=bob).status_code == 404
+
+        rejected = c.post("/documents", params={"file_name": "run.exe"}, content=b"MZ", headers=alice)
+        assert rejected.status_code == 422
+        assert rejected.json()["detail"] == "Upload a PDF, Markdown or text file."
+        too_big = c.post("/documents", params={"file_name": "big.md"}, content=b"#" * 200_001, headers=alice)
+        assert too_big.status_code == 413
+        # Every other route keeps the small JSON limit.
+        assert c.post("/invoke", content=b"x" * 70_000, headers=alice).status_code == 413
+
+        assert c.delete(f"/documents/{receipt['document_id']}", headers=alice).status_code == 200
+        assert c.get("/documents", headers=alice).json()["count"] == 0
+        assert c.delete("/documents/not-an-id", headers=alice).status_code == 404
+
 def test_hitl_web_decision_is_recorded_and_listed():
     with client as c:
         headers = _auth_headers(c, user_id=f"hitl-user-{uuid4().hex[:6]}")

@@ -10,4 +10,11 @@ export type Capabilities = {
   features: Record<string, boolean>;
 };
 export type Session = { access_token: string; user_id: string; expires_in: number };
+export type UploadedDocument = {
+  document_id: string;
+  file_name: string;
+  pages: number;
+  chunk_count: number;
+  uploaded_at: number;
+};
 export type Thread = { thread_id: string; last_message_preview?: string; message_count?: number };
