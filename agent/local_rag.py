@@ -692,6 +692,45 @@ def delete_upload(owner: str, document_id: str) -> int:
     return len(ids)
 
 
+PASSAGE_MAX_CHARS = 6000
+
+
+def _join_chunks(chunks: List[str]) -> str:
+    """Rebuild page text from consecutive chunks, dropping the overlap each one repeats."""
+    text = chunks[0] if chunks else ""
+    for chunk in chunks[1:]:
+        longest = min(len(text), len(chunk), CHUNK_OVERLAP * 2)
+        overlap = next((size for size in range(longest, 0, -1) if text.endswith(chunk[:size])), 0)
+        text += chunk[overlap:] if overlap else "\n" + chunk
+    return text
+
+
+def find_passage(source: str, page: int, owner: str | None = None) -> Dict[str, Any] | None:
+    """The stored text of one cited page, from the owner's uploads or the shared docs.
+
+    Like search, it never reads another user's uploads.
+    """
+    if not USE_CHROMA_RAG:
+        return None
+    for store, scope in _scoped_stores(owner):
+        where = {"$and": [{"source": source}, {"page": page}, *([scope] if scope else [])]}
+        data = store.get(where=where)
+        chunks = sorted(
+            zip(data.get("metadatas") or [], data.get("documents") or []),
+            key=lambda pair: int((pair[0] or {}).get("chunk_index", 0)),
+        )
+        if chunks:
+            text = _join_chunks([chunk for _, chunk in chunks])
+            return {
+                "source": source,
+                "page": page,
+                "section": str((chunks[0][0] or {}).get("section", "")),
+                "text": text[:PASSAGE_MAX_CHARS],
+                "truncated": len(text) > PASSAGE_MAX_CHARS,
+            }
+    return None
+
+
 def _search_chroma_knowledge(query: str, limit: int = 3) -> str | None:
     if not USE_CHROMA_RAG:
         return None

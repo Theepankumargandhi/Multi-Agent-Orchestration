@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { ApiClient } from './api';
-import type { Capabilities, ChatMessage, Thread, UploadedDocument } from './types';
+import { ApiClient, ApiError } from './api';
+import { AnswerText, citationKey, plainText } from './AnswerText';
+import type { Citation } from './AnswerText';
+import type { Capabilities, ChatMessage, Passage, Thread, UploadedDocument } from './types';
 import { Badge, Empty, Icon, Notice, PageHeading, errorText, isAbort } from './components';
 
 type Activity = { label: string; detail: string };
+type OpenSource = { message: number; citation: Citation; passage?: Passage; error?: string };
 // "local:" makes the server answer from documents; it is a routing hint, not part of the question.
 const LOCAL_PREFIX = /^local:\s*/i;
 export function Research({ api, capabilities }: { api: ApiClient; capabilities: Capabilities }) {
@@ -23,6 +26,8 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
   const [uploading, setUploading] = useState('');
   const [fromDocuments, setFromDocuments] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [source, setSource] = useState<OpenSource | null>(null);
+  const sourceRequest = useRef<AbortController | null>(null);
   const active = useRef<AbortController | null>(null);
   const historyRequest = useRef<AbortController | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
@@ -78,6 +83,7 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
       setThread(id);
       setActivity([]);
       setPartial('');
+      setSource(null);
     } catch (e) {
       if (!isAbort(e)) setError(errorText(e));
     } finally {
@@ -92,6 +98,34 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
     setActivity([]);
     setPartial('');
     setError('');
+    setSource(null);
+  }
+  async function showSource(message: number, citation: Citation) {
+    sourceRequest.current?.abort();
+    if (source?.message === message && citationKey(source.citation) === citationKey(citation)) {
+      setSource(null);
+      return;
+    }
+    const controller = new AbortController();
+    sourceRequest.current = controller;
+    setSource({ message, citation });
+    try {
+      const passage = await api.request<Passage>(
+        `/sources/passage?source=${encodeURIComponent(citation.source)}&page=${citation.page}`,
+        { signal: controller.signal },
+      );
+      setSource({ message, citation, passage });
+    } catch (e) {
+      if (isAbort(e)) return;
+      setSource({
+        message,
+        citation,
+        error:
+          e instanceof ApiError && e.status === 404
+            ? 'This page is not in your documents any more.'
+            : errorText(e),
+      });
+    }
   }
   async function upload(file: File) {
     setUploading(file.name);
@@ -241,7 +275,43 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
                       <span title={message.run_id}> · {message.run_id.slice(0, 8)}</span>
                     )}
                   </div>
-                  <div className="message-text">{message.content}</div>
+                  <div className="message-text">
+                    {message.type === 'ai' ? (
+                      <AnswerText
+                        text={message.content}
+                        selected={source?.message === index ? citationKey(source.citation) : ''}
+                        onCite={(citation) => void showSource(index, citation)}
+                      />
+                    ) : (
+                      message.content
+                    )}
+                  </div>
+                  {source?.message === index && (
+                    <aside className="source-passage" aria-live="polite">
+                      <div className="source-passage-head">
+                        <span>
+                          <strong>{source.citation.source}</strong> · page {source.citation.page}
+                          {source.passage?.section &&
+                          source.passage.section !== `Page ${source.citation.page}`
+                            ? ` · ${source.passage.section}`
+                            : ''}
+                        </span>
+                        <button className="link-button" onClick={() => setSource(null)}>
+                          Close
+                        </button>
+                      </div>
+                      {source.error ? (
+                        <p className="muted small-text">{source.error}</p>
+                      ) : source.passage ? (
+                        <blockquote>
+                          {source.passage.text}
+                          {source.passage.truncated ? ' …' : ''}
+                        </blockquote>
+                      ) : (
+                        <p className="muted small-text">Loading the cited page…</p>
+                      )}
+                    </aside>
+                  )}
                 </article>
               ))}
             {partial && (
@@ -249,7 +319,9 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
                 <div className="message-label">
                   {checked ? 'CITERIGHT · CHECKING EACH SENTENCE' : 'CITERIGHT · STREAMING'}
                 </div>
-                <div className="message-text">{partial}</div>
+                <div className="message-text">
+                  <AnswerText text={partial} />
+                </div>
               </article>
             )}
             {busy && !partial && (
@@ -395,7 +467,7 @@ export function Research({ api, capabilities }: { api: ApiClient; capabilities: 
                     onClick={() => void loadThread(item.thread_id)}
                   >
                     <span>
-                      {item.last_message_preview?.replace(LOCAL_PREFIX, '') ||
+                      {plainText(item.last_message_preview?.replace(LOCAL_PREFIX, '') ?? '') ||
                         item.thread_id.slice(0, 12)}
                     </span>
                     <small>{item.message_count ?? '—'} messages</small>

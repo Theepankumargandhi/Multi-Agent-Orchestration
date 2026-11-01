@@ -189,3 +189,17 @@ def test_search_with_only_uploads_and_no_shared_docs(stores):
 
     local_rag.ingest_upload("alice", "budget.md", b"# Budget\nThe marketing budget is 40000 dollars.\n")
     assert "source=budget.md" in local_rag.search_local_knowledge("marketing budget", owner="alice")
+
+
+def test_cited_page_text_is_found_only_for_its_owner(stores):
+    sentences = " ".join(f"Sentence {n} about the launch plan." for n in range(80))
+    local_rag.ingest_upload("alice", "plan.md", f"# Plan\n{sentences}\n".encode(), chunk_size=400, chunk_overlap=80)
+
+    passage = local_rag.find_passage("plan.md", 1, owner="alice")
+
+    # The page is rebuilt from overlapping chunks without repeating the overlap.
+    assert passage["section"] == "Plan" and not passage["truncated"]
+    assert passage["text"] == f"# Plan\n{sentences}"
+    assert local_rag.find_passage("plan.md", 1, owner="bob") is None
+    assert local_rag.find_passage("plan.md", 2, owner="alice") is None
+    assert local_rag.find_passage("README.md", 1, owner="bob")["text"].startswith("The service streams")

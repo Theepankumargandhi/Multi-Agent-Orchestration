@@ -1777,6 +1777,18 @@ async def delete_document(document_id: str, request: Request):
     return {"document_id": document_id, "chunks_removed": removed}
 
 
+@app.get("/sources/passage")
+async def source_passage(request: Request, source: str, page: int):
+    """The text of one cited page, for the citation chips under an answer."""
+    owner = _upload_owner(request)
+    passage = None
+    if 0 < len(source) <= 512 and page > 0:
+        passage = await _run_document_store(local_rag.find_passage, source, page, owner)
+    if passage is None:
+        raise HTTPException(status_code=404, detail="Passage not found")
+    return passage
+
+
 def _memory_store_for_request(request: Request):
     if not AGENT_MEMORY_ENABLED:
         raise HTTPException(status_code=404, detail="Long-term memory is disabled")
