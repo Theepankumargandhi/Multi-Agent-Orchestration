@@ -12,8 +12,9 @@ survives, it says it doesn't have enough evidence instead of guessing.
 
 ## What it does
 
-- **Answers from your documents.** Ingest PDFs or Markdown; questions about them use hybrid
-  retrieval (vector + BM25, fused with reciprocal-rank fusion) with source and section citations.
+- **Answers from your documents.** Upload or ingest PDFs and Markdown; questions about them use
+  hybrid retrieval (vector + BM25, fused with reciprocal-rank fusion). Each citation is a chip:
+  click it to read the cited page under the answer.
 - **Searches the web, with your permission.** Questions about recent events trigger a web search
   that pauses for your approval first. Answers include links to the pages used.
 - **Checks every answer.** A grounding verifier maps each claim to evidence, rejects citations to

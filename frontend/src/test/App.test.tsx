@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import App from '../App';
 
-function server(options: { webApproval?: boolean; uploads?: boolean } = {}) {
+function server(options: { webApproval?: boolean; uploads?: boolean; answer?: string } = {}) {
   const calls: { path: string; init?: RequestInit }[] = [];
   let streams = 0;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -29,6 +29,14 @@ function server(options: { webApproval?: boolean; uploads?: boolean } = {}) {
         uploaded_at: 1,
       });
     if (path === `/api/documents/${'a'.repeat(64)}`) return json({ chunks_removed: 9 });
+    if (path === '/api/sources/passage?source=docs%2Freport.pdf&page=3')
+      return json({
+        source: 'docs/report.pdf',
+        page: 3,
+        section: 'Outlook',
+        text: 'A factory opens in Porto in 2026.',
+        truncated: false,
+      });
     if (path === '/api/auth/login' || path === '/api/auth/register')
       return json({ user_id: 'reviewer', access_token: 'authored-session', expires_in: 3600 });
     if (path.startsWith('/api/store/threads')) return json({ threads: [] });
@@ -37,7 +45,7 @@ function server(options: { webApproval?: boolean; uploads?: boolean } = {}) {
       const content =
         options.webApproval && streams === 1
           ? 'Human approval required before web-answer generation. Query: Authored query'
-          : '<script>untrusted</script>';
+          : (options.answer ?? '<script>untrusted</script>');
       return new Response(
         'data: ' +
           JSON.stringify({ type: 'message', content: { type: 'ai', content } }) +
@@ -102,6 +110,22 @@ describe('CiteRight UI (authored HTTP responses, no provider)', () => {
     expect(bodies).toHaveLength(2);
     expect(bodies[1].message).toBe('approve');
     expect(bodies[1].thread_id).toBe(bodies[0].thread_id);
+  });
+  it('shows the cited page when a citation chip is clicked', async () => {
+    server({ answer: 'A factory opens in **2026**【source=docs/report.pdf, page=3】.' });
+    const user = await login();
+    await user.type(screen.getByLabelText('Your question'), 'What happens in 2026?');
+    await user.click(screen.getByRole('button', { name: /Send question/ }));
+    const chip = await screen.findByRole('button', {
+      name: 'Show source docs/report.pdf, page 3',
+    });
+    expect(chip.textContent).toBe('report.pdf · p.3');
+    expect(screen.queryByText(/【/)).toBeNull();
+    await user.click(chip);
+    await screen.findByText('A factory opens in Porto in 2026.');
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+    await user.click(chip);
+    expect(screen.queryByText('A factory opens in Porto in 2026.')).toBeNull();
   });
   it('uploads a document, answers from it, and removes it', async () => {
     const calls = server({ uploads: true });

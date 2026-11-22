@@ -17,4 +17,11 @@ export type UploadedDocument = {
   chunk_count: number;
   uploaded_at: number;
 };
+export type Passage = {
+  source: string;
+  page: number;
+  section: string;
+  text: string;
+  truncated: boolean;
+};
 export type Thread = { thread_id: string; last_message_preview?: string; message_count?: number };

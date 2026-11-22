@@ -257,6 +257,8 @@ def test_documents_are_uploaded_listed_and_deleted_per_user(monkeypatch):
     monkeypatch.setenv("USE_CHROMA_RAG", "true")
     monkeypatch.setattr(local_rag, "USE_CHROMA_RAG", True)
     monkeypatch.setattr(local_rag, "_get_uploads_store", lambda: uploads)
+    shared = FakeStore()
+    monkeypatch.setattr(local_rag, "_get_chroma_store", lambda: shared)
     monkeypatch.setattr(service_module, "MAX_UPLOAD_BYTES", 200_000)
 
     with client as c:
@@ -276,6 +278,12 @@ def test_documents_are_uploaded_listed_and_deleted_per_user(monkeypatch):
         assert [doc["document_id"] for doc in listed["documents"]] == [receipt["document_id"]]
         assert c.get("/documents", headers=bob).json()["count"] == 0
         assert c.delete(f"/documents/{receipt['document_id']}", headers=bob).status_code == 404
+
+        cited = {"source": "notes.md", "page": 1}
+        passage = c.get("/sources/passage", params=cited, headers=alice)
+        assert passage.status_code == 200 and "launch is planned for May" in passage.json()["text"]
+        assert c.get("/sources/passage", params=cited, headers=bob).status_code == 404
+        assert c.get("/sources/passage", params=cited).status_code == 401
 
         rejected = c.post("/documents", params={"file_name": "run.exe"}, content=b"MZ", headers=alice)
         assert rejected.status_code == 422
