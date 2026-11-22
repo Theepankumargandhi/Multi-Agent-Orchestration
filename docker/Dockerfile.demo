@@ -1,0 +1,77 @@
+# CiteRight public demo: API and web UI in one container on port 7860, as Hugging Face Spaces runs it.
+# Build locally from the repository root:
+#   docker build -f docker/Dockerfile.demo -t citeright-demo .
+#   docker run --rm -p 7860:7860 -e GROQ_API_KEY=... citeright-demo
+# Nothing persists: accounts, chats and uploads are gone when the container restarts.
+
+FROM node:24.13.1-alpine@sha256:4f696fbf39f383c1e486030ba6b289a5d9af541642fc78ab197e584a113b9c03 AS web
+WORKDIR /web
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+FROM python:3.12.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+COPY requirements-service.txt .
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2,<27' \
+    && python -m pip install --no-cache-dir -r requirements-service.txt
+
+# Hugging Face runs the container as uid 1000.
+RUN useradd --create-home --uid 1000 user && mkdir -p /app/data && chown -R user:user /app
+
+COPY --chown=user:user agent/ ./agent/
+COPY --chown=user:user schema/ ./schema/
+COPY --chown=user:user service/ ./service/
+COPY --chown=user:user scripts/ingestion/ ./scripts/ingestion/
+COPY --chown=user:user run_service.py ./
+COPY --chown=user:user docs/ ./docs/
+COPY --chown=user:user README.md ./README.md
+COPY --from=web --chown=user:user /web/dist ./web/
+
+USER user
+ENV HOME=/home/user \
+    HOST=0.0.0.0 \
+    PORT=7860 \
+    WEB_DIR=/app/web \
+    APP_ENV=production \
+    DEMO_MODE=true \
+    DEMO_QUESTIONS_PER_HOUR=15 \
+    DEMO_QUESTIONS_PER_DAY=300 \
+    DEMO_MAX_DOCUMENTS=3 \
+    MAX_UPLOAD_BYTES=2097152 \
+    RAG_UPLOAD_MAX_CHUNKS=300 \
+    ENABLE_USER_AUTH=true \
+    RAG_EMBEDDING_BACKEND=local \
+    USE_CHROMA_RAG=true \
+    GRAPH_RAG_ENABLED=false \
+    GROUNDING_VERIFICATION_ENABLED=true \
+    GRAPH_WEB_HITL_ENABLED=true \
+    CACHE_USE_REDIS=false \
+    MCP_TOOLS_ENABLED=false \
+    AGENT_MEMORY_ENABLED=false \
+    LANGSMITH_TRACING=false \
+    ANONYMIZED_TELEMETRY=false \
+    RATE_LIMIT_REQUESTS=120 \
+    FORWARDED_ALLOW_IPS=* \
+    CHECKPOINT_DB_PATH=/app/data/checkpoints/checkpoints.db \
+    STORE_DB_PATH=/app/data/store/store.db \
+    LOCAL_RAG_DB_PATH=/app/data/rag/local_rag.db \
+    CHROMA_PERSIST_DIR=/app/data/chroma_db \
+    GRAPH_CHROMA_PERSIST_DIR=/app/data/graph_chroma_db
+
+# Sample documents: this project's own docs, indexed at build time so the first question is fast.
+# A Space README starts with YAML settings; index the text after them.
+RUN awk 'NR==1 && /^---$/ {front=1; next} front && /^---$/ {front=0; next} !front' README.md > README.tmp \
+    && mv README.tmp README.md \
+    && mkdir -p data/checkpoints data/store data/rag \
+    && python scripts/ingestion/ingest_repo_docs.py README.md docs
+
+EXPOSE 7860
+# Sign-in tokens only need to outlive this container, so a missing secret gets a fresh random one.
+CMD ["sh", "-c", "export USER_AUTH_SECRET=\"${USER_AUTH_SECRET:-$(python -c 'import secrets; print(secrets.token_urlsafe(48))')}\"; exec python run_service.py"]

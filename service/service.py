@@ -48,6 +48,7 @@ from schema import (
     UserInput,
     model_dump_compat,
 )
+from service import demo
 from service.persistence_store import open_conversation_store
 from service.request_limits import RequestBodyLimitMiddleware
 
@@ -92,6 +93,7 @@ RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "6
 AGENT_MEMORY_ENABLED = os.getenv("AGENT_MEMORY_ENABLED", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
+QUESTION_QUOTA = demo.QuestionQuota(demo.DEMO_QUESTIONS_PER_HOUR, demo.DEMO_QUESTIONS_PER_DAY)
 _USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{3,64}$")
 _password_hasher = None
 
@@ -551,6 +553,15 @@ def _resolve_metric_path(request: Request) -> str:
 def _body_limit(path: str) -> int:
     # Only document uploads carry files; every other request keeps the small JSON limit.
     return MAX_UPLOAD_BYTES if path == "/documents" else MAX_REQUEST_BYTES
+
+
+def _spend_demo_question(request: Request, user_id: str | None) -> None:
+    """In DEMO_MODE, count one question against the account's and the server's quota."""
+    if not demo.DEMO_MODE:
+        return
+    refused = QUESTION_QUOTA.spend(user_id or (request.client.host if request.client else "unknown"))
+    if refused:
+        raise HTTPException(status_code=429, detail=refused, headers={"Retry-After": "3600"})
 
 
 def _rate_limit_path(path: str) -> str:
@@ -1052,6 +1063,11 @@ async def capabilities():
             "max_bytes": MAX_UPLOAD_BYTES,
             "file_types": sorted(local_rag.UPLOAD_EXTENSIONS),
         },
+        "demo": {
+            "enabled": demo.DEMO_MODE,
+            "questions_per_hour": demo.DEMO_QUESTIONS_PER_HOUR,
+            "max_documents": demo.DEMO_MAX_DOCUMENTS,
+        },
         "grounding_verification": {
             "version": GroundingPolicy().version,
             "enabled": _env_flag("GROUNDING_VERIFICATION_ENABLED", "false"),
@@ -1270,6 +1286,7 @@ async def invoke(user_input: UserInput, request: Request) -> ChatMessage:
     """
     agent: CompiledGraph = app.state.agent
     user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+    _spend_demo_question(request, user_id)
     effective_thread_id = user_input.thread_id or str(uuid4())
     user_input.model = user_input.model or _default_chat_model()
     resume_value = await _resolve_native_resume(
@@ -1511,6 +1528,7 @@ async def stream_agent(user_input: StreamInput, request: Request):
     is also attached to all messages for recording feedback.
     """
     user_id = _get_request_user_id(request) if ENABLE_USER_AUTH else None
+    _spend_demo_question(request, user_id)
     return StreamingResponse(
         message_generator(user_input, user_id=user_id),
         media_type="text/event-stream",
@@ -1751,6 +1769,15 @@ async def upload_document(request: Request, file_name: str):
     data = await request.body()
     if not data:
         raise HTTPException(status_code=422, detail="The file is empty.")
+    if demo.DEMO_MODE:
+        existing = await _run_document_store(local_rag.list_uploads, owner)
+        replacing = any(item["file_name"] == local_rag._safe_upload_name(file_name) for item in existing)
+        if len(existing) >= demo.DEMO_MAX_DOCUMENTS and not replacing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"The demo keeps up to {demo._count(demo.DEMO_MAX_DOCUMENTS, 'document')} per account. "
+                "Remove one first.",
+            )
     try:
         receipt = await _run_document_store(local_rag.ingest_upload, owner, file_name, data)
     except local_rag.UploadError as e:

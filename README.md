@@ -94,6 +94,23 @@ docker compose up --build            # UI on http://127.0.0.1:8080
 
 Data (accounts, conversations, document index) persists in the `citeright_data` volume.
 
+### Public demo (Hugging Face Spaces)
+
+`docker/Dockerfile.demo` runs the API and the UI in one container on port 7860, with this
+project's docs indexed as sample documents. It sets `DEMO_MODE=true`, which caps questions per
+account per hour and for the whole server per day, keeps at most 3 small files per account, and
+tells visitors that nothing persists. To publish your own:
+
+1. Create a [Hugging Face](https://huggingface.co) account and a token with write access.
+2. In this GitHub repository, add the token as the `HF_TOKEN` secret and set the `HF_SPACE`
+   variable to `<your-username>/citeright` (Settings → Secrets and variables → Actions).
+3. Run **Actions → Deploy demo → Run workflow**. It creates the Space and uploads the app.
+4. In the Space's **Settings → Variables and secrets**, add `GROQ_API_KEY` as a secret. The Space
+   rebuilds and restarts.
+
+On the free CPU tier, the Space sleeps when unused and wakes on the next visit, and every restart
+deletes accounts, chats and uploads.
+
 ## Configuration that matters
 
 | Variable | Default | Effect |
@@ -105,13 +122,15 @@ Data (accounts, conversations, document index) persists in the `citeright_data` 
 | `RAG_EMBEDDING_BACKEND` | `local` | `local` (free) or `openai`. |
 | `AGENT_MEMORY_ENABLED` | `false` | Opt-in long-term memory per user. |
 | `MAX_UPLOAD_BYTES` | `10485760` | Largest file accepted by **Upload a document** (other requests keep `MAX_REQUEST_BYTES`). |
+| `DEMO_MODE` | `false` | Public-demo limits: `DEMO_QUESTIONS_PER_HOUR` per account (15), `DEMO_QUESTIONS_PER_DAY` for everyone (300), `DEMO_MAX_DOCUMENTS` per account (3). |
+| `WEB_DIR` | – | Serve the built UI from the API's port, with the API under `/api` (used by the demo image). |
 
 Everything else is documented in [.env.example](.env.example).
 
 ## Testing and evaluation
 
 ```bash
-python -m pytest -q                  # ~180 unit and integration tests, no API key needed
+python -m pytest -q                  # ~220 unit and integration tests, no API key needed
 python -m ruff check .
 cd frontend && npm test              # UI tests with recorded responses
 ```

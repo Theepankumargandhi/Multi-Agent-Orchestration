@@ -1,0 +1,71 @@
+# Publishes the public demo to a Hugging Face Space. Runs only when started from the Actions tab.
+# Needs the HF_TOKEN secret (a Hugging Face token with write access) and the HF_SPACE
+# variable (<username>/<space-name>). The model key lives in the Space's own secrets.
+name: Deploy demo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Upload to Hugging Face Spaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE: ${{ vars.HF_SPACE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check settings
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::Add a Hugging Face write token as the HF_TOKEN repository secret."
+            exit 1
+          fi
+          if ! echo "$HF_SPACE" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "::error::Set the HF_SPACE repository variable to <username>/<space-name>."
+            exit 1
+          fi
+
+      - name: Assemble the Space
+        run: |
+          mkdir -p space/scripts
+          cp -r agent schema service frontend docs requirements-service.txt run_service.py LICENSE .dockerignore space/
+          cp -r scripts/ingestion space/scripts/
+          cp docker/Dockerfile.demo space/Dockerfile
+          cat docker/space-header.md README.md > space/README.md
+          find space -name '__pycache__' -prune -exec rm -rf {} +
+          rm -rf space/frontend/node_modules space/frontend/dist
+          du -sh space
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Upload
+        run: |
+          python -m pip install --quiet 'huggingface_hub>=0.34,<2'
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          space = os.environ["HF_SPACE"]
+          api.create_repo(space, repo_type="space", space_sdk="docker", exist_ok=True)
+          api.upload_folder(
+              folder_path="space",
+              repo_id=space,
+              repo_type="space",
+              commit_message=f"Deploy {os.environ['GITHUB_SHA'][:7]}",
+              delete_patterns="*",
+          )
+          print(f"Deployed. Build log and app: https://huggingface.co/spaces/{space}")
+          PY

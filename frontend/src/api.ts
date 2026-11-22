@@ -46,6 +46,18 @@ export const apiPath = (path: string) => {
 };
 
 async function checked(response: Response): Promise<Response> {
+  if (response.status === 429) {
+    // Demo limits explain when to try again; other 429s (proxy, rate limiter) are plain text.
+    const detail = await readJSON<{ detail?: unknown }>(response)
+      .then((body) => body.detail)
+      .catch(() => undefined);
+    throw new ApiError(
+      429,
+      typeof detail === 'string' && detail.length <= 300
+        ? detail
+        : 'The service is busy or a request limit was reached.',
+    );
+  }
   if (!response.ok) {
     // Never reflect raw server/proxy errors, submitted passwords or provider response bodies.
     const message =
