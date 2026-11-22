@@ -8,6 +8,7 @@ export type ChatMessage = {
 export type Capabilities = {
   models: { id: string; label: string }[];
   features: Record<string, boolean>;
+  demo?: { enabled: boolean; questions_per_hour: number; max_documents: number };
 };
 export type Session = { access_token: string; user_id: string; expires_in: number };
 export type UploadedDocument = {

@@ -113,6 +113,13 @@ function Login({
               Create account
             </button>
           </div>
+          {capabilities?.demo?.enabled && (
+            <Notice>
+              Public demo: pick any user ID, no email needed. Up to{' '}
+              {capabilities.demo.questions_per_hour} questions an hour. Accounts, chats and uploaded
+              files are deleted when the server restarts, so don&apos;t upload anything private.
+            </Notice>
+          )}
           {status && <Notice>{status}</Notice>}
           {error && <Notice error>{error}</Notice>}
           {capabilities?.features.user_authentication === false && (

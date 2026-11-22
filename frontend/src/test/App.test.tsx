@@ -3,7 +3,9 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import App from '../App';
 
-function server(options: { webApproval?: boolean; uploads?: boolean; answer?: string } = {}) {
+function server(
+  options: { webApproval?: boolean; uploads?: boolean; answer?: string; demo?: boolean } = {},
+) {
   const calls: { path: string; init?: RequestInit }[] = [];
   let streams = 0;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -18,6 +20,7 @@ function server(options: { webApproval?: boolean; uploads?: boolean; answer?: st
       return json({
         models: [{ id: 'authored-model', label: 'Authored test model' }],
         features: { user_authentication: true, document_upload: Boolean(options.uploads) },
+        ...(options.demo && { demo: { enabled: true, questions_per_hour: 15, max_documents: 3 } }),
       });
     if (path === '/api/documents') return json({ count: 0, documents: [] });
     if (path.startsWith('/api/documents?file_name='))
@@ -40,6 +43,14 @@ function server(options: { webApproval?: boolean; uploads?: boolean; answer?: st
     if (path === '/api/auth/login' || path === '/api/auth/register')
       return json({ user_id: 'reviewer', access_token: 'authored-session', expires_in: 3600 });
     if (path.startsWith('/api/store/threads')) return json({ threads: [] });
+    if (path === '/api/stream' && options.demo)
+      return json(
+        {
+          detail:
+            'The demo allows 15 questions an hour per account. Try again in about 12 minutes.',
+        },
+        429,
+      );
     if (path === '/api/stream') {
       streams += 1;
       const content =
@@ -96,6 +107,16 @@ describe('CiteRight UI (authored HTTP responses, no provider)', () => {
     await screen.findByRole('heading', { name: 'Welcome to CiteRight' });
     expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('');
     expect(localStorage.length + sessionStorage.length).toBe(0);
+  });
+  it('explains the public demo and its question limit', async () => {
+    server({ demo: true });
+    const { unmount } = render(<App />);
+    expect(await screen.findByText(/Public demo: pick any user ID/)).toBeTruthy();
+    unmount();
+    const user = await login();
+    await user.type(screen.getByLabelText('Your question'), 'One more?');
+    await user.click(screen.getByRole('button', { name: /Send question/ }));
+    expect(await screen.findByText(/Try again in about 12 minutes/)).toBeTruthy();
   });
   it('resumes web approval explicitly within the same conversation', async () => {
     const calls = server({ webApproval: true });

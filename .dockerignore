@@ -29,7 +29,6 @@ graph_chroma_db
 rag_docs
 graph_rag_docs
 media
-docs
 **/node_modules
 frontend/dist
 frontend/coverage

@@ -211,3 +211,16 @@ jobs:
 
       - name: Build web image
         run: docker build -f docker/Dockerfile.web -t citeright-web:ci .
+
+      - name: Build and start the public demo image
+        run: |
+          docker build -f docker/Dockerfile.demo -t citeright-demo:ci .
+          docker run -d --name demo -p 7860:7860 citeright-demo:ci
+          for attempt in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:7860/api/readyz && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:7860/api/readyz
+          curl -fsS http://127.0.0.1:7860/ | grep -q '<div id="root">'
+          curl -fsS http://127.0.0.1:7860/api/capabilities | grep -q '"demo":{"enabled":true'
+          docker logs demo 2>&1 | tail -20
