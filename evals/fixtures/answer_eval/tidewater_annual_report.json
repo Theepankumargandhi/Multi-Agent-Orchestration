@@ -1,0 +1,41 @@
+{
+  "file_name": "Tidewater_Annual_Report_2025.pdf",
+  "note": "Fictional organisation and figures, written for this evaluation so no model can know them from training.",
+  "pages": [
+    [
+      "Tidewater Solar Cooperative - Annual Report 2025",
+      "Overview",
+      "Tidewater Solar Cooperative was founded in 2014 in Galway, Ireland.",
+      "At the end of 2025 the cooperative had 2,340 member households.",
+      "The board is chaired by Aoife Brennan, who was re-elected in April 2025.",
+      "Our mission is to give every member a share of locally generated solar power."
+    ],
+    [
+      "Generation",
+      "Installed capacity grew from 18.4 MW to 23.1 MW during 2025.",
+      "The cooperative produced 27.6 GWh of electricity in 2025.",
+      "The Ballyconneely array, rated at 6.2 MW, was commissioned in June 2025.",
+      "The average capacity factor across all sites was 13.6 percent."
+    ],
+    [
+      "Finances",
+      "Revenue was 4.82 million euro in 2025, up 11 percent from 4.34 million euro in 2024.",
+      "The net surplus for the year was 610,000 euro.",
+      "The cooperative returned 212,000 euro to members as dividends.",
+      "The board approved a dividend rate of 3.5 percent."
+    ],
+    [
+      "Operations",
+      "Tidewater employs 14 staff across three sites.",
+      "Inverter failures caused 9 days of downtime at the Clifden site in March 2025.",
+      "The 2 MWh battery storage pilot was delayed to 2026 because grid connection permits were not issued in time."
+    ],
+    [
+      "Outlook for 2026",
+      "The cooperative targets 30 MW of installed capacity by the end of 2026.",
+      "It plans to add 600 member households in 2026.",
+      "The board does not plan to raise member fees in 2026.",
+      "Grid curtailment rose to 7 percent of output in 2025 and is the main risk to revenue."
+    ]
+  ]
+}
