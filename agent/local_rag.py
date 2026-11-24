@@ -36,6 +36,9 @@ RAG_CACHE_TTL_SECONDS = int(os.getenv("RAG_CACHE_TTL_SECONDS", "600"))
 RAG_CACHE_MAX_ENTRIES = max(10, int(os.getenv("RAG_CACHE_MAX_ENTRIES", "1000")))
 RAG_BM25_MAX_CORPUS = max(100, int(os.getenv("RAG_BM25_MAX_CORPUS", "5000")))
 RAG_RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "gpt-4o-mini")
+# How much of each retrieved chunk the model sees. Chunks are about CHUNK_SIZE characters; cutting them
+# to a 260-character preview hid most answers (a list or table further down the chunk) from the model.
+RAG_PASSAGE_MAX_CHARS = max(200, int(os.getenv("RAG_PASSAGE_MAX_CHARS", "1200")))
 # Files people upload from the app live in their own collection, each chunk tagged with its owner.
 CHROMA_UPLOADS_COLLECTION_NAME = os.getenv("CHROMA_UPLOADS_COLLECTION_NAME", "user_uploads")
 UPLOAD_EXTENSIONS = {".pdf", ".md", ".markdown", ".txt"}
@@ -171,6 +174,12 @@ def format_sqlite_context(candidates, *, windowed=False) -> str:
             snippet = snippet[:237] + "..."
         lines.append(f"- {candidate['title']} (score={candidate['score']:g}, source={candidate['source']}): {snippet}")
     return "\n".join(lines)
+
+
+def _passage_text(text: str | None) -> str:
+    """A retrieved chunk as one line for the model: whole, up to RAG_PASSAGE_MAX_CHARS."""
+    passage = re.sub(r"\s+", " ", text or "").strip()
+    return passage if len(passage) <= RAG_PASSAGE_MAX_CHARS else passage[: RAG_PASSAGE_MAX_CHARS - 3] + "..."
 
 
 def format_hybrid_context(candidates) -> str:
@@ -771,9 +780,7 @@ def _search_chroma_knowledge(query: str, limit: int = 3) -> str | None:
         metadata = getattr(doc, "metadata", {}) or {}
         source = str(metadata.get("source", "unknown"))
         page = metadata.get("page", "n/a")
-        snippet = (getattr(doc, "page_content", "") or "").strip().replace("\n", " ")
-        if len(snippet) > 240:
-            snippet = snippet[:237] + "..."
+        snippet = _passage_text(getattr(doc, "page_content", ""))
         label = f"{score_mode}={score:.4f}" if isinstance(score, (int, float)) else f"{score_mode}=n/a"
         lines.append(f"- source={source}, page={page}, {label}: {snippet}")
     return "\n".join(lines)
@@ -816,7 +823,7 @@ def _llm_rerank_candidates(query: str, candidates: List[Dict[str, Any]], top_k: 
         candidate_lines.append(
             (
                 f"{i}. file={c.get('file_name','unknown')} page={c.get('page','n/a')}\n"
-                f"snippet: {c.get('snippet','')}"
+                f"snippet: {str(c.get('snippet', ''))[:400]}"
             )
         )
 
@@ -959,9 +966,7 @@ def _search_chroma_hybrid_knowledge(query: str, limit: int = 3, owner: str | Non
     candidates: List[Dict[str, Any]] = []
     for doc_idx, score_blob in fused_sorted[: max(limit, RAG_RERANK_TOP_K)]:
         metadata = metas[doc_idx] if doc_idx < len(metas) and isinstance(metas[doc_idx], dict) else {}
-        snippet = (docs[doc_idx] or "").strip().replace("\n", " ")
-        if len(snippet) > 260:
-            snippet = snippet[:257] + "..."
+        snippet = _passage_text(docs[doc_idx])
         candidates.append(
             {
                 "doc_idx": doc_idx,
