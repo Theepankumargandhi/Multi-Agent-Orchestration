@@ -145,6 +145,11 @@ CI also runs offline quality gates that must pass on every pull request:
 | `evals.evidence_quality_evaluation` | Prompt injection, duplicates, stale and conflicting evidence. |
 | `evals.memory_evaluation` | Tenant isolation, memory poisoning, deletion. |
 
+**Answer accuracy** is measured by asking the real agent 50 questions (project docs, an uploaded
+report, questions it cannot answer, false premises, maths and safety): **43 of 50 pass**, every
+document answer carries a citation, and the median answer takes 2.1 s. Method, results and the
+remaining failures: [docs/answer-evaluation.md](docs/answer-evaluation.md).
+
 Retrieval quality is measured on 28 labelled questions about this repository's docs
 (`evals/datasets/retrieval_repo_docs.jsonl`): the right document is in the top 3 for 27 of them.
 `python -m evals.rerank_ablation` reruns it against your index and compares optional reranking.
@@ -157,9 +162,10 @@ A live smoke test against Groq is opt-in:
 - The grounding check is a deterministic heuristic, not an entailment model. It misses paraphrased
   opposites outside its word lists, unit conversions and implicit negation. Measured results are in
   [docs/grounding-verification.md](docs/grounding-verification.md).
-- The offline gates test the routing, verification and memory logic with authored cases. They are
-  not a measure of answer accuracy on real questions; that evaluation is still to be built.
-- Groq's free tier rate-limits the safety model after a few quick requests.
+- The offline gates test logic with authored cases. Answer accuracy is measured separately on 50
+  questions; scoring is strict keyword matching, and results vary by a question or two between runs.
+- Groq's free tier allows the safety model 3 requests a minute; beyond that a second model does the
+  check, so answers no longer wait.
 - Web search uses DuckDuckGo results and can return nothing for narrow queries.
 
 ## Repository map
