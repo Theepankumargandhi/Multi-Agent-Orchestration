@@ -17,6 +17,9 @@ GroundingAction = Literal["pass", "repair", "abstain", "not_required"]
 _URL_RE = re.compile(r"https?://[^\s)\]>]+")
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((https?://[^)]+)\)")
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+# A piece never ends on a bare list number ("2.") or an abbreviation ("e.g.", "vs."): split there,
+# repair kept the orphaned "2." after dropping its claim, and "vs." cut a claim in half.
+_JOINS_NEXT_RE = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s*$|\b(?:e\.g|i\.e|vs|cf)\.\s*$", re.I)
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
@@ -112,8 +115,14 @@ def _content_tokens(value: str) -> set[str]:
     return {item for item in _tokens(value) if not item.isdigit() and item not in _POLARITY_WORDS}
 
 
+# Models group digits with spaces ("10 485 760 bytes"), which read as three numbers. Join thin or
+# no-break spaces, and plain spaces only with two or more groups, so "page 3 100 people" stays apart.
+_GROUPED_NUMBER_RE = re.compile(r"\b\d{1,3}(?:[\u00a0\u202f\u2009]\d{3})+\b|\b\d{1,3}(?: \d{3}){2,}\b")
+
+
 def _numbers(value: str) -> set[str]:
-    return {item.replace(",", "") for item in _NUMBER_RE.findall(_URL_RE.sub(" ", value))}
+    value = _GROUPED_NUMBER_RE.sub(lambda match: re.sub(r"\D", "", match.group()), _URL_RE.sub(" ", value))
+    return {item.replace(",", "") for item in _NUMBER_RE.findall(value)}
 
 
 def _clauses(text: str) -> list[str]:
@@ -163,7 +172,16 @@ def _side_numbers_match(side: str, evidence_sentences: list[str]) -> bool:
     return overlap >= 0.5 and numbers <= _numbers(sentence)
 
 
-def _part_contradiction(part: str, evidence_sentences: list[str]) -> str:
+def _numbers_stated(part: str, sentences: list[str]) -> bool:
+    """Whether some sentence about the same subject states every number in the part."""
+    numbers, content = _numbers(part), _content_tokens(part)
+    return bool(numbers and content) and any(
+        len(content & _content_tokens(sentence)) / len(content) >= 0.5 and numbers <= _numbers(sentence)
+        for sentence in sentences
+    )
+
+
+def _part_contradiction(part: str, evidence_sentences: list[str], all_sentences: list[str] = ()) -> str:
     content = _content_tokens(part)
     # Too short to judge, e.g. a markdown fragment such as "`code_agent/`".
     if not content or len(_tokens(part)) < 3:
@@ -177,7 +195,12 @@ def _part_contradiction(part: str, evidence_sentences: list[str]) -> str:
     if part_numbers and sentence_numbers and not part_numbers <= sentence_numbers:
         # A claim can join two evidence sentences ("opens in 2026 and hires 350 engineers"),
         # so each side of an "and" may take its numbers from the sentence that side matches.
-        if not all(_side_numbers_match(side, evidence_sentences) for side in _AND_RE.split(part)):
+        # Retrieved text often holds other figures about the same subject ("grew to 23 MW in 2025"
+        # beside "targets 30 MW by 2026"); a different figure contradicts only when no retrieved
+        # sentence about the subject states the claim's own numbers.
+        if not all(_side_numbers_match(side, evidence_sentences) for side in _AND_RE.split(part)) and not (
+            _numbers_stated(part, all_sentences)
+        ):
             return "numeric"
     # A negation contradicts only when the other side is not negated and contains the
     # word it governs: "not available" against "available", but "runs tests, not
@@ -199,16 +222,20 @@ def _part_contradiction(part: str, evidence_sentences: list[str]) -> str:
     return ""
 
 
-def _contradiction(claim: str, evidence_text: str) -> str:
+def _sentences(text: str) -> list[str]:
+    return [item for item in _SENTENCE_RE.split(_CITATION_MARKER_RE.sub(" ", text)) if item.strip()]
+
+
+def _contradiction(claim: str, evidence_text: str, all_sentences: list[str] = ()) -> str:
     """Name how evidence about the same subject states the opposite of the claim, if it does.
 
     Word overlap alone scores "X is not available" as strong support for
     "X is available"; this checks numbers, negation and opposite words for each
     clause of the claim.
     """
-    evidence_sentences = [item for item in _SENTENCE_RE.split(_CITATION_MARKER_RE.sub(" ", evidence_text)) if item.strip()]
+    evidence_sentences = _sentences(evidence_text)
     for part in _clauses(_CITATION_MARKER_RE.sub(" ", _MARKDOWN_LINK_RE.sub(" ", claim))):
-        found = _part_contradiction(part, evidence_sentences)
+        found = _part_contradiction(part, evidence_sentences, all_sentences)
         if found:
             return found
     return ""
@@ -310,7 +337,8 @@ def evidence_from_state(state: Mapping[str, object]) -> list[EvidenceItem]:
 def extract_claims(answer: str) -> list[str]:
     clean = re.sub(r"```.*?```", "", answer or "", flags=re.DOTALL)
     claims: list[str] = []
-    for fragment in _SENTENCE_RE.split(clean):
+    pieces, rest = take_complete_sentences(clean)
+    for fragment in [*pieces, rest]:
         claim = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", fragment).strip()
         if not claim or len(claim) < 12 or claim.endswith("?"):
             continue
@@ -351,9 +379,10 @@ def _assess_claim(
     threshold = policy.min_high_risk_claim_score if high_risk else policy.min_claim_score
     # Any qualifying evidence that states the opposite blocks the claim, even
     # if another item appears to support it.
+    all_sentences = [sentence for item in evidence for sentence in _sentences(item.text)]
     contradiction = next(
         (found for item, score in scored if score >= threshold
-         for found in [_contradiction(claim, item.text)] if found),
+         for found in [_contradiction(claim, item.text, all_sentences)] if found),
         "",
     )
     supported = best_score >= threshold and not claim_invalid and not contradiction
@@ -384,9 +413,11 @@ def take_complete_sentences(buffer: str) -> tuple[list[str], str]:
         # Separator at the very end may still grow, or the next token may be a new list item.
         if match.end() == len(buffer):
             break
-        if buffer[start:match.end()].count("```") % 2:
+        piece = buffer[start:match.end()]
+        # A line break always ends a piece; a space after "2." or "e.g." does not.
+        if piece.count("```") % 2 or ("\n" not in match.group() and _JOINS_NEXT_RE.search(piece)):
             continue
-        pieces.append(buffer[start:match.end()])
+        pieces.append(piece)
         start = match.end()
     return pieces, buffer[start:]
 
@@ -518,6 +549,8 @@ def _keep_supported_fragments(answer: str, supported: set[str]) -> str:
     kept = [
         piece for piece in [*pieces, rest]
         if all(claim in supported for claim in extract_claims(piece))
+        # A citation left without its sentence is not an answer.
+        and (_CITATION_MARKER_RE.sub("", piece).strip() or not piece.strip())
     ]
     return "".join(kept).strip()
 

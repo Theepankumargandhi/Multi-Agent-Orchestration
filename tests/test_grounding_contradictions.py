@@ -89,3 +89,40 @@ def test_one_contradiction_blocks_release_even_with_high_coverage():
     assert report.reason == "remove_contradicted_claims"
     repaired = repair_answer(report, evidence)
     assert "uses LangGraph" in repaired and "not built on Python" not in repaired
+
+
+def test_other_figures_about_the_subject_do_not_contradict_a_claim_stated_elsewhere():
+    # Found by the answer evaluation: two pages of one report, each its own evidence item.
+    pages = (
+        "- source=report.pdf, page=2, fused=0.03: Generation. Installed capacity grew from 18.4 MW to 23.1 MW "
+        "during 2025.\n"
+        "- source=report.pdf, page=5, fused=0.03: Outlook for 2026. The cooperative targets 30 MW of installed "
+        "capacity by the end of 2026."
+    )
+    supported = _claim("Tidewater targets 30 MW of installed capacity by the end of 2026.", pages)
+    assert supported.contradiction == "" and supported.supported
+    # A figure no retrieved sentence states is still a contradiction.
+    wrong = _claim("Tidewater targets 45 MW of installed capacity by the end of 2026.", pages)
+    assert wrong.contradiction == "numeric" and not wrong.supported
+
+
+def test_digits_grouped_with_spaces_are_one_number():
+    evidence = "- source=README.md, page=8: | `MAX_UPLOAD_BYTES` | `10485760` | Largest file accepted by Upload a document. |"
+    claim = _claim("The largest file accepted by Upload a document is 10 485 760 bytes.", evidence)
+    assert claim.contradiction == "" and claim.supported
+    from agent.grounding import _numbers
+
+    assert _numbers("10 485 760 bytes, or 2,340 homes") == {"10485760", "2340"}
+    # One plain space between two numbers keeps them apart.
+    assert _numbers("chapter 3 100 pages") == {"3", "100"}
+
+
+def test_repair_drops_citations_left_without_their_sentence():
+    from agent.grounding import GroundingReport
+
+    answer = "Tidewater uses Acme Bank【source=report.pdf, page=1】. 【source=report.pdf, page=4】"
+    report = verify_grounding(route="rag", answer=answer, evidence=evidence_from_state(
+        {"rag_notes": "- source=report.pdf, page=1: Tidewater has 14 staff. Tidewater uses Acme Bank for loans."}))
+    assert isinstance(report, GroundingReport)
+    repaired = repair_answer(report.model_copy(update={"action": "repair"}), [], answer)
+    assert "【" not in repaired.replace("【source=report.pdf, page=1】", "")
