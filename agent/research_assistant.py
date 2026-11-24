@@ -264,7 +264,7 @@ Rules:
 - If local RAG evidence is used, cite it as its evidence block says.
 - Cite only evidence supplied in this conversation. Never invent sources, pages or links.
 - If knowledge-graph evidence is used, explain the relationship path clearly.
-- For math results, show human-readable equations (e.g., 300 * 200).
+- For math results, show human-readable equations (e.g., 300 * 200), with no citations or reference list.
 - Write plain text with Markdown bold, lists and code only. Never use LaTeX such as \\( \\), \\[ \\] or
   {{,}}: the app shows it as raw symbols.
 - Do not echo internal field labels like 'User query:', 'Route:', or 'Web evidence:'.
@@ -564,6 +564,31 @@ def _is_vague_query(query: str) -> bool:
         return True
 
     return False
+
+
+_FOLLOW_UP_START_RE = re.compile(r"^(?:and|also|what about|how about|and what about|what if|then)\b", re.I)
+_FOLLOW_UP_WORDS = {"it", "its", "they", "them", "their", "this", "that", "these", "those",
+                    "he", "she", "him", "her", "his", "there", "same"}
+
+
+def _looks_like_follow_up(query: str) -> bool:
+    """"And in 2024?" or "Is it enabled by default?": only the earlier turns say what it is about."""
+    q = _strip_local_prefix(query).strip()
+    tokens = re.findall(r"[a-z0-9']+", q.lower())
+    if not tokens or len(tokens) > 10:
+        return False
+    return bool(_FOLLOW_UP_START_RE.match(q)) or any(token in _FOLLOW_UP_WORDS for token in tokens)
+
+
+def _earlier_turns(state: AgentState, limit: int = 4, chars: int = 400) -> list[str]:
+    """The last few user and assistant messages before the newest question, shortened."""
+    messages = [m for m in state.get("messages", []) if m.type in {"human", "ai"} and str(m.content).strip()]
+    if messages and messages[-1].type == "human":
+        messages = messages[:-1]
+    labels = {"human": "User", "ai": "Assistant"}
+    return [
+        f"{labels[m.type]}: {_strip_local_prefix(str(m.content)).strip()[:chars]}" for m in messages[-limit:]
+    ]
 
 
 def _needs_clarification(query: str) -> bool:
@@ -1201,6 +1226,13 @@ async def intent_router_agent(state: AgentState, config: RunnableConfig):
     route_reason = "Default general fallback."
     low_signal = False
 
+    if not rewrite_done and _looks_like_follow_up(query) and _earlier_turns(state):
+        return {
+            "route": "rewrite",
+            "route_confidence": 0.9,
+            "route_reason": "Follow-up question; rewrite it from the conversation.",
+        }
+
     if forced_local:
         stripped = _strip_local_prefix(query)
         if not stripped:
@@ -1298,6 +1330,30 @@ async def clarification_agent(state: AgentState, config: RunnableConfig):
 
 async def query_rewriter_agent(state: AgentState, config: RunnableConfig):
     query = state.get("query", "").strip()
+
+    earlier = _earlier_turns(state)
+    if earlier and _looks_like_follow_up(query):
+        standalone = await _call_llm(
+            (
+                "Rewrite the user's latest message as one standalone question that can be understood "
+                "without the conversation. Use the earlier turns only to fill in what the message "
+                "refers to; keep its meaning, do not answer it, and return only the question."
+            ),
+            "Earlier conversation:\n" + "\n".join(earlier)
+            + f"\n\nLatest message: {_strip_local_prefix(query)}",
+            config,
+            max_completion_tokens=600,
+        )
+        standalone = (standalone or "").strip().strip('"').splitlines()[0:1]
+        standalone = standalone[0].strip() if standalone else ""
+        if standalone and len(standalone) <= 500:
+            if _has_local_prefix(query):
+                standalone = f"local: {standalone}"
+            return {
+                "rewritten_query": standalone,
+                "rewrite_done": True,
+                "rewrite_notes": f"Follow-up rewritten from the conversation: {standalone}",
+            }
 
     # Prefer deterministic rewrite for known vague patterns.
     rule_based = _rule_based_rewrite(query)

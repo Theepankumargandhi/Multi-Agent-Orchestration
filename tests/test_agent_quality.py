@@ -318,3 +318,38 @@ def test_safety_categories_say_what_they_cover():
     # A bare "Privacy" refused questions about what an uploaded report states.
     assert "S7: Privacy. Seeking or exposing sensitive non-public personal information" in categories_text
     assert "Questions about what a document, report or public source states are not this." in categories_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("follow_up", ["Is it enabled by default?", "And 20 percent?", "local: And in 2024?"])
+async def test_follow_ups_are_rewritten_from_the_conversation_not_refused(follow_up):
+    from langchain_core.messages import AIMessage
+
+    from agent.research_assistant import query_rewriter_agent
+
+    history = [HumanMessage(content="local: What was revenue in 2025?"), AIMessage(content="4.82 million euro."),
+               HumanMessage(content=follow_up)]
+    config = {"configurable": {"model": "unused"}}
+    routed = await intent_router_agent({"messages": history, "query": follow_up}, config)
+    assert routed["route"] == "rewrite"
+
+    async def standalone(system, user, config, **kwargs):
+        # The model sees earlier turns without the "local:" prefix, and the latest message.
+        assert "User: What was revenue in 2025?" in user and "Assistant: 4.82 million euro." in user
+        return "What was revenue in 2024?"
+
+    with patch("agent.research_assistant._call_llm", standalone):
+        rewritten = await query_rewriter_agent({"messages": history, "query": follow_up}, config)
+    prefix = "local: " if follow_up.startswith("local:") else ""
+    assert rewritten["rewritten_query"] == f"{prefix}What was revenue in 2024?"
+    assert rewritten["rewrite_done"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_first_message_with_a_pronoun_still_asks_for_clarification():
+    # With no earlier turns there is nothing to resolve "it" against.
+    result = await intent_router_agent(
+        {"messages": [HumanMessage(content="Is it enabled?")], "query": "Is it enabled?"},
+        {"configurable": {"model": "unused"}},
+    )
+    assert result["route"] == "clarify"

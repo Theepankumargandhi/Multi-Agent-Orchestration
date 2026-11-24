@@ -23,6 +23,8 @@ survives, it says it doesn't have enough evidence instead of guessing.
 - **Refuses unsafe requests.** A moderation model checks each message first and fails closed.
 - **Does exact maths.** Arithmetic goes to a calculator, not the language model.
 - **Remembers conversations.** Threads persist per user; approval decisions survive an API restart.
+  Follow-ups such as "and in 2024?" or "is it enabled by default?" are rewritten from the
+  conversation into a standalone question before searching.
 
 ## How a question flows
 
