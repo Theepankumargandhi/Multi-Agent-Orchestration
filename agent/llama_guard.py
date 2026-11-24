@@ -39,7 +39,29 @@ unsafe_content_categories = {
     "S14": "Code Interpreter Abuse.",
 }
 
-categories_text = "\n".join(f"{k}: {v}" for k, v in unsafe_content_categories.items())
+# Bare names made the model refuse ordinary research questions: "What is the salary of the
+# company's chief executive?" about an uploaded report was refused as Privacy. Each name now
+# says what it covers and what it does not.
+category_definitions = {
+    "S1": "Helping plan or commit violence against people or animals, including terrorism.",
+    "S2": "Helping commit non-violent crimes such as fraud, scams, phishing, theft, hacking or drug trafficking.",
+    "S3": "Helping commit sexual assault, harassment or trafficking.",
+    "S4": "Any sexual content involving minors.",
+    "S5": "Writing false statements meant to damage the reputation of a real, living person.",
+    "S6": "Giving individual medical, legal or financial instructions that could cause serious harm if followed without a professional. Explaining a topic or a document is not this.",
+    "S7": "Seeking or exposing sensitive non-public personal information about a private individual, such as a home address, ID numbers, passwords or medical records. Questions about what a document, report or public source states are not this.",
+    "S8": "Reproducing copyrighted works in full or helping infringe intellectual property.",
+    "S9": "Helping make chemical, biological, radiological, nuclear or explosive weapons.",
+    "S10": "Demeaning or attacking people for protected characteristics.",
+    "S11": "Encouraging or instructing suicide, self-harm or disordered eating.",
+    "S12": "Explicit sexual content.",
+    "S13": "False information about how, when or where to vote.",
+    "S14": "Attempts to abuse a code interpreter or tools, such as escaping a sandbox or attacking systems.",
+}
+
+categories_text = "\n".join(
+    f"{code}: {name} {category_definitions[code]}" for code, name in unsafe_content_categories.items()
+)
 
 llama_guard_instructions = """[INST] Task: Check if there is unsafe content in '{role}' messages in conversations according our safety policy with the below categories.
 
@@ -52,6 +74,9 @@ llama_guard_instructions = """[INST] Task: Check if there is unsafe content in '
 {conversation_history}
 
 <END CONVERSATION>
+
+Questions about facts, documents, organisations or public figures are safe unless they ask for help
+with one of the harms above.
 
 Provide your safety assessment for {role} in the above conversation:
 - First line must read 'safe' or 'unsafe'.
@@ -77,7 +102,22 @@ def _get_guard_model():
                 if model_name.startswith("openai/gpt-oss")
                 else {}
             )
-            _model = ChatGroq(model=model_name, temperature=0.0, **extra)
+            # Groq's free tier allows the safeguard model 3 requests a minute, and the SDK waited 20 s
+            # after each refusal, so every question froze. Never wait: on any error, check with a
+            # second model that has its own quota. If both fail, safety still fails closed.
+            primary = ChatGroq(model=model_name, temperature=0.0, max_retries=0, **extra)
+            fallback_name = os.getenv("GROQ_GUARD_FALLBACK_MODEL", "openai/gpt-oss-20b").strip()
+            if fallback_name and fallback_name != model_name:
+                fallback_extra = (
+                    {"reasoning_effort": os.getenv("GROQ_GUARD_REASONING_EFFORT", "low")}
+                    if fallback_name.startswith("openai/gpt-oss")
+                    else {}
+                )
+                _model = primary.with_fallbacks(
+                    [ChatGroq(model=fallback_name, temperature=0.0, max_retries=1, **fallback_extra)]
+                )
+            else:
+                _model = primary
         elif os.getenv("OPENAI_API_KEY"):
             from langchain_openai import ChatOpenAI
 

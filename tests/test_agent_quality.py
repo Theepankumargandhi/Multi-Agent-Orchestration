@@ -261,3 +261,60 @@ def test_knowledge_graph_extracts_predicates_and_multihop_path():
     relationships = _select_relationships(graph, "How does FastAPI reach ChromaDB?", limit=5)
     predicates = {row[2] for row in relationships}
     assert {"calls", "uses"}.issubset(predicates)
+
+
+class _ExpressionModel:
+    """Stands in for the chat model's structured output in the word-problem path."""
+
+    def __init__(self, expression):
+        self.expression = expression
+
+    def with_structured_output(self, schema):
+        return self
+
+    async def ainvoke(self, messages, config=None):
+        return {"expression": self.expression}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("84.60 / 4", "84.60 / 4 = 21.15"),
+        # The model may only rearrange the question's numbers; an invented one is refused.
+        ("84.60 / 5", "Could not extract a valid math expression."),
+        ("import os", "Could not extract a valid math expression."),
+    ],
+)
+async def test_word_problems_are_translated_by_the_model_and_computed_by_the_calculator(expression, expected):
+    question = "A bill of 84.60 is split equally between 4 people. How much does each person pay?"
+    with (
+        patch("agent.research_assistant.mcp_calculator", AsyncMock(return_value=(None, "disabled"))),
+        patch("agent.research_assistant._get_model", return_value=_ExpressionModel(expression)),
+    ):
+        result = await math_agent({"route": "math", "query": question}, {})
+    assert result["math_result"] == expected
+
+
+def test_safety_check_never_waits_on_a_rate_limited_model(monkeypatch):
+    from agent import llama_guard as guard
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key-not-used")
+    monkeypatch.delenv("GROQ_GUARD_MODEL", raising=False)
+    monkeypatch.delenv("GROQ_GUARD_FALLBACK_MODEL", raising=False)
+    monkeypatch.setattr(guard, "_model", None)
+    model = guard._get_guard_model()
+    # The free tier allows the safeguard model 3 requests a minute; a refusal must go straight
+    # to the second model instead of the SDK's 20-second retry.
+    assert model.runnable.model_name == "openai/gpt-oss-safeguard-20b"
+    assert model.runnable.max_retries == 0
+    assert [item.model_name for item in model.fallbacks] == ["openai/gpt-oss-20b"]
+    monkeypatch.setattr(guard, "_model", None)
+
+
+def test_safety_categories_say_what_they_cover():
+    from agent.llama_guard import categories_text
+
+    # A bare "Privacy" refused questions about what an uploaded report states.
+    assert "S7: Privacy. Seeking or exposing sensitive non-public personal information" in categories_text
+    assert "Questions about what a document, report or public source states are not this." in categories_text

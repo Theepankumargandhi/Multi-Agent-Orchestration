@@ -71,17 +71,31 @@ def test_reasoning_effort_is_only_sent_to_gpt_oss_guards(monkeypatch, model, exp
     from types import ModuleType
 
     built = []
+
+    class FakeChatGroq:
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+
+        def with_fallbacks(self, fallbacks):
+            return self
+
     module = ModuleType("langchain_groq")
-    module.ChatGroq = lambda **kwargs: built.append(kwargs) or object()
+    module.ChatGroq = FakeChatGroq
     monkeypatch.setitem(sys.modules, "langchain_groq", module)
     monkeypatch.setattr(guard, "_model", None)
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
     monkeypatch.setenv("GROQ_GUARD_MODEL", model)
     monkeypatch.delenv("GROQ_GUARD_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("GROQ_GUARD_FALLBACK_MODEL", raising=False)
 
     guard._get_guard_model()
 
-    assert built == [{"model": model, "temperature": 0.0, **expected}]
+    # The guard never retries itself; the gpt-oss fallback answers instead of waiting.
+    assert built == [
+        {"model": model, "temperature": 0.0, "max_retries": 0, **expected},
+        {"model": "openai/gpt-oss-20b", "temperature": 0.0, "max_retries": 1, "reasoning_effort": "low"},
+    ]
+    monkeypatch.setattr(guard, "_model", None)
 
 
 @pytest.mark.asyncio
