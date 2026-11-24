@@ -2,53 +2,40 @@
 
 ## Assets and trust boundaries
 
-Assets include model-provider keys, user credentials/tokens, conversation data, checkpoints, ingested documents, tool outputs, and trace data. Trust boundaries exist at the public HTTP API, retrieved web/PDF content, MCP subprocess transport, persistence backends, model providers, temporary coding workspaces, and the Docker sandbox runtime.
+Assets are the model-provider keys, user accounts and sign-in tokens, conversations and checkpoints,
+uploaded and ingested documents, and long-term memory when it is enabled. Trust boundaries sit at the
+public HTTP API, retrieved web pages and documents, the model provider, the optional MCP subprocess,
+and the SQLite or PostgreSQL stores.
 
 ## Principal threats and controls
 
-| Threat | Control in this repository | Residual risk / production next step |
+| Threat | Control in this repository | Residual risk / next step |
 |---|---|---|
-| Prompt injection from retrieved content | Retrieval is labeled untrusted; route-scoped state prevents stale reuse; the optional evidence gate quarantines injection patterns and passes only adjudicated objects to synthesis, citation completion, grounding, and deliberation | Calibrate multilingual content classifiers and adaptive injection attacks on representative retrieved corpora |
-| Citation laundering, stale sources, or contradictory retrieved claims | Cross-domain near-duplicate collapse, independent-source minimums, requested-window freshness checks, numeric/negation conflict graphs, filtered context, and integrity-bound evidence reports | Add domain-calibrated NLI, publisher lineage, signed provenance, multilingual temporal extraction, and human escalation for material conflicts |
-| Prompt injection from repository content | Code is never executed during indexing; Tree-sitter visits are bounded; compressed snippets are token-bounded and labeled as untrusted evidence; specialist roles cannot approve their own output | Add language-aware content classifiers and isolate the reviewer model behind a separate policy service |
-| Agent goal hijacking across repository, retrieval, tool, memory, or peer-agent content | Provenance artifacts carry hashes and taints; deterministic complete mediation blocks high-confidence unsafe actions and routes ambiguous injected-context mutations through owner approval; versioned red-team cases gate attack success and benign utility in CI | Add a separately deployed policy decision point and continuous human-authored adversarial holdouts |
-| Code-context cache disclosure | Incremental trees, source, and embeddings remain process-local; persisted receipts contain paths, scores, backend IDs, and hashes but not raw snippets or vectors | Encrypt any future shared index and enforce tenant-scoped cache keys and retention |
-| Retrieval-model supply-chain compromise | Learned embeddings/cross-encoders are optional, disabled by default, and identified in receipts; deterministic local fallbacks keep safety gates operational | Pin model revisions, verify model artifacts, use offline model stores, and scan serialization formats before production enablement |
-| Unsafe tool execution | Safety node precedes routing and fails closed; unsafe/error state has a direct response edge | Use a dedicated moderation service with SLOs and policy versioning |
-| Forged approval | Native checkpoint interrupt plus user-specific namespace/thread validation | Put API behind TLS; add role-based approval for teams |
-| Cross-user data access | Authenticated user ID is required in conversation, checkpoint, and memory queries; API tests attempt cross-tenant list, search, export, and deletion | Replace the SQLite reference backend with database row-level security and defense-in-depth authorization policy |
-| Long-term memory poisoning or stale facts | Explicit-consent extraction, confidence/TTL gates, PII redaction, instruction/secret quarantine, untrusted prompt boundaries, conflict lineage, correction/deletion, and a deterministic governance suite | Add human-authored adaptive attacks, calibrated classifiers, encrypted storage, retention enforcement, and independent policy review |
-| Hallucinated claims or fabricated citations | Optional pre-release claim/evidence alignment, retrieved-URL allowlisting, stricter high-risk thresholds, draft withholding, bounded repair/abstention, integrity receipts, and a CI regression corpus | Calibrate NLI/judge ensembles on independently labelled domain claims and continuously evaluate adversarial paraphrases and fresh sources |
-| Resource exhaustion | Pydantic length bounds, HTTP body limit, bounded caches/corpora, timeouts, process-local rate limit | Use gateway/Redis distributed limits and per-user cost budgets |
-| Arbitrary calculator execution | `numexpr` receives empty globals and a small local constant set | Add expression AST allowlisting and complexity limits if expanded |
-| Secret leakage | Backend-only credentials, `.env` excluded from Docker context/git, generic client errors | Use a managed secret store and automated secret scanning |
-| Container compromise | Non-root UID, dropped Kubernetes capabilities, no privilege escalation, network policy | Use read-only root filesystems with dedicated writable volumes and signed images |
-| Supply-chain vulnerability | Bounded dependency ranges, clean-install verification, CI `pip-audit` | Add lockfiles, SBOM generation, image scanning, and Dependabot/Renovate |
-| Malicious repository or tests | Secret-filtered ephemeral copy, no symlinks, network disabled, non-root UID, read-only root, dropped capabilities, no-new-privileges, resource/time limits | Run public workloads in dedicated microVM workers; containers share the host kernel |
-| Unbounded sandbox output | Docker execution stdout/stderr are drained concurrently into bounded host-side tails; command timeouts and owned-container cleanup remain separate | This bounds output retention, not host Docker-daemon resource use or a hostile container escape |
-| Historical upstream code and EOL runtimes | Pinned commit/blob bytes, exact license/test snapshots, production-only diffs, explicit prepare-time downloads, manual replay workflow and separate offline/non-root legacy image | Never deploy the Python 3.9 historical image as a service; use disk quotas for arbitrary Git catalogs and VM isolation for hostile submissions; local curation is not independent review |
-| AI-generated preservation scope or misleading counterexamples | Domain suggestions need separate owner review and hash-bound source/patch checks; structured failures require fresh single-input confirmation before replay export | Reviewers are locally attested, not authenticated; preservation assumptions can be wrong and bounded sampling is not equivalence proof |
-| Coding-agent path traversal | Repository roots and file actions are resolved and checked below fixed roots; absolute and parent paths are rejected | Add OS-level per-tenant storage isolation for multi-tenant operation |
-| Model-generated shell injection | Model emits a validated typed action; tests use a fixed owner-supplied argv and an executable allowlist; no shell is invoked | Maintain per-language argument policies and fuzz the command validator |
-| Model-generated exfiltration or unsafe code | Pre-tool rules reject credential literals, network-plus-sensitive-source flows, dynamic execution, unsafe deserialization, TLS bypass, test tampering, and common resource attacks; post-patch gates independently rescan | Replace pattern rules with AST/data-flow policies and Semgrep/CodeQL in isolated workers |
-| Reviewer prompt injection or self-approval | Reviewer is a separate structured role; patch and evidence are explicitly untrusted; deterministic gates and critical/high findings override approval; reviewer failure blocks | Use a separately deployed reviewer model and policy service for stronger failure independence |
-| Test-author scope expansion | Test-author writes are technically restricted to recognized test paths; workflow-wide write and repair budgets cap mutations | Add language-aware ownership policies and CODEOWNERS enforcement |
-| Patch contains credentials or unsafe primitives | Added lines are scanned for credential-like values, shell/dynamic execution, unsafe deserialization, disabled TLS verification, and unsafe YAML loading | Replace regex screening with Semgrep/CodeQL plus a reviewed exception workflow |
-| Unauthorized patch disclosure | Job lookup is user-scoped; public job records redact diffs; explicit owner approval gates patch retrieval | Persist encrypted artifacts with RBAC, expiry, and immutable approval audit logs |
-| Evidence or patch artifact tampering | Patch and JSON/Markdown dossiers are stored separately, byte-counted, and SHA-256 verified on every read; blocked jobs never persist an accessible patch | Sign attestations with KMS-backed keys and store them in immutable object storage |
-| Docker control-plane compromise | Compose/Kubernetes keep the feature disabled and never mount the Docker socket | Use a separate queue worker on an isolated host; never expose Docker access to the public API container |
-| Evaluation artifact disclosure | Reports omit patch bodies; patches and trajectories are separated, content-hashed, gitignored, and mounted read-only in the optional dashboard | Encrypt artifacts, repeat secret scanning/redaction, add tenant RBAC and retention/deletion jobs |
-| Post-training data or model poisoning | Reviewer provenance, protected-set contamination checks, `trust_remote_code=false`, dataset/run fingerprints, artifact re-verification before canary | Pin immutable base-model revisions, scan weights, isolate GPU workers, sign attestations, and require two-person review for high-risk labels |
+| Prompt injection from retrieved content | Retrieved text is labelled untrusted; route-scoped state prevents stale reuse; the optional evidence gate quarantines injection-shaped content and passes only adjudicated evidence to synthesis and grounding | Pattern-based; calibrate a classifier on adaptive and multilingual attacks |
+| Hallucinated claims or fabricated citations | Each sentence is released only after its claims are checked against retrieved evidence; cited URLs must come from the retrieved set; repair or abstention when claims are unsupported or contradicted | Deterministic heuristic, not entailment; paraphrased contradictions can pass (see [grounding-verification.md](../grounding-verification.md)) |
+| Citation laundering, stale or conflicting sources | Optional evidence gate: near-duplicate collapse, independent-source minimum, recency checks, numeric and negation conflict detection | Add domain-calibrated NLI and publisher lineage |
+| Unsafe requests | The safety node runs before routing and fails closed: an unsafe verdict or a moderation error goes straight to the response node, so no retrieval or tool runs | Moderation model false positives and negatives; measured in the answer evaluation |
+| Forged web-search approval | Approval is a native LangGraph interrupt; the service treats approve/reject as control input only when that user's thread has an active interrupt | Add role-based approval for teams |
+| Cross-user data access | Conversations, checkpoints, memory and uploads are keyed by the authenticated user; uploaded chunks carry an owner tag and searches read only shared docs plus the asker's files; tests attempt cross-user reads and deletes | SQLite has no row-level security; use database policies for multi-tenant production |
+| Malicious uploads | Only PDF, Markdown and text are accepted; only extracted text is stored; per-route body limits (10 MB uploads, 64 KB elsewhere); chunk cap per file; file names are sanitised | PDF parsing runs in-process; isolate the parser for hostile files |
+| Resource exhaustion and quota abuse | Pydantic length bounds, body limits, bounded caches and BM25 corpus, timeouts, process-local rate limit; `DEMO_MODE` caps questions per account per hour and per server per day | Limits are per process and reset on restart; use a gateway or Redis for distributed limits |
+| Long-term memory poisoning | Opt-in; explicit-consent extraction, confidence/TTL gates, PII redaction, instruction and secret quarantine, untrusted prompt boundaries, deletion | Add human-authored adaptive attacks and encrypted storage |
+| Arbitrary calculator execution | `numexpr` receives empty globals and a small constant set | Add an expression allowlist if the calculator grows |
+| Secret leakage | Keys stay on the backend; `.env` is excluded from Git and the Docker context; clients get generic errors; uploaded text is kept out of logs | Use a managed secret store and automated secret scanning |
+| Weak sign-in secrets | Startup refuses a published placeholder secret, and with `APP_ENV=production` requires a configured secret of 32+ characters; passwords are hashed with Argon2 | Add account lockout and email verification for a real deployment |
+| Container compromise | Images run as a non-root user; Compose sets `no-new-privileges`, and the web container is read-only with all capabilities dropped | Read-only API root filesystem with dedicated writable volumes; signed images |
+| Supply-chain vulnerability | Bounded dependency ranges, clean installs in CI, `pip-audit` on every pull request | Add lockfiles, SBOMs and image scanning |
 
 Time-bounded vulnerability waivers and their deployment constraints are tracked in [audit-exceptions.md](audit-exceptions.md).
 
 ## Data retention
 
-Conversation and audit data persist until removed by the operator. Long-term memory has authenticated
-per-record and forget-all APIs, but production deployments must also propagate erasure to backups and
-replicas, enforce retention jobs, rotate signing keys, and complete a privacy review before handling
-regulated or customer data.
+Conversations, approval records and uploads persist until the user or operator removes them; the
+public demo image keeps nothing across restarts. Long-term memory has per-record and forget-all
+endpoints. A production deployment must also propagate deletion to backups, enforce retention and
+rotate signing keys.
 
-## Incident behavior
+## Incident behaviour
 
-Readiness fails when the conversation store is unavailable. Agent exceptions return generic client messages while structured server logs retain a request/run identifier. Moderation failures block the run by default.
+Readiness fails when the conversation store is unavailable. Agent exceptions return generic client
+messages, while structured server logs keep a request ID. Moderation failures block the run.

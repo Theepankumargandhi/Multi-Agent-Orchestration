@@ -88,8 +88,7 @@ python -m evals.memory_evaluation \
 
 It covers relevant recall, irrelevant rejection, tenant isolation, expiry, preference updates,
 conflict lineage, poisoning quarantine, PII redaction, deletion, token budgets, explicit consent, and
-artifact tamper detection. CI publishes the integrity-bound report, and the AgentOps command center
-shows the same evidence under **Memory governance**.
+artifact tamper detection. CI runs it on every pull request and publishes the integrity-bound report.
 
 These deterministic cases validate control flow, not broad conversational quality. Before publishing
 production metrics, build a consented, human-reviewed holdout; measure Recall@K, stale-memory rate,

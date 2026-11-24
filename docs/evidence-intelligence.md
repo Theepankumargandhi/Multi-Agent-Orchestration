@@ -47,6 +47,6 @@ python -m evals.evidence_quality_evaluation \
   --max-unsafe-release-rate 0
 ```
 
-The checked-in corpus covers benign web/local/math evidence, retrieval prompt injection, cross-domain copied-content laundering, numeric disagreement, negation disagreement, stale and undated results, and insufficient source diversity. The **Evidence intelligence** dashboard tab exposes containment, benign utility, quarantine, conflict, freshness, duplication, and unsafe-release metrics.
+The checked-in corpus covers benign web/local/math evidence, retrieval prompt injection, cross-domain copied-content laundering, numeric disagreement, negation disagreement, stale and undated results, and insufficient source diversity. CI runs it on every pull request; the report includes containment, benign utility, quarantine, conflict, freshness, duplication, and unsafe-release metrics.
 
 The default contradiction detector is deterministic and deliberately auditable. It catches overlapping propositions with incompatible numbers or negation polarity; it is not a general natural-language inference model. Production deployments should calibrate a domain NLI or judge ensemble on independently annotated contradiction pairs, version the source policy, and retain human escalation for material conflicts.

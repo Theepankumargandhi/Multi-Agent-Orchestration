@@ -24,11 +24,15 @@ Status: accepted for the single-host deployment.
 
 Vector retrieval is fused with BM25 using reciprocal-rank fusion and optionally reranked. The lexical corpus is bounded to protect memory. For a larger corpus, move BM25 to OpenSearch/Postgres FTS and keep only retrieved candidate IDs in application memory.
 
-## ADR-005: PostgreSQL first, SQLite fallback
+## ADR-005: SQLite by default, PostgreSQL optional
 
 Status: accepted.
 
-Compose uses PostgreSQL for durable graph checkpoints and application data. SQLite keeps local development friction low. Graph instances are built with their saver rather than mutating a global compiled graph, preventing cross-request backend changes.
+Checkpoints and conversations use SQLite files by default, including in Compose, where they live in
+the `citeright_data` volume; this keeps a single-host install to one command. Setting
+`POSTGRES_CHECKPOINT_URI` (and optionally `POSTGRES_STORE_URI`) moves them to PostgreSQL for durable,
+multi-process deployments. Graph instances are built with their saver rather than mutating a global
+compiled graph, preventing cross-request backend changes.
 
 ## ADR-006: Provider-neutral thin client
 
@@ -44,8 +48,8 @@ Retrieved text is not treated as trustworthy merely because retrieval ranked it 
 routes may pass through a distinct pre-synthesis node that quarantines injection-shaped content,
 collapses copied material across domains, applies source-independence and temporal-validity rules, and
 constructs explicit numeric or negation conflict edges. Downstream stages consume a typed filtered list,
-not the original retrieval strings, preventing rejected text from returning through citation repair,
-grounding, or adaptive candidate generation.
+not the original retrieval strings, preventing rejected text from returning through citation repair
+or grounding.
 
 The first implementation is deterministic, auditable, and credential-free. It intentionally does not
 claim general semantic contradiction detection or universal publisher trust. Domain deployments should
